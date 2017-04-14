@@ -43,6 +43,28 @@ func (nfei *NotFoundErrorIterator) ReadyChan() <-chan struct{} {
 	return closedChan
 }
 
+// JCS: get the header of the last block on the chain
+func GetLastBlock(rl Reader) *cb.Block {
+
+	var ret *cb.Block
+
+	if rl.Height() > 0 {
+		it, _ := rl.Iterator(&ab.SeekPosition{
+			Type: &ab.SeekPosition_Newest{
+				&ab.SeekNewest{},
+			},
+		})
+		<-it.ReadyChan() // Should never block, but just in case
+		block, status := it.Next()
+		if status != cb.Status_SUCCESS {
+			panic("Error seeking to newest block for chain with non-zero height")
+		}
+		ret = block
+
+	}
+	return ret
+}
+
 // CreateNextBlock provides a utility way to construct the next block from
 // contents and metadata for a given ledger
 // XXX This will need to be modified to accept marshaled envelopes

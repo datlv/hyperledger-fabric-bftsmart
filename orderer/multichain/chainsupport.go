@@ -65,8 +65,15 @@ type Chain interface {
 // ConsenterSupport provides the resources available to a Consenter implementation
 type ConsenterSupport interface {
 	crypto.LocalSigner
+
+        broadcast.Support //JCS: used to be in ChainSupport
+
 	BlockCutter() blockcutter.Receiver
 	SharedConfig() config.Orderer
+
+        GetLastBlock() *cb.Block           //JCS: my own method
+	AppendBlock(block *cb.Block) error //JCS: my own method
+
 	CreateNextBlock(messages []*cb.Envelope) *cb.Block
 	WriteBlock(block *cb.Block, committers []filter.Committer, encodedMetadataValue []byte) *cb.Block
 	ChainID() string // ChainID returns the chain ID this specific consenter instance is associated with
@@ -84,7 +91,7 @@ type ChainSupport interface {
 	// Reader returns the chain Reader for the chain
 	Reader() ledger.Reader
 
-	broadcast.Support
+	//broadcast.Support JCS: moved to ConsenterSupport
 	ConsenterSupport
 
 	// ProposeConfigUpdate applies a CONFIG_UPDATE to an existing config to produce a *cb.ConfigEnvelope
@@ -193,6 +200,16 @@ func (cs *chainSupport) Enqueue(env *cb.Envelope) bool {
 	return cs.chain.Enqueue(env)
 }
 
+//JCS: my own method
+func (cs *chainSupport) GetLastBlock() *cb.Block {
+	return ledger.GetLastBlock(cs.ledger)
+}
+
+//JCS: my own method
+func (cs *chainSupport) AppendBlock(block *cb.Block) error {
+	return cs.ledger.Append(block)
+}
+
 func (cs *chainSupport) CreateNextBlock(messages []*cb.Envelope) *cb.Block {
 	return ledger.CreateNextBlock(cs.ledger, messages)
 }
@@ -220,6 +237,11 @@ func (cs *chainSupport) addBlockSignature(block *cb.Block) {
 }
 
 func (cs *chainSupport) addLastConfigSignature(block *cb.Block) {
+
+        //JCS: I added these two lines myself
+	logger.Debugf("%+v", cs)
+	logger.Debugf("%+v", cs.signer)
+
 	configSeq := cs.Sequence()
 	if configSeq > cs.lastConfigSeq {
 		cs.lastConfig = block.Header.Number

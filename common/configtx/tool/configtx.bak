@@ -27,16 +27,6 @@ Profiles:
         Application:
             <<: *ApplicationDefaults
 
-    # JCS: I added this so that bftsmart can be initialized
-    # SampleInsecureBFTsmart defines a configuration that differs from the
-    # SampleInsecureSolo one only in that is uses the bftmart-based orderer.
-    SampleInsecureBFTsmart:
-        Orderer:
-            <<: *OrdererDefaults
-            OrdererType: bftsmart
-        Application:
-            <<: *ApplicationDefaults
-
     # SampleSingleMSPSolo defines a configuration which uses the Solo orderer,
     # and contains a single MSP definition (the MSP sampleconfig).
     SampleSingleMSPSolo:
@@ -49,19 +39,6 @@ Profiles:
             Organizations:
                 - *SampleOrg
 
-    # JCS: I added this so that bftsmart can be initialized
-    # SampleSingleMSPBFTsmart defines a configuration which uses the BFT-SMaRt orderer,
-    # and contains a single MSP definition (the MSP sampleconfig).
-    SampleSingleMSPBFTsmart:
-        Orderer:
-            <<: *OrdererDefaults
-            OrdererType: bftsmart
-            Organizations:
-                - *SampleOrg
-        Application:
-            <<: *ApplicationDefaults
-            Organizations:
-                - *SampleOrg
 ################################################################################
 #
 #   Section: Organizations
@@ -171,4 +148,3 @@ Application: &ApplicationDefaults
     # Organizations is the list of orgs which are defined as participants on
     # the application side of the network.
     Organizations:
-

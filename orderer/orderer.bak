@@ -45,7 +45,7 @@ General:
     # Genesis profile: The profile to use when using the provisional
     # GenesisMethod, See the configtx.yaml file for the descriptions of the
     # available profiles.
-    GenesisProfile: SampleSingleMSPBFTsmart
+    GenesisProfile: SampleInsecureSolo
 
     # Genesis file: The file containing the genesis block. Used by the orderer
     # when GenesisMethod is set to "file".
@@ -154,25 +154,6 @@ Kafka:
       RootCAs:
         #File: uncomment to read Certificate from a file
 
-# JCS: new section for bftsmart
-################################################################################
-#
-#   SECTION: BFT-SMaRt
-#
-#   - This section applies to the configuration of the bftsmart-based orderer.
-#
-################################################################################
-BFTsmart:
-
-    # ConnectionPoolSize: The size of the connection pool that links the golang component to the java component.
-    ConnectionPoolSize: 150
-
-    # SendPort: The localhost TCP port from which the golang component requests pool connections to the java component.
-    SendPort: 9998
-
-    # RecvPort: The localhost TCP port from which the java component sends blocks to the golang component.
-    RecvPort: 9999
-
 ################################################################################
 #
 #   SECTION: SBFT Local
@@ -184,8 +165,8 @@ SbftLocal:
 
     # Address to use for SBFT internal communication
     PeerCommAddr: ":6101"
-    CertFile: "orderer/sbft/testdata/cert1.pem"
-    KeyFile: "orderer/sbft/testdata/key.pem"
+    CertFile: "sbft/testdata/cert1.pem"
+    KeyFile: "sbft/testdata/key.pem"
     # Directory for SBFT data (persistence)
     DataDir: "/tmp"
 
@@ -217,5 +198,4 @@ Genesis:
         RequestTimeoutNsec: 1000000000
         # Peers (PeerCommAddr) with the path of their cert
         Peers:
-            ":6101": "orderer/sbft/testdata/cert1.pem"
-
+            ":6101": "sbft/testdata/cert1.pem"

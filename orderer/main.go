@@ -29,6 +29,7 @@ import (
 	"github.com/hyperledger/fabric/common/configtx/tool/provisional"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/core/comm"
+        "github.com/hyperledger/fabric/orderer/bftsmart" //JCS: import my package
 	"github.com/hyperledger/fabric/orderer/common/bootstrap/file"
 	"github.com/hyperledger/fabric/orderer/kafka"
 	"github.com/hyperledger/fabric/orderer/localconfig"
@@ -168,6 +169,7 @@ func main() {
 	consenters["solo"] = solo.New()
 	consenters["kafka"] = kafka.New(conf.Kafka.Version, conf.Kafka.Retry, conf.Kafka.TLS)
 	consenters["sbft"] = sbft.New(makeSbftConsensusConfig(conf), makeSbftStackConfig(conf))
+	consenters["bftsmart"] = bftsmart.New(conf.BFTsmart.ConnectionPoolSize, conf.BFTsmart.SendPort, conf.BFTsmart.RecvPort) //JCS: create my own consenter
 
 	signer := localmsp.NewSigner()
 

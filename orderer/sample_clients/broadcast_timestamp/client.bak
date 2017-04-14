@@ -21,11 +21,8 @@ import (
 	"fmt"
 	"time"
 
-	//"github.com/golang/protobuf/proto" //JCS: not used with my code
+	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric/common/configtx/tool/provisional"
-	"github.com/hyperledger/fabric/common/crypto"    //JCS: import crypto
-	"github.com/hyperledger/fabric/common/localmsp"  //JCS: import localmsp
-	mspmgmt "github.com/hyperledger/fabric/msp/mgmt" //JCS: import mgmt
 	"github.com/hyperledger/fabric/orderer/localconfig"
 	cb "github.com/hyperledger/fabric/protos/common"
 	ab "github.com/hyperledger/fabric/protos/orderer"
@@ -33,8 +30,6 @@ import (
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 )
-
-var signer crypto.LocalSigner //JCS: local signer
 
 type broadcastClient struct {
 	client  ab.AtomicBroadcast_BroadcastClient
@@ -47,38 +42,7 @@ func newBroadcastClient(client ab.AtomicBroadcast_BroadcastClient, chainID strin
 }
 
 func (s *broadcastClient) broadcast(transaction []byte) error {
-	payloadSignatureHeader, err := signer.NewSignatureHeader() //JCS: sig header
-	if err != nil {
-		return nil
-	}
-
-	payload := &cb.Payload{ //JCS: create the payload
-		Header: &cb.Header{
-			ChannelHeader: utils.MarshalOrPanic(&cb.ChannelHeader{
-				ChannelId: s.chainID,
-			}),
-			SignatureHeader: utils.MarshalOrPanic(payloadSignatureHeader),
-		},
-
-		Data: transaction,
-	}
-	paylBytes := utils.MarshalOrPanic(payload)
-
-	//JCS: sign the payload
-	sig, err := signer.Sign(paylBytes)
-	if err != nil {
-		return nil
-	}
-
-	env := &cb.Envelope{ //JCS: return the envelope
-		Payload:   paylBytes,
-		Signature: sig,
-	}
-
-	return s.client.Send(env)
-
-	//JCS: original code, with unsigned envelopes
-	/*payload, err := proto.Marshal(&cb.Payload{
+	payload, err := proto.Marshal(&cb.Payload{
 		Header: &cb.Header{
 			ChannelHeader: utils.MarshalOrPanic(&cb.ChannelHeader{
 				ChannelId: s.chainID,
@@ -90,7 +54,7 @@ func (s *broadcastClient) broadcast(transaction []byte) error {
 	if err != nil {
 		panic(err)
 	}
-	return s.client.Send(&cb.Envelope{Payload: payload})*/
+	return s.client.Send(&cb.Envelope{Payload: payload})
 }
 
 func (s *broadcastClient) getAck() error {
@@ -110,15 +74,6 @@ func main() {
 	var chainID string
 	var serverAddr string
 	var messages uint64
-
-	//JCS: Load local MSP
-	err := mspmgmt.LoadLocalMsp(config.General.LocalMSPDir, config.General.BCCSP, config.General.LocalMSPID)
-	if err != nil { // Handle errors reading the config file
-		panic(err)
-	}
-
-	//JCS: create signer
-	signer = localmsp.NewSigner()
 
 	flag.StringVar(&serverAddr, "server", fmt.Sprintf("%s:%d", config.General.ListenAddress, config.General.ListenPort), "The RPC server to connect to.")
 	flag.StringVar(&chainID, "chainID", provisional.TestChainID, "The chain ID to broadcast to.")
@@ -140,7 +95,7 @@ func main() {
 	}
 
 	s := newBroadcastClient(client, chainID)
-	for i := uint64(0); messages == 0 || i < messages; i++ { //JCS: I added support for an infinite loop
+	for i := uint64(0); i < messages; i++ {
 		s.broadcast([]byte(fmt.Sprintf("Testing %v", time.Now())))
 		err = s.getAck()
 	}
@@ -148,4 +103,3 @@ func main() {
 		fmt.Printf("\nError: %v\n", err)
 	}
 }
-

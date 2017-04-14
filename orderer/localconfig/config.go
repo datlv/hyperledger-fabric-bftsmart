@@ -94,6 +94,13 @@ type FileLedger struct {
 	Prefix   string
 }
 
+//JCS: BFTsmart contains config for the BFT-SMaRt orderer
+type BFTsmart struct {
+	ConnectionPoolSize uint
+	SendPort           uint
+	RecvPort           uint
+}
+
 // Kafka contains config for the Kafka orderer
 type Kafka struct {
 	Retry   Retry
@@ -139,6 +146,7 @@ type TopLevel struct {
 	RAMLedger  RAMLedger
 	FileLedger FileLedger
 	Kafka      Kafka
+        BFTsmart   BFTsmart //JCS: my own options
 	Genesis    Genesis
 	SbftLocal  SbftLocal
 }
@@ -177,6 +185,11 @@ var defaults = TopLevel{
 		TLS: TLS{
 			Enabled: false,
 		},
+	},
+        BFTsmart: BFTsmart{ //JCS: my own options
+		ConnectionPoolSize: 10,
+		SendPort:           9998,
+		RecvPort:           9999,
 	},
 	Genesis: Genesis{
 		SbftShared: SbftShared{
@@ -244,6 +257,15 @@ func (c *TopLevel) completeInitialization() {
 		case c.Kafka.Retry.Stop == 0*time.Second:
 			logger.Infof("Kafka.Retry.Stop unset, setting to %v", defaults.Kafka.Retry.Stop)
 			c.Kafka.Retry.Stop = defaults.Kafka.Retry.Stop
+                case c.BFTsmart.ConnectionPoolSize == 0: //JCS: my own options
+			logger.Infof("BFTsmart.ConnectionPoolSize unset, setting to %v", defaults.BFTsmart.ConnectionPoolSize)
+			c.BFTsmart.ConnectionPoolSize = defaults.BFTsmart.ConnectionPoolSize
+		case c.BFTsmart.SendPort == 0: //JCS: my own options
+			logger.Infof("BFTsmart.SendPort unset, setting to %v", defaults.BFTsmart.SendPort)
+			c.BFTsmart.SendPort = defaults.BFTsmart.SendPort
+		case c.BFTsmart.RecvPort == 0: //JCS: my own options
+			logger.Infof("BFTsmart.RecvPort unset, setting to %v", defaults.BFTsmart.RecvPort)
+			c.BFTsmart.RecvPort = defaults.BFTsmart.RecvPort
 		default:
 			// A bit hacky, but its type makes it impossible to test for a nil value.
 			// This may be overwritten by the Kafka orderer upon instantiation.

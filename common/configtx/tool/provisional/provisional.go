@@ -56,6 +56,8 @@ const (
 	ConsensusTypeKafka = "kafka"
 	// ConsensusTypeSbft identifies the SBFT consensus implementation.
 	ConsensusTypeSbft = "sbft"
+        //JCS: ConsensusTypeBFTsmart identifies the BFT-SMaRt consensus implementation.
+	ConsensusTypeBFTsmart = "bftsmart"
 
 	// TestChainID is the default value of ChainID. It is used by all testing
 	// networks. It it necessary to set and export this variable so that test
@@ -159,7 +161,7 @@ func New(conf *genesisconfig.Profile) Generator {
 		}
 
 		switch conf.Orderer.OrdererType {
-		case ConsensusTypeSolo, ConsensusTypeSbft:
+		case ConsensusTypeSolo, ConsensusTypeSbft, ConsensusTypeBFTsmart: //JCS: added bftsmart type
 		case ConsensusTypeKafka:
 			bs.ordererGroups = append(bs.ordererGroups, config.TemplateKafkaBrokers(conf.Orderer.Kafka.Brokers))
 		default:

@@ -100,6 +100,26 @@ func UnmarshalEnvelope(encoded []byte) (*cb.Envelope, error) {
 	return envelope, err
 }
 
+//JCS: my method; UnmarshalMetadata unmarshals bytes to a Metadata structure
+func UnmarshalMetadata(encoded []byte) (*cb.Metadata, error) {
+	metadata := &cb.Metadata{}
+	err := proto.Unmarshal(encoded, metadata)
+	if err != nil {
+		return nil, err
+	}
+	return metadata, err
+}
+
+//JCS: my method; UnmarshalSignatureHeader unmarshals bytes to a Metadata structure
+func UnmarshalSignatureHeader(encoded []byte) (*cb.SignatureHeader, error) {
+	header := &cb.SignatureHeader{}
+	err := proto.Unmarshal(encoded, header)
+	if err != nil {
+		return nil, err
+	}
+	return header, err
+}
+
 // UnmarshalEnvelopeOfType unmarshals an envelope of the specified type, including
 // the unmarshaling the payload data
 func UnmarshalEnvelopeOfType(envelope *cb.Envelope, headerType cb.HeaderType, message proto.Message) (*cb.ChannelHeader, error) {
