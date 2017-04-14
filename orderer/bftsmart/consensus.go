@@ -161,14 +161,15 @@ func (ch *chain) Start() {
 
 	//create connection pool
 	for i := uint(0); i < poolsize; i++ {
-		addr = fmt.Sprintf("127.0.0.1:%d", sendport)
-		conn, err := net.Dial("tcp", addr)
+		addr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("127.0.0.1:%d", sendport))
+		conn, err := net.DialTCP("tcp", nil, addr)
 
 		if err != nil {
 			logger.Debugf("Could not create connection: %v\n", i)
 			return
 		} else {
 			logger.Debugf("Created connection: %v\n", i)
+			conn.SetNoDelay(true)
 			ch.sendPool[i] = conn
 			ch.mutex[i] = &sync.Mutex{}
 		}
