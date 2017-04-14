@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"time"
 
-	//"github.com/golang/protobuf/proto" //JCS: not used with my code
+	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric/common/configtx/tool/provisional"
 	"github.com/hyperledger/fabric/common/crypto"    //JCS: import crypto
 	"github.com/hyperledger/fabric/common/localmsp"  //JCS: import localmsp
@@ -35,6 +35,7 @@ import (
 )
 
 var signer crypto.LocalSigner //JCS: local signer
+var secure bool
 
 type broadcastClient struct {
 	client  ab.AtomicBroadcast_BroadcastClient
@@ -47,38 +48,41 @@ func newBroadcastClient(client ab.AtomicBroadcast_BroadcastClient, chainID strin
 }
 
 func (s *broadcastClient) broadcast(transaction []byte) error {
-	payloadSignatureHeader, err := signer.NewSignatureHeader() //JCS: sig header
-	if err != nil {
-		return nil
+
+	if secure {
+		payloadSignatureHeader, err := signer.NewSignatureHeader() //JCS: sig header
+		if err != nil {
+			return nil
+		}
+
+		payload := &cb.Payload{ //JCS: create the payload
+			Header: &cb.Header{
+				ChannelHeader: utils.MarshalOrPanic(&cb.ChannelHeader{
+					ChannelId: s.chainID,
+				}),
+				SignatureHeader: utils.MarshalOrPanic(payloadSignatureHeader),
+			},
+
+			Data: transaction,
+		}
+		paylBytes := utils.MarshalOrPanic(payload)
+	
+
+		//JCS: sign the payload
+		sig, err := signer.Sign(paylBytes)
+		if err != nil {
+			return nil
+		}
+
+		env := &cb.Envelope{ //JCS: return the envelope
+			Payload:   paylBytes,
+			Signature: sig,
+		}
+
+		return s.client.Send(env)
 	}
-
-	payload := &cb.Payload{ //JCS: create the payload
-		Header: &cb.Header{
-			ChannelHeader: utils.MarshalOrPanic(&cb.ChannelHeader{
-				ChannelId: s.chainID,
-			}),
-			SignatureHeader: utils.MarshalOrPanic(payloadSignatureHeader),
-		},
-
-		Data: transaction,
-	}
-	paylBytes := utils.MarshalOrPanic(payload)
-
-	//JCS: sign the payload
-	sig, err := signer.Sign(paylBytes)
-	if err != nil {
-		return nil
-	}
-
-	env := &cb.Envelope{ //JCS: return the envelope
-		Payload:   paylBytes,
-		Signature: sig,
-	}
-
-	return s.client.Send(env)
-
 	//JCS: original code, with unsigned envelopes
-	/*payload, err := proto.Marshal(&cb.Payload{
+	payload, err := proto.Marshal(&cb.Payload{
 		Header: &cb.Header{
 			ChannelHeader: utils.MarshalOrPanic(&cb.ChannelHeader{
 				ChannelId: s.chainID,
@@ -90,7 +94,7 @@ func (s *broadcastClient) broadcast(transaction []byte) error {
 	if err != nil {
 		panic(err)
 	}
-	return s.client.Send(&cb.Envelope{Payload: payload})*/
+	return s.client.Send(&cb.Envelope{Payload: payload})
 }
 
 func (s *broadcastClient) getAck() error {
@@ -123,6 +127,7 @@ func main() {
 	flag.StringVar(&serverAddr, "server", fmt.Sprintf("%s:%d", config.General.ListenAddress, config.General.ListenPort), "The RPC server to connect to.")
 	flag.StringVar(&chainID, "chainID", provisional.TestChainID, "The chain ID to broadcast to.")
 	flag.Uint64Var(&messages, "messages", 1, "The number of messages to braodcast.")
+	flag.BoolVar(&secure, "secure", false, "Sign the envelopes?")
 	flag.Parse()
 
 	conn, err := grpc.Dial(serverAddr, grpc.WithInsecure())
