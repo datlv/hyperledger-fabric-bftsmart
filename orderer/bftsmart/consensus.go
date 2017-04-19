@@ -39,6 +39,12 @@ var poolindex uint = 0
 var recvport uint = 0
 var sendport uint = 0
 
+
+//measurements
+var interval = int64(10000)
+var envelopeMeasurementStartTime = int64(-1)
+var countEnvelopes = int64(0)
+
 type consenter struct{}
 
 type chain struct {
@@ -82,8 +88,9 @@ func (ch *chain) Start() {
 
 	//JCS: my code, to create a connections to the java proxy
 
-	addr := fmt.Sprintf("127.0.0.1:%d", sendport)
-	conn, err := net.Dial("tcp", addr)
+	//addr := fmt.Sprintf("localhost:%d", sendport)
+	//conn, err := net.Dial("tcp", addr)
+	conn, err := net.Dial("unix", "/tmp/bft.sock")
 
 	if err != nil {
 		logger.Debugf("Could not connect to proxy!")
@@ -94,7 +101,7 @@ func (ch *chain) Start() {
 
 	ch.sendProxy = conn
 
-	addr = fmt.Sprintf("127.0.0.1:%d", recvport)
+	addr := fmt.Sprintf("localhost:%d", recvport)
 	conn, err = net.Dial("tcp", addr)
 
 	if err != nil {
@@ -161,15 +168,16 @@ func (ch *chain) Start() {
 
 	//create connection pool
 	for i := uint(0); i < poolsize; i++ {
-		addr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("127.0.0.1:%d", sendport))
-		conn, err := net.DialTCP("tcp", nil, addr)
+		//addr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("localhost:%d", sendport))
+		//conn, err := net.DialTCP("tcp", nil, addr)
+		conn, err := net.Dial("unix", "/tmp/bft.sock")
 
 		if err != nil {
 			logger.Debugf("Could not create connection: %v\n", i)
 			return
 		} else {
 			logger.Debugf("Created connection: %v\n", i)
-			conn.SetNoDelay(true)
+			//conn.SetNoDelay(true)
 			ch.sendPool[i] = conn
 			ch.mutex[i] = &sync.Mutex{}
 		}
@@ -334,6 +342,19 @@ func (ch *chain) Enqueue(env *cb.Envelope) bool {
 	if err != nil {
 		logger.Debugf("[send] Error while sending envelope to BFT proxy: %v\n", err)
 		return false
+	}
+
+
+	if envelopeMeasurementStartTime == -1 {
+		envelopeMeasurementStartTime = time.Now().UnixNano()
+	}
+	countEnvelopes++
+	if countEnvelopes%interval == 0 {
+
+		tp := float64(interval*1000000000) / float64(time.Now().UnixNano()-envelopeMeasurementStartTime)
+		fmt.Printf("Throughput = %v envelopes/sec\n", tp)
+		envelopeMeasurementStartTime = time.Now().UnixNano()
+
 	}
 
 	//JCS: I want the orderer to wait for reception on the main loop
