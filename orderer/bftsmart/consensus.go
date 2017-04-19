@@ -173,8 +173,8 @@ func (ch *chain) Start() {
 		conn, err := net.Dial("unix", "/tmp/bft.sock")
 
 		if err != nil {
-			logger.Debugf("Could not create connection: %v\n", i)
-			return
+			panic(fmt.Sprintf("Could not create connection %v: %d\n", i, err))
+			//return
 		} else {
 			logger.Debugf("Created connection: %v\n", i)
 			//conn.SetNoDelay(true)
