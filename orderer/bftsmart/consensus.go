@@ -18,7 +18,6 @@ package bftsmart
 
 import (
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/hyperledger/fabric/orderer/multichain"
@@ -31,14 +30,13 @@ import (
 
 	//"github.com/hyperledger/fabric/orderer/common/filter" JCS: not used anymore
 	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/zeromq/goczmq"
 )
 
 var logger = logging.MustGetLogger("orderer/solo")
 var poolsize uint = 0
-var poolindex uint = 0
 var recvport uint = 0
 var sendport uint = 0
-
 
 //measurements
 var interval = int64(10000)
@@ -50,12 +48,12 @@ type consenter struct{}
 type chain struct {
 	support      multichain.ConsenterSupport
 	batchTimeout time.Duration
-	sendChan     chan *cb.Block
+	envChan      chan *cb.Envelope
+	blockChan    chan *cb.Block
 	exitChan     chan struct{}
 	sendProxy    net.Conn //JCS: my code, to send data to proxy
 	recvProxy    net.Conn //JCS: my code, to receive data to proxy
-	sendPool     []net.Conn
-	mutex        []*sync.Mutex
+	router       *goczmq.Sock
 }
 
 // New creates a new consenter for the solo consensus scheme.
@@ -63,6 +61,7 @@ type chain struct {
 // It accepts messages being delivered via Enqueue, orders them, and then uses the blockcutter to form the messages
 // into blocks before writing to the given ledger
 func New(size uint, send uint, recv uint) multichain.Consenter {
+
 	poolsize = size
 	recvport = recv
 	sendport = send
@@ -77,10 +76,9 @@ func newChain(support multichain.ConsenterSupport) *chain {
 	return &chain{
 		batchTimeout: support.SharedConfig().BatchTimeout(),
 		support:      support,
-		sendChan:     make(chan *cb.Block),
+		envChan:      make(chan *cb.Envelope),
+		blockChan:    make(chan *cb.Block),
 		exitChan:     make(chan struct{}),
-		sendPool:     make([]net.Conn, poolsize),
-		mutex:        make([]*sync.Mutex, poolsize),
 	}
 }
 
@@ -88,27 +86,27 @@ func (ch *chain) Start() {
 
 	//JCS: my code, to create a connections to the java proxy
 
-	//addr := fmt.Sprintf("localhost:%d", sendport)
-	//conn, err := net.Dial("tcp", addr)
-	conn, err := net.Dial("unix", "/tmp/bft.sock")
+	addr := fmt.Sprintf("localhost:%d", sendport)
+	conn, err := net.Dial("tcp", addr)
+	//conn, err := net.Dial("unix", "/tmp/bft.sock")
 
 	if err != nil {
-		logger.Debugf("Could not connect to proxy!")
+		panic("Could not connect to proxy!")
 		return
 	} else {
-		logger.Debugf("Connected to proxy!")
+		logger.Debug("Connected to proxy!")
 	}
 
 	ch.sendProxy = conn
 
-	addr := fmt.Sprintf("localhost:%d", recvport)
+	addr = fmt.Sprintf("localhost:%d", recvport)
 	conn, err = net.Dial("tcp", addr)
 
 	if err != nil {
-		logger.Debugf("Could not connect to proxy!")
+		panic("Could not connect to proxy!")
 		return
 	} else {
-		logger.Debugf("Connected to proxy!")
+		logger.Debug("Connected to proxy!")
 	}
 
 	ch.recvProxy = conn
@@ -117,7 +115,7 @@ func (ch *chain) Start() {
 	_, err = ch.sendUint32(uint32(poolsize))
 
 	if err != nil {
-		logger.Debugf("Error while sending pool size:", err)
+		panic(fmt.Sprintf("Error while sending pool size:", err))
 		return
 	}
 
@@ -125,20 +123,20 @@ func (ch *chain) Start() {
 	_, err = ch.sendUint32(ch.support.SharedConfig().BatchSize().PreferredMaxBytes)
 
 	if err != nil {
-		logger.Debugf("Error while sending PreferredMaxBytes:", err)
+		panic(fmt.Sprintf("Error while sending PreferredMaxBytes:", err))
 		return
 	}
 
 	_, err = ch.sendUint32(ch.support.SharedConfig().BatchSize().MaxMessageCount)
 
 	if err != nil {
-		logger.Debugf("Error while sending MaxMessageCount:", err)
+		panic(fmt.Sprintf("Error while sending MaxMessageCount:", err))
 		return
 	}
 	_, err = ch.sendUint64(uint64(time.Duration.Nanoseconds(ch.batchTimeout)))
 
 	if err != nil {
-		logger.Debugf("Error while sending BatchTimeout:", err)
+		panic(fmt.Sprintf("Error while sending BatchTimeout:", err))
 		return
 	}
 
@@ -166,25 +164,18 @@ func (ch *chain) Start() {
 	//printBytes(lastBlock.Data.Bytes())
 	ch.sendHeaderToBFTProxy(header)
 
-	//create connection pool
-	for i := uint(0); i < poolsize; i++ {
-		//addr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("localhost:%d", sendport))
-		//conn, err := net.DialTCP("tcp", nil, addr)
-		conn, err := net.Dial("unix", "/tmp/bft.sock")
-
-		if err != nil {
-			panic(fmt.Sprintf("Could not create connection %v: %d\n", i, err))
-			//return
-		} else {
-			logger.Debugf("Created connection: %v\n", i)
-			//conn.SetNoDelay(true)
-			ch.sendPool[i] = conn
-			ch.mutex[i] = &sync.Mutex{}
-		}
+	//ZMQ
+	r, err := goczmq.NewRouter("ipc:///tmp/bft.sock")
+	if err != nil {
+		panic(fmt.Sprintf("Could not create ZMQ router: %d\n", err))
+		//return
 	}
+	ch.router = r
 
 	//JCS: starting loops
-	go ch.connLoop() //JCS: my own loop
+	go ch.connLoop()
+
+	go ch.envLoop()
 
 	go ch.appendToChain()
 }
@@ -226,7 +217,7 @@ func (ch *chain) sendUint32(length uint32) (int, error) {
 	return ch.sendProxy.Write(buf[:])
 }
 
-func (ch *chain) sendEnvToBFTProxy(env *cb.Envelope, index uint) (int, error) {
+/*func (ch *chain) sendEnvToBFTProxy(env *cb.Envelope, index uint) (int, error) {
 
 	ch.mutex[index].Lock()
 	bytes, err := utils.Marshal(env)
@@ -246,7 +237,7 @@ func (ch *chain) sendEnvToBFTProxy(env *cb.Envelope, index uint) (int, error) {
 	ch.mutex[index].Unlock()
 
 	return i, err
-}
+}*/
 
 func (ch *chain) sendHeaderToBFTProxy(header *cb.BlockHeader) (int, error) {
 	bytes, err := utils.Marshal(header)
@@ -328,23 +319,6 @@ func (ch *chain) Enqueue(env *cb.Envelope) bool {
 
 	////JCS: new code that contacts the java proxy
 
-	poolindex = (poolindex + 1) % poolsize
-
-	_, err := ch.support.Filters().Apply(env) //JCS: filter before submitting
-
-	if err != nil {
-		logger.Debugf("Discarding message: %s", err)
-		return true
-	}
-
-	_, err = ch.sendEnvToBFTProxy(env, poolindex)
-
-	if err != nil {
-		logger.Debugf("[send] Error while sending envelope to BFT proxy: %v\n", err)
-		return false
-	}
-
-
 	if envelopeMeasurementStartTime == -1 {
 		envelopeMeasurementStartTime = time.Now().UnixNano()
 	}
@@ -357,9 +331,12 @@ func (ch *chain) Enqueue(env *cb.Envelope) bool {
 
 	}
 
+	//fmt.Println("Enqueing envelope...")
 	//JCS: I want the orderer to wait for reception on the main loop
 	select {
 
+	case ch.envChan <- env:
+		return true
 	case <-ch.exitChan:
 		return false
 	default: //JCS: avoid blocking
@@ -367,6 +344,45 @@ func (ch *chain) Enqueue(env *cb.Envelope) bool {
 	}
 
 	//return true
+}
+
+func (ch *chain) envLoop() {
+
+	for {
+		select {
+
+		case env := <-ch.envChan:
+
+			bytes, err := utils.Marshal(env)
+
+			if err != nil {
+				panic(err)
+			}
+
+			//fmt.Println("Waiting for available worker...")
+
+			request, err := ch.router.RecvMessage()
+			if err != nil {
+				panic(err)
+			}
+
+			//fmt.Println("Sending bytes to worker...")
+
+			err = ch.router.SendFrame(request[0], goczmq.FlagMore)
+			if err != nil {
+				panic(err)
+			}
+
+			err = ch.router.SendFrame(bytes, goczmq.FlagNone)
+			if err != nil {
+				panic(err)
+			}
+
+		case <-ch.exitChan:
+			logger.Debugf("Exiting...")
+			return
+		}
+	}
 }
 
 func (ch *chain) connLoop() {
@@ -386,7 +402,7 @@ func (ch *chain) connLoop() {
 			continue
 		}
 
-		ch.sendChan <- block
+		ch.blockChan <- block
 
 	}
 }
@@ -399,7 +415,7 @@ func (ch *chain) appendToChain() {
 		select {
 
 		//JCS: I want the orderer to wait for reception from he java proxy
-		case block := <-ch.sendChan:
+		case block := <-ch.blockChan:
 
 			//JCS: deal with committers
 			for _, msg := range block.Data.Data {
@@ -469,4 +485,3 @@ func (ch *chain) appendToChain() {
 		}
 	}
 }
-
