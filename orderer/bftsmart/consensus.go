@@ -331,59 +331,79 @@ func (ch *chain) Enqueue(env *cb.Envelope) bool {
 
 	}
 
-	ch.envChan <- env
+	//ch.envChan <- env
 
 	//fmt.Println("Enqueing envelope...")
 	//JCS: I want the orderer to wait for reception on the main loop
 	select {
 
-	//case ch.envChan <- env:
-	//	return true
+	case ch.envChan <- env:
+		return true
 	case <-ch.exitChan:
 		return false
 	default: //JCS: avoid blocking
 		return true
 	}
 
-	//return true
 }
 
 func (ch *chain) envLoop() {
 
 	for {
-		select {
 
-		case env := <-ch.envChan:
+		//fmt.Println("Waiting for available worker...")
 
-			bytes, err := utils.Marshal(env)
+		limit := 10
+		end := make([]byte, 1)
+		end[0] = 1
 
-			if err != nil {
-				panic(err)
-			}
-
-			//fmt.Println("Waiting for available worker...")
-
-			request, err := ch.router.RecvMessage()
-			if err != nil {
-				panic(err)
-			}
-
-			//fmt.Println("Sending bytes to worker...")
-
-			err = ch.router.SendFrame(request[0], goczmq.FlagMore)
-			if err != nil {
-				panic(err)
-			}
-
-			err = ch.router.SendFrame(bytes, goczmq.FlagNone)
-			if err != nil {
-				panic(err)
-			}
-
-		case <-ch.exitChan:
-			logger.Debugf("Exiting...")
-			return
+		request, err := ch.router.RecvMessage()
+		if err != nil {
+			panic(err)
 		}
+		for i := 0; i < limit; i++ {
+			select {
+
+			case env := <-ch.envChan:
+
+				bytes, err := utils.Marshal(env)
+
+				if err != nil {
+					panic(err)
+				}
+
+				//fmt.Println("sending envelope to worker...")
+
+				err = ch.router.SendFrame(request[0], goczmq.FlagMore)
+				if err != nil {
+					panic(err)
+				}
+
+				err = ch.router.SendFrame(bytes, goczmq.FlagNone)
+				if err != nil {
+					panic(err)
+				}
+
+			case <-ch.exitChan:
+				logger.Debugf("Exiting...")
+				return
+
+			}
+		}
+
+		//fmt.Println("Finished...")
+
+		err = ch.router.SendFrame(request[0], goczmq.FlagMore)
+		if err != nil {
+			panic(err)
+		}
+
+		err = ch.router.SendFrame(end, goczmq.FlagNone)
+
+		if err != nil {
+			panic(err)
+		}
+
 	}
 }
 
