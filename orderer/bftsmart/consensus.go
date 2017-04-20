@@ -331,7 +331,7 @@ func (ch *chain) Enqueue(env *cb.Envelope) bool {
 
 	}
 
-	//ch.envChan <- env
+	ch.envChan <- env
 
 	//fmt.Println("Enqueing envelope...")
 	//JCS: I want the orderer to wait for reception on the main loop
@@ -341,8 +341,8 @@ func (ch *chain) Enqueue(env *cb.Envelope) bool {
 		return true
 	case <-ch.exitChan:
 		return false
-	default: //JCS: avoid blocking
-		return true
+		//default: //JCS: avoid blocking
+		//	return true
 	}
 
 }
