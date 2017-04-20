@@ -17,6 +17,7 @@ limitations under the License.
 package solo
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/hyperledger/fabric/orderer/multichain"
@@ -25,6 +26,10 @@ import (
 )
 
 var logger = logging.MustGetLogger("orderer/solo")
+
+var interval = int64(10000)
+var envelopeMeasurementStartTime = int64(-1)
+var countEnvelopes = int64(0)
 
 type consenter struct{}
 
@@ -73,6 +78,19 @@ func (ch *chain) Halt() {
 func (ch *chain) Enqueue(env *cb.Envelope) bool {
 	select {
 	case ch.sendChan <- env:
+
+                        if envelopeMeasurementStartTime == -1 {
+                                envelopeMeasurementStartTime = time.Now().UnixNano()
+                        }
+                        countEnvelopes++
+                        if countEnvelopes%interval == 0 {
+
+                                tp := float64(interval*1000000000) / float64(time.Now().UnixNano() - envelopeMeasurementStartTime)
+                                fmt.Printf("Throughput = %v envelopes/sec\n", tp)
+                                envelopeMeasurementStartTime = time.Now().UnixNano()
+
+                        }
+
 		return true
 	case <-ch.exitChan:
 		return false
@@ -85,14 +103,22 @@ func (ch *chain) main() {
 	for {
 		select {
 		case msg := <-ch.sendChan:
-			batches, committers, ok := ch.support.BlockCutter().Ordered(msg)
+
+			batches, _, ok := ch.support.BlockCutter().Ordered(msg)
 			if ok && len(batches) == 0 && timer == nil {
 				timer = time.After(ch.batchTimeout)
 				continue
 			}
-			for i, batch := range batches {
+			for _, batch := range batches {
 				block := ch.support.CreateNextBlock(batch)
-				ch.support.WriteBlock(block, committers[i], nil)
+
+				//JCS: hack to avoid signatures and get pure throughput
+				//ch.support.WriteBlock(block, committers[i], nil)
+				err := ch.support.AppendBlock(block)
+				if err != nil {
+					logger.Panicf("Could not append block: %s", err)
+				}
+
 			}
 			if len(batches) > 0 {
 				timer = nil

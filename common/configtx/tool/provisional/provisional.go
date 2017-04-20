@@ -34,6 +34,8 @@ import (
 	ab "github.com/hyperledger/fabric/protos/orderer"
 	pb "github.com/hyperledger/fabric/protos/peer"
 
+	proto "github.com/hyperledger/fabric/protos/utils" //JCS: temporary
+
 	logging "github.com/op/go-logging"
 )
 
@@ -231,6 +233,19 @@ func (bs *bootstrapper) GenesisBlock() *cb.Block {
 	if err != nil {
 		panic(err)
 	}
+
+
+//JCS: temporary, I just want to generate a genesis file
+	fmt.Println("Generating genesis file!!!")
+	file := "/root/orderer-2/genesisblock"
+
+	marshalledBlock, _ := proto.Marshal(block)
+
+	genesisFile, _ := os.Create(file)
+	//defer os.Remove(file)
+	genesisFile.Write(marshalledBlock)
+	genesisFile.Close()
+
 	return block
 }
 
