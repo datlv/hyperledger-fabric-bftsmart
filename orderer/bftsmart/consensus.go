@@ -331,12 +331,14 @@ func (ch *chain) Enqueue(env *cb.Envelope) bool {
 
 	}
 
+	ch.envChan <- env
+
 	//fmt.Println("Enqueing envelope...")
 	//JCS: I want the orderer to wait for reception on the main loop
 	select {
 
-	case ch.envChan <- env:
-		return true
+	//case ch.envChan <- env:
+	//	return true
 	case <-ch.exitChan:
 		return false
 	default: //JCS: avoid blocking
