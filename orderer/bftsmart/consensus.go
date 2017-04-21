@@ -353,7 +353,7 @@ func (ch *chain) envLoop() {
 
 		//fmt.Println("Waiting for available worker...")
 
-		limit := 10
+		limit := 50
 		end := make([]byte, 1)
 		end[0] = 1
 
