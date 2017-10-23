@@ -114,9 +114,10 @@ func invokeEmptyCall(address string, dialOptions []grpc.DialOption) (*testpb.Emp
 
 	//add DialOptions
 	dialOptions = append(dialOptions, grpc.WithBlock())
-	dialOptions = append(dialOptions, grpc.WithTimeout(timeout))
+	ctx := context.Background()
+	ctx, _ = context.WithTimeout(ctx, timeout)
 	//create GRPC client conn
-	clientConn, err := grpc.Dial(address, dialOptions...)
+	clientConn, err := grpc.DialContext(ctx, address, dialOptions...)
 	if err != nil {
 		return nil, err
 	}
@@ -125,12 +126,12 @@ func invokeEmptyCall(address string, dialOptions []grpc.DialOption) (*testpb.Emp
 	//create GRPC client
 	client := testpb.NewTestServiceClient(clientConn)
 
-	ctx := context.Background()
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	callCtx := context.Background()
+	callCtx, cancel := context.WithTimeout(callCtx, timeout)
 	defer cancel()
 
 	//invoke service
-	empty, err := client.EmptyCall(ctx, new(testpb.Empty))
+	empty, err := client.EmptyCall(callCtx, new(testpb.Empty))
 	if err != nil {
 		return nil, err
 	}
@@ -488,8 +489,10 @@ func TestNewGRPCServer(t *testing.T) {
 	assert.Equal(t, srv.Address(), addr.String())
 	assert.Equal(t, srv.Listener().Addr().String(), addr.String())
 
-	//TlSEnabled should be false
+	//TLSEnabled should be false
 	assert.Equal(t, srv.TLSEnabled(), false)
+	//MutualTLSRequired should be false
+	assert.Equal(t, srv.MutualTLSRequired(), false)
 
 	//register the GRPC test server
 	testpb.RegisterTestServiceServer(srv.Server(), &testServiceServer{})
@@ -541,8 +544,10 @@ func TestNewGRPCServerFromListener(t *testing.T) {
 	assert.Equal(t, srv.Address(), addr.String())
 	assert.Equal(t, srv.Listener().Addr().String(), addr.String())
 
-	//TlSEnabled should be false
+	//TLSEnabled should be false
 	assert.Equal(t, srv.TLSEnabled(), false)
+	//MutualTLSRequired should be false
+	assert.Equal(t, srv.MutualTLSRequired(), false)
 
 	//register the GRPC test server
 	testpb.RegisterTestServiceServer(srv.Server(), &testServiceServer{})
@@ -593,8 +598,10 @@ func TestNewSecureGRPCServer(t *testing.T) {
 	cert, _ := tls.X509KeyPair([]byte(selfSignedCertPEM), []byte(selfSignedKeyPEM))
 	assert.Equal(t, srv.ServerCertificate(), cert)
 
-	//TlSEnabled should be true
+	//TLSEnabled should be true
 	assert.Equal(t, srv.TLSEnabled(), true)
+	//MutualTLSRequired should be false
+	assert.Equal(t, srv.MutualTLSRequired(), false)
 
 	//register the GRPC test server
 	testpb.RegisterTestServiceServer(srv.Server(), &testServiceServer{})
@@ -676,8 +683,10 @@ func TestNewSecureGRPCServerFromListener(t *testing.T) {
 	cert, _ := tls.X509KeyPair([]byte(selfSignedCertPEM), []byte(selfSignedKeyPEM))
 	assert.Equal(t, srv.ServerCertificate(), cert)
 
-	//TlSEnabled should be true
+	//TLSEnabled should be true
 	assert.Equal(t, srv.TLSEnabled(), true)
+	//MutualTLSRequired should be false
+	assert.Equal(t, srv.MutualTLSRequired(), false)
 
 	//register the GRPC test server
 	testpb.RegisterTestServiceServer(srv.Server(), &testServiceServer{})
@@ -892,6 +901,9 @@ func runMutualAuth(t *testing.T, servers []testServer, trustedClients, unTrusted
 		if err != nil {
 			return err
 		}
+
+		//MutualTLSRequired should be true
+		assert.Equal(t, srv.MutualTLSRequired(), true)
 
 		//register the GRPC test server and start the GRPCServer
 		testpb.RegisterTestServiceServer(srv.Server(), &testServiceServer{})
