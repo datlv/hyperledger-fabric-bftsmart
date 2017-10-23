@@ -17,16 +17,14 @@ limitations under the License.
 package chaincode
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/golang/protobuf/proto"
-	"golang.org/x/net/context"
-
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
-	"github.com/hyperledger/fabric/events/producer"
 	pb "github.com/hyperledger/fabric/protos/peer"
+	"github.com/pkg/errors"
+	"golang.org/x/net/context"
 )
 
 //Execute - execute proposal, return original response of chaincode
@@ -44,35 +42,26 @@ func Execute(ctxt context.Context, cccid *ccprovider.CCContext, spec interface{}
 		cctyp = pb.ChaincodeMessage_TRANSACTION
 	}
 
-	cID, cMsg, err := theChaincodeSupport.Launch(ctxt, cccid, spec)
+	_, cMsg, err := theChaincodeSupport.Launch(ctxt, cccid, spec)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s", err)
+		return nil, nil, err
 	}
 
-	//this should work because it worked above...
-	chaincode := cID.Name
-
-	if err != nil {
-		return nil, nil, fmt.Errorf("Failed to stablish stream to container %s", chaincode)
-	}
-
-	if err != nil {
-		return nil, nil, fmt.Errorf("Failed to retrieve chaincode spec(%s)", err)
-	}
+	cMsg.Decorations = cccid.ProposalDecorations
 
 	var ccMsg *pb.ChaincodeMessage
 	ccMsg, err = createCCMessage(cctyp, cccid.TxID, cMsg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("Failed to transaction message(%s)", err)
+		return nil, nil, errors.WithMessage(err, "failed to create chaincode message")
 	}
 
 	resp, err := theChaincodeSupport.Execute(ctxt, cccid, ccMsg, theChaincodeSupport.executetimeout)
 	if err != nil {
 		// Rollback transaction
-		return nil, nil, fmt.Errorf("Failed to execute transaction (%s)", err)
+		return nil, nil, errors.WithMessage(err, "failed to execute transaction")
 	} else if resp == nil {
 		// Rollback transaction
-		return nil, nil, fmt.Errorf("Failed to receive a response for (%s)", cccid.TxID)
+		return nil, nil, errors.Errorf("failed to receive a response for txid (%s)", cccid.TxID)
 	}
 
 	if resp.ChaincodeEvent != nil {
@@ -84,18 +73,18 @@ func Execute(ctxt context.Context, cccid *ccprovider.CCContext, spec interface{}
 		res := &pb.Response{}
 		unmarshalErr := proto.Unmarshal(resp.Payload, res)
 		if unmarshalErr != nil {
-			return nil, nil, fmt.Errorf("Failed to unmarshal response for (%s): %s", cccid.TxID, unmarshalErr)
+			return nil, nil, errors.Wrap(unmarshalErr, fmt.Sprintf("failed to unmarshal response for txid (%s)", cccid.TxID))
 		}
 
 		// Success
 		return res, resp.ChaincodeEvent, nil
 	} else if resp.Type == pb.ChaincodeMessage_ERROR {
 		// Rollback transaction
-		return nil, resp.ChaincodeEvent, fmt.Errorf("Transaction returned with failure: %s", string(resp.Payload))
+		return nil, resp.ChaincodeEvent, errors.Errorf("transaction returned with failure: %s", string(resp.Payload))
 	}
 
 	//TODO - this should never happen ... a panic is more appropriate but will save that for future
-	return nil, nil, fmt.Errorf("receive a response for (%s) but in invalid state(%d)", cccid.TxID, resp.Type)
+	return nil, nil, errors.Errorf("receive a response for txid (%s) but in invalid state (%d)", cccid.TxID, resp.Type)
 }
 
 // ExecuteWithErrorFilter is similar to Execute, but filters error contained in chaincode response and returns Payload of response only.
@@ -103,7 +92,7 @@ func Execute(ctxt context.Context, cccid *ccprovider.CCContext, spec interface{}
 func ExecuteWithErrorFilter(ctxt context.Context, cccid *ccprovider.CCContext, spec interface{}) ([]byte, *pb.ChaincodeEvent, error) {
 	res, event, err := Execute(ctxt, cccid, spec)
 	if err != nil {
-		chaincodeLogger.Errorf("ExecuteWithErrorFilter %s error: %s", cccid.Name, err)
+		chaincodeLogger.Errorf("ExecuteWithErrorFilter %s error: %+v", cccid.Name, err)
 		return nil, nil, err
 	}
 
@@ -113,28 +102,8 @@ func ExecuteWithErrorFilter(ctxt context.Context, cccid *ccprovider.CCContext, s
 	}
 
 	if res.Status != shim.OK {
-		return nil, nil, fmt.Errorf("%s", res.Message)
+		return nil, nil, errors.New(res.Message)
 	}
 
 	return res.Payload, event, nil
-}
-
-// GetSecureContext returns the security context from the context object or error
-// Security context is nil if security is off from core.yaml file
-// func GetSecureContext(ctxt context.Context) (crypto.Peer, error) {
-// 	var err error
-// 	temp := ctxt.Value("security")
-// 	if nil != temp {
-// 		if secCxt, ok := temp.(crypto.Peer); ok {
-// 			return secCxt, nil
-// 		}
-// 		err = errors.New("Failed to convert security context type")
-// 	}
-// 	return nil, err
-// }
-
-var errFailedToGetChainCodeSpecForTransaction = errors.New("Failed to get ChainCodeSpec from Transaction")
-
-func sendTxRejectedEvent(tx *pb.Transaction, errorMsg string) {
-	producer.Send(producer.CreateRejectionEvent(tx, errorMsg))
 }

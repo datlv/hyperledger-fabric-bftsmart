@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 
+	configtxtest "github.com/hyperledger/fabric/common/configtx/test"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/example"
 	"github.com/hyperledger/fabric/core/ledger/ledgerconfig"
@@ -46,15 +47,17 @@ var accounts = []string{"account1", "account2", "account3", "account4"}
 func init() {
 
 	//call a helper method to load the core.yaml
-	testutil.SetupCoreYAMLConfig("./../../../../../peer")
+	testutil.SetupCoreYAMLConfig()
 
 	// Initialization will get a handle to the ledger at the specified path
 	// Note, if subledgers are supported in the future,
 	// the various ledgers could be created/managed at this level
 	cleanup()
-	ledgermgmt.Initialize()
+	ledgermgmt.Initialize(nil)
 	var err error
-	peerLedger, err = ledgermgmt.CreateLedger(ledgerID)
+
+	gb, _ := configtxtest.MakeGenesisBlock(ledgerID)
+	peerLedger, err = ledgermgmt.CreateLedger(gb)
 	if err != nil {
 		panic(fmt.Errorf("Error in NewKVLedger(): %s", err))
 	}

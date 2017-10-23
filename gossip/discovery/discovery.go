@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package discovery
@@ -80,6 +70,7 @@ type NetworkMember struct {
 	Metadata         []byte
 	PKIid            common.PKIidType
 	InternalEndpoint string
+	Properties       *proto.Properties
 }
 
 // String returns a string representation of the NetworkMember
@@ -90,12 +81,22 @@ func (n *NetworkMember) String() string {
 // PreferredEndpoint computes the endpoint to connect to,
 // while preferring internal endpoint over the standard
 // endpoint
-func (nm NetworkMember) PreferredEndpoint() string {
-	if nm.InternalEndpoint != "" {
-		return nm.InternalEndpoint
+func (n NetworkMember) PreferredEndpoint() string {
+	if n.InternalEndpoint != "" {
+		return n.InternalEndpoint
 	}
-	return nm.Endpoint
+	return n.Endpoint
 }
+
+// PeerIdentification encompasses a remote peer's
+// PKI-ID and whether its in the same org as the current
+// peer or not
+type PeerIdentification struct {
+	ID      common.PKIidType
+	SelfOrg bool
+}
+
+type identifier func() (*PeerIdentification, error)
 
 // Discovery is the interface that represents a discovery module
 type Discovery interface {
@@ -123,7 +124,8 @@ type Discovery interface {
 	InitiateSync(peerNum int)
 
 	// Connect makes this instance to connect to a remote instance
-	// The sendInternalEndpoint param determines whether or not
-	// to include the internal endpoint in the membership request,
-	Connect(member NetworkMember, sendInternalEndpoint func() bool)
+	// The identifier param is a function that can be used to identify
+	// the peer, and to assert its PKI-ID, whether its in the peer's org or not,
+	// and whether the action was successful or not
+	Connect(member NetworkMember, id identifier)
 }

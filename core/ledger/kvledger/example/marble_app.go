@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hyperledger/fabric/common/util"
 	ledger "github.com/hyperledger/fabric/core/ledger"
 
 	"github.com/hyperledger/fabric/protos/common"
@@ -40,9 +41,6 @@ type MarbleApp struct {
 func ConstructMarbleAppInstance(ledger ledger.PeerLedger) *MarbleApp {
 	return &MarbleApp{"marbles_app", ledger}
 }
-
-var marbleIndexStr = "_marbleindex" //name for the key/value that will store a list of all known marbles
-var openTradesStr = "_opentrades"   //name for the key/value that will store all open trades
 
 type Marble struct {
 	Name  string `json:"asset_name"` //the fieldtags are needed to keep case from bouncing around
@@ -65,19 +63,23 @@ func (marbleApp *MarbleApp) CreateMarble(args []string) (*common.Envelope, error
 	}
 
 	var txSimulator ledger.TxSimulator
-	if txSimulator, err = marbleApp.ledger.NewTxSimulator(); err != nil {
+	if txSimulator, err = marbleApp.ledger.NewTxSimulator(util.GenerateUUID()); err != nil {
 		return nil, err
 	}
 	defer txSimulator.Done()
 
 	txSimulator.SetState(marbleApp.name, marbleName, marbleJsonBytes)
 
-	var txSimulationResults []byte
+	var txSimulationResults *ledger.TxSimulationResults
 	if txSimulationResults, err = txSimulator.GetTxSimulationResults(); err != nil {
 		return nil, err
 	}
 	logger.Debugf("CreateMarble() simulation done, packaging into a transaction...")
-	tx := constructTransaction(txSimulationResults)
+	var pubSimBytes []byte
+	if pubSimBytes, err = txSimulationResults.GetPubSimulationBytes(); err != nil {
+		return nil, err
+	}
+	tx := constructTransaction(pubSimBytes)
 	logger.Debugf("Exiting CreateMarble()")
 	return tx, nil
 }
@@ -137,7 +139,7 @@ func (marbleApp *MarbleApp) TransferMarble(args []string) (*common.Envelope, err
 	logger.Debugf("Entering ----------TransferMarble----------")
 	var txSimulator ledger.TxSimulator
 	var err error
-	if txSimulator, err = marbleApp.ledger.NewTxSimulator(); err != nil {
+	if txSimulator, err = marbleApp.ledger.NewTxSimulator(util.GenerateUUID()); err != nil {
 		return nil, err
 	}
 	defer txSimulator.Done()
@@ -168,11 +170,15 @@ func (marbleApp *MarbleApp) TransferMarble(args []string) (*common.Envelope, err
 		return nil, err
 	}
 
-	var txSimulationResults []byte
+	var txSimulationResults *ledger.TxSimulationResults
 	if txSimulationResults, err = txSimulator.GetTxSimulationResults(); err != nil {
 		return nil, err
 	}
 	logger.Debugf("TransferMarble() simulation done, packaging into a transaction...")
-	tx := constructTransaction(txSimulationResults)
+	var pubSimBytes []byte
+	if pubSimBytes, err = txSimulationResults.GetPubSimulationBytes(); err != nil {
+		return nil, err
+	}
+	tx := constructTransaction(pubSimBytes)
 	return tx, nil
 }

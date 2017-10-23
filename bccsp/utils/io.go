@@ -1,5 +1,5 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. 2017 All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import (
 	"os"
 )
 
-// DirMissingOrEmpty checks is a directory is missin or empty
+// DirMissingOrEmpty checks is a directory is missing or empty
 func DirMissingOrEmpty(path string) (bool, error) {
 	dirExists, err := DirExists(path)
 	if err != nil {

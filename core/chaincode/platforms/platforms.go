@@ -27,13 +27,15 @@ import (
 
 	"io/ioutil"
 
+	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/metadata"
 	"github.com/hyperledger/fabric/core/chaincode/platforms/car"
 	"github.com/hyperledger/fabric/core/chaincode/platforms/golang"
 	"github.com/hyperledger/fabric/core/chaincode/platforms/java"
+	"github.com/hyperledger/fabric/core/chaincode/platforms/node"
+	"github.com/hyperledger/fabric/core/config"
 	cutil "github.com/hyperledger/fabric/core/container/util"
 	pb "github.com/hyperledger/fabric/protos/peer"
-	"github.com/op/go-logging"
 	"github.com/spf13/viper"
 )
 
@@ -47,7 +49,18 @@ type Platform interface {
 	GenerateDockerBuild(spec *pb.ChaincodeDeploymentSpec, tw *tar.Writer) error
 }
 
-var logger = logging.MustGetLogger("chaincode-platform")
+var logger = flogging.MustGetLogger("chaincode-platform")
+
+// Added for unit testing purposes
+var _Find = Find
+var _GetPath = config.GetPath
+var _VGetBool = viper.GetBool
+var _OSStat = os.Stat
+var _IOUtilReadFile = ioutil.ReadFile
+var _CUtilWriteBytesToPackage = cutil.WriteBytesToPackage
+var _getPeerTLSCert = getPeerTLSCert
+var _generateDockerfile = generateDockerfile
+var _generateDockerBuild = generateDockerBuild
 
 // Find returns the platform interface for the given platform type
 func Find(chaincodeType pb.ChaincodeSpec_Type) (Platform, error) {
@@ -59,6 +72,8 @@ func Find(chaincodeType pb.ChaincodeSpec_Type) (Platform, error) {
 		return &car.Platform{}, nil
 	case pb.ChaincodeSpec_JAVA:
 		return &java.Platform{}, nil
+	case pb.ChaincodeSpec_NODE:
+		return &node.Platform{}, nil
 	default:
 		return nil, fmt.Errorf("Unknown chaincodeType: %s", chaincodeType)
 	}
@@ -66,7 +81,7 @@ func Find(chaincodeType pb.ChaincodeSpec_Type) (Platform, error) {
 }
 
 func GetDeploymentPayload(spec *pb.ChaincodeSpec) ([]byte, error) {
-	platform, err := Find(spec.Type)
+	platform, err := _Find(spec.Type)
 	if err != nil {
 		return nil, err
 	}
@@ -76,23 +91,23 @@ func GetDeploymentPayload(spec *pb.ChaincodeSpec) ([]byte, error) {
 
 func getPeerTLSCert() ([]byte, error) {
 
-	if viper.GetBool("peer.tls.enabled") == false {
+	if _VGetBool("peer.tls.enabled") == false {
 		// no need for certificates if TLS is not enabled
 		return nil, nil
 	}
 	var path string
 	// first we check for the rootcert
-	path = viper.GetString("peer.tls.rootcert.file")
+	path = _GetPath("peer.tls.rootcert.file")
 	if path == "" {
 		// check for tls cert
-		path = viper.GetString("peer.tls.cert.file")
+		path = _GetPath("peer.tls.cert.file")
 	}
 	// this should not happen if the peer is running with TLS enabled
-	if _, err := os.Stat(path); err != nil {
+	if _, err := _OSStat(path); err != nil {
 		return nil, err
 	}
 	// FIXME: FAB-2037 - ensure we sanely resolve relative paths specified in the yaml
-	return ioutil.ReadFile(path)
+	return _IOUtilReadFile(path)
 }
 
 func generateDockerfile(platform Platform, cds *pb.ChaincodeDeploymentSpec, tls bool) ([]byte, error) {
@@ -106,7 +121,6 @@ func generateDockerfile(platform Platform, cds *pb.ChaincodeDeploymentSpec, tls 
 	if err != nil {
 		return nil, fmt.Errorf("Failed to generate platform-specific Dockerfile: %s", err)
 	}
-
 	buf = append(buf, base)
 
 	// ----------------------------------------------------------------------------------------------------
@@ -121,6 +135,9 @@ func generateDockerfile(platform Platform, cds *pb.ChaincodeDeploymentSpec, tls 
 	// ----------------------------------------------------------------------------------------------------
 	// Then augment it with any general options
 	// ----------------------------------------------------------------------------------------------------
+	//append version so chaincode build version can be compared against peer build version
+	buf = append(buf, fmt.Sprintf("ENV CORE_CHAINCODE_BUILDLEVEL=%s", metadata.Version))
+
 	if tls {
 		const guestTLSPath = "/etc/hyperledger/fabric/peer.crt"
 
@@ -147,7 +164,7 @@ func generateDockerBuild(platform Platform, cds *pb.ChaincodeDeploymentSpec, inp
 	// First stream out our static inputFiles
 	// ----------------------------------------------------------------------------------------------------
 	for name, data := range inputFiles {
-		err = cutil.WriteBytesToPackage(name, data, tw)
+		err = _CUtilWriteBytesToPackage(name, data, tw)
 		if err != nil {
 			return fmt.Errorf("Failed to inject \"%s\": %s", name, err)
 		}
@@ -171,7 +188,7 @@ func GenerateDockerBuild(cds *pb.ChaincodeDeploymentSpec) (io.Reader, error) {
 	// ----------------------------------------------------------------------------------------------------
 	// Determine our platform driver from the spec
 	// ----------------------------------------------------------------------------------------------------
-	platform, err := Find(cds.ChaincodeSpec.Type)
+	platform, err := _Find(cds.ChaincodeSpec.Type)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to determine platform type: %s", err)
 	}
@@ -183,7 +200,7 @@ func GenerateDockerBuild(cds *pb.ChaincodeDeploymentSpec) (io.Reader, error) {
 	// found, regardless of whether TLS is enabled or not.  The main implication is that if the administrator
 	// updates the peer cert, the chaincode containers will need to be invalidated and rebuilt.
 	// We will manage enabling or disabling TLS at container run time via CORE_PEER_TLS_ENABLED
-	cert, err := getPeerTLSCert()
+	cert, err := _getPeerTLSCert()
 	if err != nil {
 		return nil, fmt.Errorf("Failed to read the TLS certificate: %s", err)
 	}
@@ -193,7 +210,7 @@ func GenerateDockerBuild(cds *pb.ChaincodeDeploymentSpec) (io.Reader, error) {
 	// ----------------------------------------------------------------------------------------------------
 	// Generate the Dockerfile specific to our context
 	// ----------------------------------------------------------------------------------------------------
-	dockerFile, err := generateDockerfile(platform, cds, cert != nil)
+	dockerFile, err := _generateDockerfile(platform, cds, cert != nil)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to generate a Dockerfile: %s", err)
 	}
@@ -208,8 +225,7 @@ func GenerateDockerBuild(cds *pb.ChaincodeDeploymentSpec) (io.Reader, error) {
 	go func() {
 		gw := gzip.NewWriter(output)
 		tw := tar.NewWriter(gw)
-
-		err := generateDockerBuild(platform, cds, inputFiles, tw)
+		err := _generateDockerBuild(platform, cds, inputFiles, tw)
 		if err != nil {
 			logger.Error(err)
 		}

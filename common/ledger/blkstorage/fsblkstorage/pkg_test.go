@@ -23,11 +23,17 @@ import (
 	"os"
 	"testing"
 
+	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/ledger/blkstorage"
 	"github.com/hyperledger/fabric/common/ledger/testutil"
 
 	"github.com/hyperledger/fabric/protos/common"
 )
+
+func TestMain(m *testing.M) {
+	flogging.SetModuleLevel("fsblkstorage", "debug")
+	os.Exit(m.Run())
+}
 
 func testPath() string {
 	if path, err := ioutil.TempDir("", "fsblkstorage-"); err != nil {
@@ -100,7 +106,7 @@ func (w *testBlockfileMgrWrapper) testGetBlockByNumber(blocks []*common.Block, s
 	for i := 0; i < len(blocks); i++ {
 		b, err := w.blockfileMgr.retrieveBlockByNumber(startingNum + uint64(i))
 		testutil.AssertNoError(w.t, err, fmt.Sprintf("Error while retrieving [%d]th block from blockfileMgr", i))
-		testutil.AssertEquals(w.t, b, blocks[i])
+		testutil.AssertEquals(w.t, b.Header, blocks[i].Header)
 	}
 	// test getting the last block
 	b, err := w.blockfileMgr.retrieveBlockByNumber(math.MaxUint64)

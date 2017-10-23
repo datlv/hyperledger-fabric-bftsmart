@@ -1,82 +1,81 @@
 # What is block-listener
-block-listener.go will connect to a peer and receive blocks events, transaction rejection events and chaincode events (if a chaincode emits events).
+block-listener.go connects to a peer in order to receive block and chaincode
+events (if there are chaincode events being sent).
 
 # To Run
 ```sh
 1. go build
 
-2. ./block-listener -events-address=< event address > -listen-to-rejections=< true | false > -events-from-chaincode=< chaincode ID >
+2. ./block-listener -events-address=<peer-address> -events-from-chaincode=<chaincode-id> -events-mspdir=<msp-directory> -events-mspid=<msp-id>
 ```
+Please note that the default MSP under fabric/sampleconfig will be used if no
+MSP parameters are provided.
 
-# Example with PBFT
+# Example with the e2e_cli example
+The block listener can be used with TLS enabled or disabled. By default,
+the e2e_cli example will have TLS enabled. In order to allow the
+block-listener sample to connect to peers on e2e_cli example with a TLS
+enabled, the easiest way would be to map 127.0.0.1 to the hostname of peer
+that you are connecting to, such as peer0.org1.example.com. For example on
+\*nix based systems this would be an entry in /etc/hosts file.
 
-## Run 4 docker peers with PBFT
+If you would prefer to disable TLS, you may do so by setting
+CORE_PEER_TLS_ENABLED=***false*** in ``docker-compose-cli.yaml`` and
+``base/peer-base.yaml`` as well as
+ORDERER_GENERAL_TLS_ENABLED=***false*** in``base/docker-compose-base.yaml``.
+
+Next, run the [e2e_cli example](https://github.com/hyperledger/fabric/tree/master/examples/e2e_cli).
+
+Once the "All in one" command:
 ```sh
-docker run --rm -it -e CORE_VM_ENDPOINT=http://172.17.0.1:2375 -e CORE_PEER_ID=vp0 -e CORE_PEER_ADDRESSAUTODETECT=true -e CORE_PEER_VALIDATOR_CONSENSUS_PLUGIN=pbft hyperledger/fabric-peer peer node start
-
-docker run --rm -it -e CORE_VM_ENDPOINT=http://172.17.0.1:2375 -e CORE_PEER_ID=vp1 -e CORE_PEER_ADDRESSAUTODETECT=true -e CORE_PEER_DISCOVERY_ROOTNODE=172.17.0.2:7051 -e CORE_PEER_VALIDATOR_CONSENSUS_PLUGIN=pbft hyperledger/fabric-peer peer node start
-
-docker run --rm -it -e CORE_VM_ENDPOINT=http://172.17.0.1:2375 -e CORE_PEER_ID=vp2 -e CORE_PEER_ADDRESSAUTODETECT=true -e CORE_PEER_DISCOVERY_ROOTNODE=172.17.0.2:7051 -e CORE_PEER_VALIDATOR_CONSENSUS_PLUGIN=pbft hyperledger/fabric-peer peer node start
-
-docker run --rm -it -e CORE_VM_ENDPOINT=http://172.17.0.1:2375 -e CORE_PEER_ID=vp3 -e CORE_PEER_ADDRESSAUTODETECT=true -e CORE_PEER_DISCOVERY_ROOTNODE=172.17.0.2:7051 -e CORE_PEER_VALIDATOR_CONSENSUS_PLUGIN=pbft hyperledger/fabric-peer peer node start
-
-## Attach event client to a Peer
+./network_setup.sh up
+```
+has completed, attach the event client to peer peer0.org1.example.com by doing
+the following (assuming you are running block-listener in the host environment)
+if TLS is enabled:
 ```sh
-./block-listener -events-address=172.17.0.2:7053 -listen-to-rejections=true
+CORE_PEER_TLS_ENABLED=true CORE_PEER_TLS_ROOTCERT_FILE=$GOPATH/src/github.com/hyperledger/fabric/examples/e2e_cli/crypto-config/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls/ca.crt ./block-listener -events-address=peer0.org1.example.com:7053 -events-mspdir=$GOPATH/src/github.com/hyperledger/fabric/examples/e2e_cli/crypto-config/peerOrganizations/org1.example.com/users/Admin@org1.example.com/msp -events-mspid=Org1MSP
 ```
 
-Event client should output "Event Address: 172.17.0.2:7053" and wait for events.
-
-## Create a deploy transaction
-Submit a transaction to deploy chaincode_example02.
-
+If TLS is disabled, you can simply run:
 ```sh
-CORE_PEER_ADDRESS=172.17.0.2:7051 peer chaincode deploy -p github.com/hyperledger/fabric/examples/chaincode/go/chaincode_example02 -c '{"Function":"init", "Args": ["a","100", "b", "200"]}'
+./block-listener -events-address=peer0.org1.example.com:7053 -events-mspdir=$GOPATH/src/github.com/hyperledger/fabric/examples/e2e_cli/crypto-config/peerOrganizations/org1.example.com/users/Admin@org1.example.com/msp -events-mspid=Org1MSP
 ```
 
-Notice success transaction in the events client.
+The event client should output "Event Address: peer0.org1.example.com:7053"
+and wait for events.
 
-## Create an invoke transaction - good
-Send a valid invoke transaction to chaincode_example02.
-
-```sh
-CORE_PEER_ADDRESS=172.17.0.2:7051 peer chaincode invoke -n 1edd7021ab71b766f4928a9ef91182c018dffb86fef7a4b5a5516ac590a87957e21a62d939df817f5105f524abddcddfc7b1a60d780f02d8235bd7af9db81b66 -c '{"Function":"invoke", "Args": ["a","b","10"]}'
-```
-Notice success transaction in events client.
-
-## Create an invoke transaction - bad
-Send an invoke transaction with invalid parameters to chaincode_example02.
-
-```sh
-CORE_PEER_ADDRESS=172.17.0.2:7051 peer chaincode invoke -n 1edd7021ab71b766f4928a9ef91182c018dffb86fef7a4b5a5516ac590a87957e21a62d939df817f5105f524abddcddfc7b1a60d780f02d8235bd7af9db81b66 -c '{"Function":"invoke", "Args": ["a","b"]}'
-```
-
-Notice error transaction in events client.
-
-# Tesing chaincode events
-Chaincode github.com/hyperledger/fabric/examples/chaincode/go/eventsender can be used to test event sender.
-## Deploy eventsender chaincode
-Stop the event listener and restart it as follows  
-
-```
-CORE_PEER_ADDRESS=172.17.0.2:7051 ./peer chaincode deploy -p github.com/hyperledger/fabric/examples/chaincode/go/eventsender -c '{"Function":"init", "Args":[]}'
-```
-
-```
-Note the chaincode ID of the eventsender chaincode. This will be used in the commands below.
-```
-## Restart event listener
-Stop the event listener if running and restart it with `-events-from-chaincode` option
+Exec into the cli container:
 
 ```sh
-./block-listener -events-address=172.17.0.2:7053 -listen-to-rejections=true -events-from-chaincode=< event sender chaincode ID>
+docker exec -it cli bash
 ```
 
-
-##Send an invoke request to event sender
-
+Next, setup the environment variables for peer0.org1.example.com.
+If TLS is enabled:
 ```sh
-CORE_PEER_ADDRESS=172.17.0.2:7051 ./peer chaincode invoke -n < eventsender chaincode ID > -c '{"Function":"greet", "Args":["hello","world"]}'
+CORE_PEER_MSPCONFIGPATH=$GOPATH/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/org1.example.com/users/Admin@org1.example.com/msp
+CORE_PEER_ADDRESS=peer0.org1.example.com:7051
+CORE_PEER_LOCALMSPID="Org1MSP"
+ORDERER_CA=$GOPATH/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/example.com/tlsca/tlsca.example.com-cert.pem
+```
+If TLS is disabled:
+```sh
+CORE_PEER_MSPCONFIGPATH=$GOPATH/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/org1.example.com/users/Admin@org1.example.com/msp
+CORE_PEER_ADDRESS=peer0.org1.example.com:7051
+CORE_PEER_LOCALMSPID="Org1MSP"
 ```
 
-Note the output from the event listener terminal showing a chaincode event from the event sender chaincode in addition to the block event generated by the transaction.
+Create an invoke transaction. If TLS is enabled:
+```sh
+peer chaincode invoke -o orderer.example.com:7050 --tls $CORE_PEER_TLS_ENABLED --cafile $ORDERER_CA -C mychannel -n mycc -c '{"Args":["invoke","a","b","10"]}'
+```
+If TLS is disabled:
+```sh
+peer chaincode invoke -o orderer.example.com:7050 -C mychannel -n mycc -c '{"Args":["invoke","a","b","10"]}'
+```
+Now you should see the block content displayed in the terminal running the block
+listener.
+
+
+<a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" style="border-width:0" src="https://i.creativecommons.org/l/by/4.0/88x31.png" /></a><br />This work is licensed under a <a rel="license" href="http://creativecommons.org/licenses/by/4.0/">Creative Commons Attribution 4.0 International License</a>.

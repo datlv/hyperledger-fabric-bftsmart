@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package election
@@ -103,6 +93,10 @@ type LeaderElectionService interface {
 
 	// Stop stops the LeaderElectionService
 	Stop()
+
+	// Yield relinquishes the leadership until a new leader is elected,
+	// or a timeout expires
+	Yield()
 }
 
 type peerID []byte
@@ -160,10 +154,12 @@ type leaderElectionSvcImpl struct {
 	isLeader      int32
 	toDie         int32
 	leaderExists  int32
+	yield         int32
 	sleeping      bool
 	adapter       LeaderElectionAdapter
 	logger        *logging.Logger
 	callback      leadershipCallback
+	yieldTimer    *time.Timer
 }
 
 func (le *leaderElectionSvcImpl) start() {
@@ -249,6 +245,11 @@ func (le *leaderElectionSvcImpl) run() {
 		if !le.isLeaderExists() {
 			le.leaderElection()
 		}
+		// If we are yielding and some leader has been elected,
+		// stop yielding
+		if le.isLeaderExists() && le.isYielding() {
+			le.stopYielding()
+		}
 		if le.shouldStop() {
 			return
 		}
@@ -263,12 +264,24 @@ func (le *leaderElectionSvcImpl) run() {
 func (le *leaderElectionSvcImpl) leaderElection() {
 	le.logger.Debug(le.id, ": Entering")
 	defer le.logger.Debug(le.id, ": Exiting")
+	// If we're yielding to other peers, do not participate
+	// in leader election
+	if le.isYielding() {
+		return
+	}
+	// Propose ourselves as a leader
 	le.propose()
+	// Collect other proposals
 	le.waitForInterrupt(getLeaderElectionDuration())
 	// If someone declared itself as a leader, give up
 	// on trying to become a leader too
 	if le.isLeaderExists() {
-		le.logger.Debug(le.id, ": Some peer is already a leader")
+		le.logger.Info(le.id, ": Some peer is already a leader")
+		return
+	}
+
+	if le.isYielding() {
+		le.logger.Debug(le.id, ": Aborting leader election because yielding")
 		return
 	}
 	// Leader doesn't exist, let's see if there is a better candidate than us
@@ -359,19 +372,51 @@ func (le *leaderElectionSvcImpl) IsLeader() bool {
 }
 
 func (le *leaderElectionSvcImpl) beLeader() {
-	le.logger.Debug(le.id, ": Becoming a leader")
+	le.logger.Info(le.id, ": Becoming a leader")
 	atomic.StoreInt32(&le.isLeader, int32(1))
 	le.callback(true)
 }
 
 func (le *leaderElectionSvcImpl) stopBeingLeader() {
-	le.logger.Debug(le.id, "Stopped being a leader")
+	le.logger.Info(le.id, "Stopped being a leader")
 	atomic.StoreInt32(&le.isLeader, int32(0))
 	le.callback(false)
 }
 
 func (le *leaderElectionSvcImpl) shouldStop() bool {
 	return atomic.LoadInt32(&le.toDie) == int32(1)
+}
+
+func (le *leaderElectionSvcImpl) isYielding() bool {
+	return atomic.LoadInt32(&le.yield) == int32(1)
+}
+
+func (le *leaderElectionSvcImpl) stopYielding() {
+	le.logger.Debug("Stopped yielding")
+	le.Lock()
+	defer le.Unlock()
+	atomic.StoreInt32(&le.yield, int32(0))
+	le.yieldTimer.Stop()
+}
+
+// Yield relinquishes the leadership until a new leader is elected,
+// or a timeout expires
+func (le *leaderElectionSvcImpl) Yield() {
+	le.Lock()
+	defer le.Unlock()
+	if !le.IsLeader() || le.isYielding() {
+		return
+	}
+	// Turn on the yield flag
+	atomic.StoreInt32(&le.yield, int32(1))
+	// Stop being a leader
+	le.stopBeingLeader()
+	// Clear the leader exists flag since it could be that we are the leader
+	atomic.StoreInt32(&le.leaderExists, int32(0))
+	// Clear the yield flag in any case afterwards
+	le.yieldTimer = time.AfterFunc(getLeaderAliveThreshold()*6, func() {
+		atomic.StoreInt32(&le.yield, int32(0))
+	})
 }
 
 // Stop stops the LeaderElectionService
@@ -383,18 +428,25 @@ func (le *leaderElectionSvcImpl) Stop() {
 	le.stopWG.Wait()
 }
 
+// SetStartupGracePeriod configures startup grace period interval,
+// the period of time to wait until election algorithm will start
 func SetStartupGracePeriod(t time.Duration) {
 	viper.Set("peer.gossip.election.startupGracePeriod", t)
 }
 
+// SetMembershipSampleInterval setups/initializes the frequency the
+// membership view should be checked
 func SetMembershipSampleInterval(t time.Duration) {
 	viper.Set("peer.gossip.election.membershipSampleInterval", t)
 }
 
+// SetLeaderAliveThreshold configures leader election alive threshold
 func SetLeaderAliveThreshold(t time.Duration) {
 	viper.Set("peer.gossip.election.leaderAliveThreshold", t)
 }
 
+// SetLeaderElectionDuration configures expected leadership election duration,
+// interval to wait until leader election will be completed
 func SetLeaderElectionDuration(t time.Duration) {
 	viper.Set("peer.gossip.election.leaderElectionDuration", t)
 }
@@ -417,4 +469,9 @@ func getLeadershipDeclarationInterval() time.Duration {
 
 func getLeaderElectionDuration() time.Duration {
 	return util.GetDurationOrDefault("peer.gossip.election.leaderElectionDuration", time.Second*5)
+}
+
+// GetMsgExpirationTimeout return leadership message expiration timeout
+func GetMsgExpirationTimeout() time.Duration {
+	return getLeaderAliveThreshold() * 10
 }

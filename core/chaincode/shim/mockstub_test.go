@@ -22,6 +22,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/spf13/viper"
 )
 
@@ -88,12 +89,12 @@ func TestSetupChaincodeLogging_blankLevel(t *testing.T) {
 	testLogLevelString := ""
 	testLogFormat := "%{color}%{time:2006-01-02 15:04:05.000 MST} [%{module}] %{shortfunc} -> %{level:.4s} %{id:03x}%{color:reset} %{message}"
 
-	viper.Set("chaincode.logLevel", testLogLevelString)
-	viper.Set("chaincode.logFormat", testLogFormat)
+	viper.Set("chaincode.logging.level", testLogLevelString)
+	viper.Set("chaincode.logging.format", testLogFormat)
 
 	SetupChaincodeLogging()
 
-	if !IsEnabledForLogLevel("info") {
+	if !IsEnabledForLogLevel(flogging.DefaultLevel()) {
 		t.FailNow()
 	}
 }
@@ -102,15 +103,17 @@ func TestSetupChaincodeLogging_blankLevel(t *testing.T) {
 // set the chaincodeLogger's logging format and level
 func TestSetupChaincodeLogging(t *testing.T) {
 	// set log level to a non-default level
-	testLogLevelString := "debug"
+	testLogLevel := "debug"
+	testShimLogLevel := "warning"
 	testLogFormat := "%{color}%{time:2006-01-02 15:04:05.000 MST} [%{module}] %{shortfunc} -> %{level:.4s} %{id:03x}%{color:reset} %{message}"
 
-	viper.Set("chaincode.logLevel", testLogLevelString)
-	viper.Set("chaincode.logFormat", testLogFormat)
+	viper.Set("chaincode.logging.level", testLogLevel)
+	viper.Set("chaincode.logging.format", testLogFormat)
+	viper.Set("chaincode.logging.shim", testShimLogLevel)
 
 	SetupChaincodeLogging()
 
-	if !IsEnabledForLogLevel(testLogLevelString) {
+	if !IsEnabledForLogLevel(testShimLogLevel) {
 		t.FailNow()
 	}
 }
@@ -230,4 +233,40 @@ func TestGetTxTimestamp(t *testing.T) {
 	}
 
 	stub.MockTransactionEnd("init")
+}
+
+//TestMockMock clearly cheating for coverage... but not. Mock should
+//be tucked away under common/mocks package which is not
+//included for coverage. Moving mockstub to another package
+//will cause upheaval in other code best dealt with separately
+//For now, call all the methods to get mock covered in this
+//package
+func TestMockMock(t *testing.T) {
+	stub := NewMockStub("MOCKMOCK", &shimTestCC{})
+	stub.args = [][]byte{[]byte("a"), []byte("b")}
+	stub.MockInit("id", nil)
+	stub.GetArgs()
+	stub.GetStringArgs()
+	stub.GetFunctionAndParameters()
+	stub.GetTxID()
+	stub.MockInvoke("id", nil)
+	stub.MockInvokeWithSignedProposal("id", nil, nil)
+	stub.DelState("dummy")
+	stub.GetStateByRange("start", "end")
+	stub.GetQueryResult("q")
+	stub2 := NewMockStub("othercc", &shimTestCC{})
+	stub.MockPeerChaincode("othercc/mychan", stub2)
+	stub.InvokeChaincode("othercc", nil, "mychan")
+	stub.GetCreator()
+	stub.GetTransient()
+	stub.GetBinding()
+	stub.GetSignedProposal()
+	stub.GetArgsSlice()
+	stub.SetEvent("e", nil)
+	stub.GetHistoryForKey("k")
+	iter := &MockStateRangeQueryIterator{}
+	iter.HasNext()
+	iter.Close()
+	getBytes("f", []string{"a", "b"})
+	getFuncArgs([][]byte{[]byte("a")})
 }

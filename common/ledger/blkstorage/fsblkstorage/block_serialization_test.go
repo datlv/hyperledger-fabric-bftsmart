@@ -25,7 +25,7 @@ import (
 )
 
 func TestBlockSerialization(t *testing.T) {
-	block := testutil.ConstructTestBlock(t, 10, 100)
+	block := testutil.ConstructTestBlock(t, 1, 10, 100)
 	bb, _, err := serializeBlock(block)
 	testutil.AssertNoError(t, err, "")
 	deserializedBlock, err := deserializeBlock(bb)
@@ -34,7 +34,7 @@ func TestBlockSerialization(t *testing.T) {
 }
 
 func TestExtractTxid(t *testing.T) {
-	txEnv, txid, _ := testutil.ConstructTransaction(t, testutil.ConstructRandomBytes(t, 50), false)
+	txEnv, txid, _ := testutil.ConstructTransaction(t, testutil.ConstructRandomBytes(t, 50), "", false)
 	txEnvBytes, _ := putils.GetBytesEnvelope(txEnv)
 	extractedTxid, err := extractTxID(txEnvBytes)
 	testutil.AssertNoError(t, err, "")
@@ -42,7 +42,7 @@ func TestExtractTxid(t *testing.T) {
 }
 
 func TestSerializedBlockInfo(t *testing.T) {
-	block := testutil.ConstructTestBlock(t, 10, 100)
+	block := testutil.ConstructTestBlock(t, 1, 10, 100)
 	bb, info, err := serializeBlock(block)
 	testutil.AssertNoError(t, err, "")
 	infoFromBB, err := extractSerializedBlockInfo(bb)
@@ -59,8 +59,8 @@ func TestSerializedBlockInfo(t *testing.T) {
 
 		testutil.AssertEquals(t, txid, indexTxID)
 		b := bb[indexOffset.offset:]
-		len, num := proto.DecodeVarint(b)
-		txEnvBytesFromBB := b[num : num+int(len)]
+		length, num := proto.DecodeVarint(b)
+		txEnvBytesFromBB := b[num : num+int(length)]
 		testutil.AssertEquals(t, txEnvBytesFromBB, txEnvBytes)
 	}
 }

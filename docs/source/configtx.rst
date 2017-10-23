@@ -71,13 +71,13 @@ policies. It is defined as follows:
         string mod_policy = 5;
     }
 
-Because ``ConfigGroup`` is a recursive structure, consider an example
-hierarchical arrangement of ``ConfigGroup``s (expressed for clarity in
-golang notation).
+Because ``ConfigGroup`` is a recursive structure, it has hierarchical
+arrangement. The following example is expressed for clarity in golang
+notation.
 
 ::
 
-    // Assume the the following groups are defined
+    // Assume the following groups are defined
     var root, child1, child2, grandChild1, grandChild2, grandChild3 *ConfigGroup
 
     // Set the following values
@@ -136,7 +136,7 @@ we use the golang map reference syntax, so
 
 * ``policy1`` maps to ``Channel.Groups["Application"].Policies["policy1"]``
 * ``Org1/policy2`` maps to
-``Channel.Groups["Application"].Groups["Org1"].Policies["policy2"]``
+  ``Channel.Groups["Application"].Groups["Org1"].Policies["policy2"]``
 * ``/Channel/policy3`` maps to ``Channel.Policies["policy3"]``
 
 Note that if a ``mod_policy`` references a policy which does not exist,
@@ -483,3 +483,7 @@ request and performs the following.
 6. The new ``CONFIG`` transaction with the new channel config is wrapped
    and sent for ordering on the ordering system channel. After ordering,
    the channel is created.
+
+.. Licensed under Creative Commons Attribution 4.0 International License
+   https://creativecommons.org/licenses/by/4.0/
+

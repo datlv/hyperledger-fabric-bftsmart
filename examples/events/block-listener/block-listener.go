@@ -21,12 +21,16 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/hyperledger/fabric/core/ledger/util"
 	"github.com/hyperledger/fabric/events/consumer"
+	"github.com/hyperledger/fabric/msp/mgmt"
+	"github.com/hyperledger/fabric/msp/mgmt/testtools"
 	"github.com/hyperledger/fabric/protos/common"
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/spf13/viper"
 )
 
 type adapter struct {
@@ -44,7 +48,7 @@ func (a *adapter) Recv(msg *pb.Event) (bool, error) {
 		a.notfy <- o
 		return true, nil
 	}
-	return false, fmt.Errorf("Receive unkown type event: %v", msg)
+	return false, fmt.Errorf("Receive unknown type event: %v", msg)
 }
 
 //Disconnected implements consumer.EventAdapter interface for disconnecting
@@ -60,7 +64,7 @@ func createEventClient(eventAddress string, _ string) *adapter {
 	adapter := &adapter{notfy: done}
 	obcEHClient, _ = consumer.NewEventsClient(eventAddress, 5, adapter)
 	if err := obcEHClient.Start(); err != nil {
-		fmt.Printf("could not start chat %s\n", err)
+		fmt.Printf("could not start chat. err: %s\n", err)
 		obcEHClient.Stop()
 		return nil
 	}
@@ -133,11 +137,37 @@ func getChainCodeEvents(tdata []byte) (*pb.ChaincodeEvent, error) {
 }
 
 func main() {
+	// For environment variables
+	viper.SetEnvPrefix("core")
+	viper.AutomaticEnv()
+	replacer := strings.NewReplacer(".", "_")
+	viper.SetEnvKeyReplacer(replacer)
+
 	var eventAddress string
 	var chaincodeID string
+	var mspDir string
+	var mspId string
 	flag.StringVar(&eventAddress, "events-address", "0.0.0.0:7053", "address of events server")
 	flag.StringVar(&chaincodeID, "events-from-chaincode", "", "listen to events from given chaincode")
+	flag.StringVar(&mspDir, "events-mspdir", "", "set up the msp direction")
+	flag.StringVar(&mspId, "events-mspid", "", "set up the mspid")
 	flag.Parse()
+
+	//if no msp info provided, we use the default MSP under fabric/sampleconfig
+	if mspDir == "" {
+		err := msptesttools.LoadMSPSetupForTesting()
+		if err != nil {
+			fmt.Printf("Could not initialize msp, err: %s\n", err)
+			os.Exit(-1)
+		}
+	} else {
+		//load msp info
+		err := mgmt.LoadLocalMsp(mspDir, nil, mspId)
+		if err != nil {
+			fmt.Printf("Could not initialize msp, err: %s\n", err)
+			os.Exit(-1)
+		}
+	}
 
 	fmt.Printf("Event Address: %s\n", eventAddress)
 
@@ -166,16 +196,16 @@ func main() {
 					if txsFltr.IsInvalid(i) {
 						fmt.Println("")
 						fmt.Println("")
-						fmt.Printf("Received invalid transaction from channel %s\n", chdr.ChannelId)
+						fmt.Printf("Received invalid transaction from channel '%s'\n", chdr.ChannelId)
 						fmt.Println("--------------")
 						fmt.Printf("Transaction invalid: TxID: %s\n", chdr.TxId)
 					} else {
-						fmt.Printf("Received transaction from channel %s: \n\t[%v]\n", chdr.ChannelId, tx)
+						fmt.Printf("Received transaction from channel '%s': \n\t[%v]\n", chdr.ChannelId, tx)
 						if event, err := getChainCodeEvents(r); err == nil {
 							if len(chaincodeID) != 0 && event.ChaincodeId == chaincodeID {
 								fmt.Println("")
 								fmt.Println("")
-								fmt.Printf("Received chaincode event from channel %s\n", chdr.ChannelId)
+								fmt.Printf("Received chaincode event from channel '%s'\n", chdr.ChannelId)
 								fmt.Println("------------------------")
 								fmt.Printf("Chaincode Event:%+v\n", event)
 							}

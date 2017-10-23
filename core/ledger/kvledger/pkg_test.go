@@ -20,7 +20,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/hyperledger/fabric/core/ledger/ledgerconfig"
+	"github.com/hyperledger/fabric/core/config"
 	"github.com/spf13/viper"
 )
 
@@ -29,13 +29,17 @@ type testEnv struct {
 }
 
 func newTestEnv(t testing.TB) *testEnv {
-	viper.Set("peer.fileSystemPath", "/tmp/fabric/ledgertests/kvledger")
+	return createTestEnv(t, "/tmp/fabric/ledgertests/kvledger")
+}
+
+func createTestEnv(t testing.TB, path string) *testEnv {
+	viper.Set("peer.fileSystemPath", path)
 	env := &testEnv{t}
 	env.cleanup()
 	return env
 }
 
 func (env *testEnv) cleanup() {
-	path := ledgerconfig.GetRootPath()
+	path := config.GetPath("peer.fileSystemPath")
 	os.RemoveAll(path)
 }

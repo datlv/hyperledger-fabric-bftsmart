@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2017 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package election
@@ -24,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hyperledger/fabric/core/config"
+	"github.com/hyperledger/fabric/gossip/util"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -35,7 +27,7 @@ const (
 )
 
 func init() {
-
+	util.SetupTestLogging()
 	SetStartupGracePeriod(time.Millisecond * 500)
 	SetMembershipSampleInterval(time.Millisecond * 100)
 	SetLeaderAliveThreshold(time.Millisecond * 500)
@@ -316,6 +308,70 @@ func TestLeadershipTakeover(t *testing.T) {
 	assert.Equal(t, "p2", leaders[0])
 }
 
+func TestYield(t *testing.T) {
+	t.Parallel()
+	// Scenario: Peers spawn and a leader is elected.
+	// After a while, the leader yields.
+	// (Call yield twice to ensure only one callback is called)
+	// Expected outcome:
+	// (1) A new leader is elected
+	// (2) The old leader doesn't take back its leadership
+	peers := createPeers(0, 0, 1, 2, 3, 4, 5)
+	leaders := waitForLeaderElection(t, peers)
+	assert.Len(t, leaders, 1, "Only 1 leader should have been elected")
+	assert.Equal(t, "p0", leaders[0])
+	peers[0].Yield()
+	// Ensure the callback was called with 'false'
+	assert.True(t, peers[0].isCallbackInvoked())
+	assert.False(t, peers[0].isLeaderFromCallback())
+	// Clear the callback invoked flag
+	peers[0].lock.Lock()
+	peers[0].callbackInvoked = false
+	peers[0].lock.Unlock()
+	// Yield again and ensure it isn't called again
+	peers[0].Yield()
+	assert.False(t, peers[0].isCallbackInvoked())
+
+	ensureP0isNotAleader := func() bool {
+		leaders := waitForLeaderElection(t, peers)
+		return len(leaders) == 1 && leaders[0] != "p0"
+	}
+	// A new leader is elected, and it is not p0
+	waitForBoolFunc(t, ensureP0isNotAleader, true)
+	time.Sleep(getLeaderAliveThreshold() * 2)
+	// After a while, p0 doesn't restore its leadership status
+	waitForBoolFunc(t, ensureP0isNotAleader, true)
+}
+
+func TestYieldSinglePeer(t *testing.T) {
+	t.Parallel()
+	// Scenario: spawn a single peer and have it yield.
+	// Ensure it recovers its leadership after a while.
+	peers := createPeers(0, 0)
+	waitForLeaderElection(t, peers)
+	peers[0].Yield()
+	assert.False(t, peers[0].IsLeader())
+	waitForLeaderElection(t, peers)
+}
+
+func TestYieldAllPeers(t *testing.T) {
+	t.Parallel()
+	// Scenario: spawn 2 peers and have them all yield after regaining leadership.
+	// Ensure the first peer is the leader in the end after both peers yield
+	peers := createPeers(0, 0, 1)
+	leaders := waitForLeaderElection(t, peers)
+	assert.Len(t, leaders, 1, "Only 1 leader should have been elected")
+	assert.Equal(t, "p0", leaders[0])
+	peers[0].Yield()
+	leaders = waitForLeaderElection(t, peers)
+	assert.Len(t, leaders, 1, "Only 1 leader should have been elected")
+	assert.Equal(t, "p1", leaders[0])
+	peers[1].Yield()
+	leaders = waitForLeaderElection(t, peers)
+	assert.Len(t, leaders, 1, "Only 1 leader should have been elected")
+	assert.Equal(t, "p0", leaders[0])
+}
+
 func TestPartition(t *testing.T) {
 	t.Parallel()
 	// Scenario: peers spawn together, and then after a while a network partition occurs
@@ -387,7 +443,7 @@ func TestConfigFromFile(t *testing.T) {
 	viper.Reset()
 	viper.SetConfigName("core")
 	viper.SetEnvPrefix("CORE")
-	viper.AddConfigPath("./../../peer")
+	config.AddDevConfigPath(nil)
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
 	err := viper.ReadInConfig()

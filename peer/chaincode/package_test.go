@@ -72,7 +72,7 @@ func TestCDSPackage(t *testing.T) {
 	ccpackfile := pdir + "/ccpack.file"
 	err := createSignedCDSPackage([]string{"-n", "somecc", "-p", "some/go/package", "-v", "0", ccpackfile}, false)
 	if err != nil {
-		t.Fatalf("Run chaincode upgrade cmd error:%v", err)
+		t.Fatalf("Run chaincode package cmd error:%v", err)
 	}
 
 	b, err := ioutil.ReadFile(ccpackfile)
@@ -102,7 +102,7 @@ func createSignedCDSPackage(args []string, sign bool) error {
 	mockCF := &ChaincodeCmdFactory{Signer: signer}
 
 	cmd := packageCmd(mockCF, mockCDSFactory)
-	AddFlags(cmd)
+	addFlags(cmd)
 
 	cmd.SetArgs(args)
 

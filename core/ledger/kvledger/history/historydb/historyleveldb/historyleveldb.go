@@ -17,6 +17,7 @@ limitations under the License.
 package historyleveldb
 
 import (
+	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/ledger/blkstorage"
 	"github.com/hyperledger/fabric/common/ledger/util/leveldbhelper"
 	"github.com/hyperledger/fabric/core/ledger"
@@ -27,12 +28,10 @@ import (
 	"github.com/hyperledger/fabric/core/ledger/util"
 	"github.com/hyperledger/fabric/protos/common"
 	putils "github.com/hyperledger/fabric/protos/utils"
-	logging "github.com/op/go-logging"
 )
 
-var logger = logging.MustGetLogger("historyleveldb")
+var logger = flogging.MustGetLogger("historyleveldb")
 
-var compositeKeySep = []byte{0x00}
 var savePointKey = []byte{0x00}
 var emptyValue = []byte{}
 
@@ -103,13 +102,12 @@ func (historyDB *historyDB) Commit(block *common.Block) error {
 
 	// write each tran's write set to history db
 	for _, envBytes := range block.Data.Data {
-		tranNo++
 
 		// If the tran is marked as invalid, skip it
-		// Note, tranNo starts at 1 for height, while tranIndex starts at 0 for invalid array
-		if txsFilter.IsInvalid(int(tranNo) - 1) {
+		if txsFilter.IsInvalid(int(tranNo)) {
 			logger.Debugf("Channel [%s]: Skipping history write for invalid transaction number %d",
 				historyDB.dbName, tranNo)
+			tranNo++
 			continue
 		}
 
@@ -163,6 +161,7 @@ func (historyDB *historyDB) Commit(block *common.Block) error {
 		} else {
 			logger.Debugf("Skipping transaction [%d] since it is not an endorsement transaction\n", tranNo)
 		}
+		tranNo++
 	}
 
 	// add savepoint for recovery purpose
@@ -209,7 +208,8 @@ func (historyDB *historyDB) ShouldRecover(lastAvailableBlock uint64) (bool, uint
 }
 
 // CommitLostBlock implements method in interface kvledger.Recoverer
-func (historyDB *historyDB) CommitLostBlock(block *common.Block) error {
+func (historyDB *historyDB) CommitLostBlock(blockAndPvtdata *ledger.BlockAndPvtData) error {
+	block := blockAndPvtdata.Block
 	if err := historyDB.Commit(block); err != nil {
 		return err
 	}

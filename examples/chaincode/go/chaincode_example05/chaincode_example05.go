@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	pb "github.com/hyperledger/fabric/protos/peer"
 )
@@ -29,6 +28,14 @@ import (
 
 // SimpleChaincode example simple Chaincode implementation
 type SimpleChaincode struct {
+}
+
+func toChaincodeArgs(args ...string) [][]byte {
+	bargs := make([][]byte, len(args))
+	for i, arg := range args {
+		bargs[i] = []byte(arg)
+	}
+	return bargs
 }
 
 // Init takes two arguments, a string and int. The string will be a key with
@@ -61,21 +68,33 @@ func (t *SimpleChaincode) Init(stub shim.ChaincodeStubInterface) pb.Response {
 
 // Invoke queries another chaincode and updates its own state
 func (t *SimpleChaincode) invoke(stub shim.ChaincodeStubInterface, args []string) pb.Response {
-	var sum string             // Sum entity
-	var Aval, Bval, sumVal int // value of sum entity - to be computed
+	var sum, channelName string // Sum entity
+	var Aval, Bval, sumVal int  // value of sum entity - to be computed
 	var err error
 
-	if len(args) != 2 {
-		return shim.Error("Incorrect number of arguments. Expecting 2")
+	if len(args) < 2 {
+		return shim.Error("Incorrect number of arguments. Expecting atleast 2")
 	}
 
-	chaincodeURL := args[0] // Expecting "github.com/hyperledger/fabric/core/example/chaincode/chaincode_example02"
+	chaincodeName := args[0] // Expecting name of the chaincode you would like to call, this name would be given during chaincode install time
 	sum = args[1]
+
+	if len(args) > 2 {
+		channelName = args[2]
+	} else {
+		channelName = ""
+	}
 
 	// Query chaincode_example02
 	f := "query"
-	queryArgs := util.ToChaincodeArgs(f, "a")
-	response := stub.InvokeChaincode(chaincodeURL, queryArgs, "")
+	queryArgs := toChaincodeArgs(f, "a")
+
+	//   if chaincode being invoked is on the same channel,
+	//   then channel defaults to the current channel and args[2] can be "".
+	//   If the chaincode being called is on a different channel,
+	//   then you must specify the channel name in args[2]
+
+	response := stub.InvokeChaincode(chaincodeName, queryArgs, channelName)
 	if response.Status != shim.OK {
 		errStr := fmt.Sprintf("Failed to query chaincode. Got error: %s", response.Payload)
 		fmt.Printf(errStr)
@@ -88,8 +107,8 @@ func (t *SimpleChaincode) invoke(stub shim.ChaincodeStubInterface, args []string
 		return shim.Error(errStr)
 	}
 
-	queryArgs = util.ToChaincodeArgs(f, "b")
-	response = stub.InvokeChaincode(chaincodeURL, queryArgs, "")
+	queryArgs = toChaincodeArgs(f, "b")
+	response = stub.InvokeChaincode(chaincodeName, queryArgs, channelName)
 	if response.Status != shim.OK {
 		errStr := fmt.Sprintf("Failed to query chaincode. Got error: %s", response.Payload)
 		fmt.Printf(errStr)
@@ -116,21 +135,32 @@ func (t *SimpleChaincode) invoke(stub shim.ChaincodeStubInterface, args []string
 }
 
 func (t *SimpleChaincode) query(stub shim.ChaincodeStubInterface, args []string) pb.Response {
-	var sum string             // Sum entity
-	var Aval, Bval, sumVal int // value of sum entity - to be computed
+	var sum, channelName string // Sum entity
+	var Aval, Bval, sumVal int  // value of sum entity - to be computed
 	var err error
 
-	if len(args) != 2 {
-		return shim.Error("Incorrect number of arguments. Expecting 2")
+	if len(args) < 2 {
+		return shim.Error("Incorrect number of arguments. Expecting atleast 2")
 	}
 
-	chaincodeURL := args[0]
+	chaincodeName := args[0] // Expecting name of the chaincode you would like to call, this name would be given during chaincode install time
 	sum = args[1]
+
+	if len(args) > 2 {
+		channelName = args[2]
+	} else {
+		channelName = ""
+	}
 
 	// Query chaincode_example02
 	f := "query"
-	queryArgs := util.ToChaincodeArgs(f, "a")
-	response := stub.InvokeChaincode(chaincodeURL, queryArgs, "")
+	queryArgs := toChaincodeArgs(f, "a")
+
+	//   if chaincode being invoked is on the same channel,
+	//   then channel defaults to the current channel and args[2] can be "".
+	//   If the chaincode being called is on a different channel,
+	//   then you must specify the channel name in args[2]
+	response := stub.InvokeChaincode(chaincodeName, queryArgs, channelName)
 	if response.Status != shim.OK {
 		errStr := fmt.Sprintf("Failed to query chaincode. Got error: %s", response.Payload)
 		fmt.Printf(errStr)
@@ -143,8 +173,8 @@ func (t *SimpleChaincode) query(stub shim.ChaincodeStubInterface, args []string)
 		return shim.Error(errStr)
 	}
 
-	queryArgs = util.ToChaincodeArgs(f, "b")
-	response = stub.InvokeChaincode(chaincodeURL, queryArgs, "")
+	queryArgs = toChaincodeArgs(f, "b")
+	response = stub.InvokeChaincode(chaincodeName, queryArgs, channelName)
 	if response.Status != shim.OK {
 		errStr := fmt.Sprintf("Failed to query chaincode. Got error: %s", response.Payload)
 		fmt.Printf(errStr)

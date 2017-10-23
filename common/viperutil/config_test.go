@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package viperutil
@@ -25,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Shopify/sarama"
 	"github.com/hyperledger/fabric/orderer/mocks/util"
 	"github.com/spf13/viper"
 )
@@ -66,8 +57,66 @@ func TestEnvSlice(t *testing.T) {
 
 	expected := []string{"a", "b", "c"}
 	if !reflect.DeepEqual(uconf.Inner.Slice, expected) {
-		t.Fatalf("Did not get back the right slice, expeced: %v got %v", expected, uconf.Inner.Slice)
+		t.Fatalf("Did not get back the right slice, expected: %v got %v", expected, uconf.Inner.Slice)
 	}
+}
+
+func TestKafkaVersionDecode(t *testing.T) {
+
+	type testKafkaVersion struct {
+		Inner struct {
+			Version sarama.KafkaVersion
+		}
+	}
+
+	config := viper.New()
+	config.SetConfigType("yaml")
+
+	testCases := []struct {
+		data        string
+		expected    sarama.KafkaVersion
+		errExpected bool
+	}{
+		{"0.8.2.0", sarama.V0_8_2_0, false},
+		{"0.8.2.1", sarama.V0_8_2_1, false},
+		{"0.8.2.2", sarama.V0_8_2_2, false},
+		{"0.9.0.0", sarama.V0_9_0_0, false},
+		{"0.9.0.1", sarama.V0_9_0_1, false},
+		{"0.10.0.0", sarama.V0_10_0_0, false},
+		{"0.10.0.1", sarama.V0_10_0_1, false},
+		{"0.10.1.0", sarama.V0_10_1_0, false},
+		{"0.10.2.0", sarama.V0_10_2_0, false},
+		{"Unsupported", sarama.KafkaVersion{}, true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.data, func(t *testing.T) {
+
+			data := fmt.Sprintf("---\nInner:\n    Version: %s", tc.data)
+			err := config.ReadConfig(bytes.NewReader([]byte(data)))
+			if err != nil {
+				t.Fatalf("Error reading config: %s", err)
+			}
+
+			var uconf testKafkaVersion
+			err = EnhancedExactUnmarshal(config, &uconf)
+
+			if tc.errExpected {
+				if err == nil {
+					t.Fatalf("Should have failed to unmarshal")
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("Failed to unmarshal with: %s", err)
+				}
+				if uconf.Inner.Version != tc.expected {
+					t.Fatalf("Did not get back the right kafka version, expected: %v got %v", tc.expected, uconf.Inner.Version)
+				}
+			}
+
+		})
+	}
+
 }
 
 type testByteSize struct {
@@ -119,7 +168,7 @@ func TestByteSize(t *testing.T) {
 				t.Fatalf("Failed to unmarshal with: %s", err)
 			}
 			if uconf.Inner.ByteSize != tc.expected {
-				t.Fatalf("Did not get back the right byte size, expeced: %v got %v", tc.expected, uconf.Inner.ByteSize)
+				t.Fatalf("Did not get back the right byte size, expected: %v got %v", tc.expected, uconf.Inner.ByteSize)
 			}
 		})
 	}
@@ -217,10 +266,7 @@ func TestPEMBlocksFromFile(t *testing.T) {
 	numberOfCertificates := 3
 	var pems []byte
 	for i := 0; i < numberOfCertificates; i++ {
-		publicKeyCert, _, err := util.GenerateMockPublicPrivateKeyPairPEM(true)
-		if err != nil {
-			t.Fatalf("Enable to generate a signer certificate: %v", err)
-		}
+		publicKeyCert, _, _ := util.GenerateMockPublicPrivateKeyPairPEM(true)
 		pems = append(pems, publicKeyCert...)
 	}
 
@@ -259,10 +305,7 @@ func TestPEMBlocksFromFileEnv(t *testing.T) {
 	numberOfCertificates := 3
 	var pems []byte
 	for i := 0; i < numberOfCertificates; i++ {
-		publicKeyCert, _, err := util.GenerateMockPublicPrivateKeyPairPEM(true)
-		if err != nil {
-			t.Fatalf("Enable to generate a signer certificate: %v", err)
-		}
+		publicKeyCert, _, _ := util.GenerateMockPublicPrivateKeyPairPEM(true)
 		pems = append(pems, publicKeyCert...)
 	}
 
@@ -381,6 +424,54 @@ func TestStringFromFileEnv(t *testing.T) {
 				t.Fatalf(`Expected: "%v",  Actual: "%v"`, expectedValue, uconf.Inner.Single)
 			}
 		})
+	}
+
+}
+
+func TestEnhancedExactUnmarshalKey(t *testing.T) {
+	type Nested struct {
+		Key     string
+		BoolVar bool
+	}
+
+	type nestedKey struct {
+		Nested Nested
+	}
+
+	yaml := "---\n" +
+		"Top:\n" +
+		"  Nested:\n" +
+		"    Nested:\n" +
+		"      Key: BAD\n" +
+		"      BoolVar: true\n"
+
+	envVar := "VIPERUTIL_TOP_NESTED_NESTED_KEY"
+	envVal := "GOOD"
+	os.Setenv(envVar, envVal)
+	defer os.Unsetenv(envVar)
+
+	viper.SetEnvPrefix(Prefix)
+	defer viper.Reset()
+	viper.AutomaticEnv()
+	replacer := strings.NewReplacer(".", "_")
+	viper.SetEnvKeyReplacer(replacer)
+	viper.SetConfigType("yaml")
+
+	if err := viper.ReadConfig(bytes.NewReader([]byte(yaml))); err != nil {
+		t.Fatalf("Error reading config: %s", err)
+	}
+
+	var uconf nestedKey
+	if err := EnhancedExactUnmarshalKey("top.Nested", &uconf); err != nil {
+		t.Fatalf("Failed to unmarshall: %s", err)
+	}
+
+	if uconf.Nested.Key != envVal {
+		t.Fatalf(`Expected: "%s", Actual: "%s"`, envVal, uconf.Nested.Key)
+	}
+
+	if uconf.Nested.BoolVar != true {
+		t.Fatalf(`Expected: "%t", Actual: "%t"`, true, uconf.Nested.BoolVar)
 	}
 
 }

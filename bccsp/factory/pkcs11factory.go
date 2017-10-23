@@ -18,12 +18,10 @@ limitations under the License.
 package factory
 
 import (
-	"errors"
-	"fmt"
-
 	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/bccsp/pkcs11"
 	"github.com/hyperledger/fabric/bccsp/sw"
+	"github.com/pkg/errors"
 )
 
 const (
@@ -42,7 +40,7 @@ func (f *PKCS11Factory) Name() string {
 // Get returns an instance of BCCSP using Opts.
 func (f *PKCS11Factory) Get(config *FactoryOpts) (bccsp.BCCSP, error) {
 	// Validate arguments
-	if config == nil || config.SwOpts == nil {
+	if config == nil || config.Pkcs11Opts == nil {
 		return nil, errors.New("Invalid config. It must not be nil.")
 	}
 
@@ -55,36 +53,12 @@ func (f *PKCS11Factory) Get(config *FactoryOpts) (bccsp.BCCSP, error) {
 	} else if p11Opts.FileKeystore != nil {
 		fks, err := sw.NewFileBasedKeyStore(nil, p11Opts.FileKeystore.KeyStorePath, false)
 		if err != nil {
-			return nil, fmt.Errorf("Failed to initialize software key store: %s", err)
+			return nil, errors.Wrapf(err, "Failed to initialize software key store")
 		}
 		ks = fks
 	} else {
 		// Default to DummyKeystore
 		ks = sw.NewDummyKeyStore()
 	}
-	err := pkcs11.InitPKCS11(p11Opts.Library, p11Opts.Pin, p11Opts.Label)
-	if err != nil {
-		return nil, fmt.Errorf("Failed initializing PKCS11 library %s %s [%s]",
-			p11Opts.Library, p11Opts.Label, err)
-	}
-	return pkcs11.New(p11Opts.SecLevel, p11Opts.HashFamily, ks)
-}
-
-// PKCS11Opts contains options for the P11Factory
-type PKCS11Opts struct {
-	// Default algorithms when not specified (Deprecated?)
-	SecLevel   int    `mapstructure:"security" json:"security"`
-	HashFamily string `mapstructure:"hash" json:"hash"`
-
-	// Keystore options
-	Ephemeral     bool               `mapstructure:"tempkeys,omitempty" json:"tempkeys,omitempty"`
-	FileKeystore  *FileKeystoreOpts  `mapstructure:"filekeystore,omitempty" json:"filekeystore,omitempty"`
-	DummyKeystore *DummyKeystoreOpts `mapstructure:"dummykeystore,omitempty" json:"dummykeystore,omitempty"`
-
-	// PKCS11 options
-	Library    string `mapstructure:"library" json:"library"`
-	Label      string `mapstructure:"label" json:"label"`
-	Pin        string `mapstructure:"pin" json:"pin"`
-	Sensitive  bool   `mapstructure:"sensitivekeys,omitempty" json:"sensitivekeys,omitempty"`
-	SoftVerify bool   `mapstructure:"softwareverify,omitempty" json:"softwareverify,omitempty"`
+	return pkcs11.New(*p11Opts, ks)
 }

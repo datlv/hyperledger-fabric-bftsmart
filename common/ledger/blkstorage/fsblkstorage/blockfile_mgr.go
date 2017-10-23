@@ -23,16 +23,16 @@ import (
 	"sync/atomic"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/ledger/blkstorage"
 	"github.com/hyperledger/fabric/common/ledger/util"
 	"github.com/hyperledger/fabric/common/ledger/util/leveldbhelper"
 	"github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/peer"
 	putil "github.com/hyperledger/fabric/protos/utils"
-	"github.com/op/go-logging"
 )
 
-var logger = logging.MustGetLogger("kvledger")
+var logger = flogging.MustGetLogger("fsblkstorage")
 
 const (
 	blockfilePrefix = "blockfile_"
@@ -41,11 +41,6 @@ const (
 var (
 	blkMgrInfoKey = []byte("blkMgrInfo")
 )
-
-type conf struct {
-	blockfilesDir    string
-	maxBlockfileSize int
-}
 
 type blockfileMgr struct {
 	rootDir           string
@@ -73,7 +68,7 @@ The blockfile manager stores blocks of data into a file system.  That file
 storage is done by creating sequentially numbered files of a configured size
 i.e blockfile_000000, blockfile_000001, etc..
 
-Each transcation in a block is stored with information about the number of
+Each transaction in a block is stored with information about the number of
 bytes in that transaction
  Adding txLoc [fileSuffixNum=0, offset=3, bytesLength=104] for tx [1:0] to index
  Adding txLoc [fileSuffixNum=0, offset=107, bytesLength=104] for tx [1:1] to index
@@ -219,10 +214,6 @@ func syncCPInfoFromFS(rootDir string, cpInfo *checkpointInfo) {
 
 func deriveBlockfilePath(rootDir string, suffixNum int) string {
 	return rootDir + "/" + blockfilePrefix + fmt.Sprintf("%06d", suffixNum)
-}
-
-func (mgr *blockfileMgr) open() error {
-	return mgr.currentFileWriter.open()
 }
 
 func (mgr *blockfileMgr) close() {

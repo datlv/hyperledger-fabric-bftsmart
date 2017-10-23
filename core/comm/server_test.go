@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package comm_test
@@ -21,6 +11,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net"
@@ -34,6 +25,7 @@ import (
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/transport"
 
 	"github.com/hyperledger/fabric/core/comm"
 	testpb "github.com/hyperledger/fabric/core/comm/testdata/grpc"
@@ -357,19 +349,17 @@ func TestNewGRPCServerInvalidParameters(t *testing.T) {
 	//missing port
 	_, err = comm.NewGRPCServer("abcdef", comm.SecureServerConfig{UseTLS: false})
 	//check for error
-	msg = "listen tcp: missing port in address abcdef"
-	assert.EqualError(t, err, msg)
-	if err != nil {
-		t.Log(err.Error())
-	}
+	assert.Error(t, err, "Expected error with missing port")
+	msg = "missing port in address"
+	assert.Contains(t, err.Error(), msg)
 
 	//bad port
 	_, err = comm.NewGRPCServer("localhost:1BBB", comm.SecureServerConfig{UseTLS: false})
-	//check for error
-	msgs := [2]string{"listen tcp: lookup tcp/1BBB: nodename nor servname provided, or not known",
-		"listen tcp: unknown port tcp/1BBB"} //different error on MacOS and in Docker
+	//check for possible errors based on platform and Go release
+	msgs := [3]string{"listen tcp: lookup tcp/1BBB: nodename nor servname provided, or not known",
+		"listen tcp: unknown port tcp/1BBB", "listen tcp: address tcp/1BBB: unknown port"}
 
-	if assert.Error(t, err, "%s or %s expected", msgs[0], msgs[1]) {
+	if assert.Error(t, err, "[%s], [%s] or [%s] expected", msgs[0], msgs[1], msgs[2]) {
 		assert.Contains(t, msgs, err.Error())
 	}
 	if err != nil {
@@ -639,6 +629,20 @@ func TestNewSecureGRPCServer(t *testing.T) {
 	} else {
 		t.Log("GRPC client successfully invoked the EmptyCall service: " + testAddress)
 	}
+
+	// ensure that TLS 1.2 in required / enforced
+	for _, tlsVersion := range []uint16{tls.VersionSSL30, tls.VersionTLS10, tls.VersionTLS11} {
+		_, err = invokeEmptyCall(testAddress,
+			[]grpc.DialOption{grpc.WithTransportCredentials(
+				credentials.NewTLS(&tls.Config{
+					RootCAs:    certPool,
+					MinVersion: tlsVersion,
+					MaxVersion: tlsVersion,
+				}))})
+		t.Logf("TLSVersion [%d] failed with [%s]", tlsVersion, err)
+		assert.Error(t, err, "Should not have been able to connect with TLS version < 1.2")
+		assert.Contains(t, err.Error(), "protocol version not supported")
+	}
 }
 
 func TestNewSecureGRPCServerFromListener(t *testing.T) {
@@ -767,10 +771,8 @@ func TestWithSignedRootCertificates(t *testing.T) {
 	//invoke the EmptyCall service
 	_, err = invokeEmptyCall(testAddress, dialOptions)
 
-	//client should not be able to connect
-	//for now we can only test that we get a timeout error
-	assert.EqualError(t, err, grpc.ErrClientConnTimeout.Error())
-	t.Logf("assert.EqualError: %s", err.Error())
+	//client should be able to connect with Go 1.9
+	assert.NoError(t, err, "Expected client to connect with server cert only")
 
 	//now use the CA certificate
 	certPoolCA := x509.NewCertPool()
@@ -848,10 +850,8 @@ func TestWithSignedIntermediateCertificates(t *testing.T) {
 	//invoke the EmptyCall service
 	_, err = invokeEmptyCall(testAddress, dialOptions)
 
-	//client should not be able to connect
-	//for now we can only test that we get a timeout error
-	assert.EqualError(t, err, grpc.ErrClientConnTimeout.Error())
-	t.Logf("assert.EqualError: %s", err.Error())
+	//client should be able to connect with Go 1.9
+	assert.NoError(t, err, "Expected client to connect with server cert only")
 
 	//now use the CA certificate
 
@@ -1358,4 +1358,62 @@ func TestSetClientRootCAs(t *testing.T) {
 		}
 	}
 
+}
+
+func TestKeepaliveNoClientResponse(t *testing.T) {
+	t.Parallel()
+	// set up GRPCServer instance
+	kap := comm.KeepaliveOptions{
+		ServerKeepaliveTime:    2,
+		ServerKeepaliveTimeout: 1,
+	}
+	comm.SetKeepaliveOptions(kap)
+	testAddress := "localhost:9400"
+	srv, err := comm.NewGRPCServer(testAddress, comm.SecureServerConfig{})
+	assert.NoError(t, err, "Unexpected error starting GRPCServer")
+	go srv.Start()
+	defer srv.Stop()
+
+	// test connection close if client does not response to ping
+	// net client will not response to keepalive
+	client, err := net.Dial("tcp", testAddress)
+	assert.NoError(t, err, "Unexpected error dialing GRPCServer")
+	defer client.Close()
+	// sleep past keepalive timeout
+	time.Sleep(4 * time.Second)
+	data := make([]byte, 24)
+	for {
+		_, err = client.Read(data)
+		if err == nil {
+			continue
+		}
+		assert.EqualError(t, err, io.EOF.Error(), "Expected io.EOF")
+		break
+	}
+}
+
+func TestKeepaliveClientResponse(t *testing.T) {
+	t.Parallel()
+	// set up GRPCServer instance
+	kap := comm.KeepaliveOptions{
+		ServerKeepaliveTime:    2,
+		ServerKeepaliveTimeout: 1,
+	}
+	comm.SetKeepaliveOptions(kap)
+	testAddress := "localhost:9401"
+	srv, err := comm.NewGRPCServer(testAddress, comm.SecureServerConfig{})
+	assert.NoError(t, err, "Unexpected error starting GRPCServer")
+	go srv.Start()
+	defer srv.Stop()
+
+	// test that connection does not close with response to ping
+	clientTransport, err := transport.NewClientTransport(context.Background(),
+		transport.TargetInfo{Addr: testAddress}, transport.ConnectOptions{})
+	assert.NoError(t, err, "Unexpected error creating client transport")
+	defer clientTransport.Close()
+	// sleep past keepalive timeout
+	time.Sleep(4 * time.Second)
+	// try to create a stream
+	_, err = clientTransport.NewStream(context.Background(), &transport.CallHdr{})
+	assert.NoError(t, err, "Unexpected error creating stream")
 }

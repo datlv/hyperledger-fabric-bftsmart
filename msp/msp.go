@@ -1,28 +1,16 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package msp
 
 import (
+	"time"
+
 	"github.com/hyperledger/fabric/protos/msp"
 )
-
-// FIXME: we need better comments on the interfaces!!
-// FIXME: we need better comments on the interfaces!!
-// FIXME: we need better comments on the interfaces!!
 
 // IdentityDeserializer is implemented by both MSPManger and MSP
 type IdentityDeserializer interface {
@@ -31,6 +19,9 @@ type IdentityDeserializer interface {
 	// an msp that is different from this one that is performing
 	// the deserialization.
 	DeserializeIdentity(serializedIdentity []byte) (Identity, error)
+
+	// IsWellFormed checks if the given identity can be deserialized into its provider-specific form
+	IsWellFormed(identity *msp.SerializedIdentity) error
 }
 
 // Membership service provider APIs for Hyperledger Fabric:
@@ -86,11 +77,11 @@ type MSP interface {
 	// GetDefaultSigningIdentity returns the default signing identity
 	GetDefaultSigningIdentity() (SigningIdentity, error)
 
-	// GetRootCerts returns the root certificates for this MSP
-	GetRootCerts() []Identity
+	// GetTLSRootCerts returns the TLS root certificates for this MSP
+	GetTLSRootCerts() [][]byte
 
-	// GetIntermediateCerts returns the intermediate root certificates for this MSP
-	GetIntermediateCerts() []Identity
+	// GetTLSIntermediateCerts returns the TLS intermediate root certificates for this MSP
+	GetTLSIntermediateCerts() [][]byte
 
 	// Validate checks whether the supplied identity is valid
 	Validate(id Identity) error
@@ -102,6 +93,17 @@ type MSP interface {
 	SatisfiesPrincipal(id Identity, principal *msp.MSPPrincipal) error
 }
 
+// OUIdentifier represents an organizational unit and
+// its related chain of trust identifier.
+type OUIdentifier struct {
+	// CertifiersIdentifier is the hash of certificates chain of trust
+	// related to this organizational unit
+	CertifiersIdentifier []byte
+	// OrganizationUnitIdentifier defines the organizational unit under the
+	// MSP identified with MSPIdentifier
+	OrganizationalUnitIdentifier string
+}
+
 // From this point on, there are interfaces that are shared within the peer and client API
 // of the membership service provider.
 
@@ -111,6 +113,12 @@ type MSP interface {
 // at the peer side when verifying certificates that transactions are signed
 // with, and verifying signatures that correspond to these certificates.///
 type Identity interface {
+
+	// ExpiresAt returns the time at which the Identity expires.
+	// If the returned time is the zero value, it implies
+	// the Identity does not expire, or that its expiration
+	// time is unknown
+	ExpiresAt() time.Time
 
 	// GetIdentifier returns the identifier of that identity
 	GetIdentifier() *IdentityIdentifier
@@ -137,16 +145,10 @@ type Identity interface {
 	// TODO: For X.509 based identities, check if we need a dedicated type
 	//       for OU where the Certificate OU is properly namespaced by the
 	//       signer's identity
-	GetOrganizationalUnits() []msp.FabricOUIdentifier
+	GetOrganizationalUnits() []*OUIdentifier
 
 	// Verify a signature over some message using this identity as reference
 	Verify(msg []byte, sig []byte) error
-
-	// VerifyOpts a signature over some message using this identity as reference
-	VerifyOpts(msg []byte, sig []byte, opts SignatureOpts) error
-
-	// VerifyAttributes verifies attributes given a proof
-	VerifyAttributes(proof []byte, spec *AttributeProofSpec) error
 
 	// Serialize converts an identity to bytes
 	Serialize() ([]byte, error)
@@ -170,66 +172,9 @@ type SigningIdentity interface {
 	// Sign the message
 	Sign(msg []byte) ([]byte, error)
 
-	// SignOpts the message with options
-	SignOpts(msg []byte, opts SignatureOpts) ([]byte, error)
-
-	// GetAttributeProof creates a proof for a set of attributes
-	GetAttributeProof(spec *AttributeProofSpec) (proof []byte, err error)
-
 	// GetPublicVersion returns the public parts of this identity
 	GetPublicVersion() Identity
-
-	// Renew this identity
-	Renew() error
 }
-
-// ImportRequest is data required when importing a member or
-//   enrollment identity that was created off-band
-type ImportRequest struct {
-
-	// IdentityProvider to enroll with
-	Idp string
-
-	// The certificate to import
-	IdentityDesc []byte
-
-	// Key reference associated to the key of the imported member
-	KeyReference []string
-}
-
-// SignatureOpts are signature options
-type SignatureOpts struct {
-	Policy []string
-	Label  string
-}
-
-// Attribute is an arbitrary name/value pair
-type Attribute interface {
-	Key() AttributeName
-	Value() []byte
-	Serialise() []byte
-}
-
-// AttributeName defines the name of an attribute assuming a
-// namespace defined by the entity that certifies this attributes'
-// ownership.
-type AttributeName struct {
-	// provider/guarantor of a certain attribute; this can be
-	// expressed by the enrollment identifier of the entity that
-	// issues/certifies possession of such attributes.
-	provider string
-	// the actual name of the attribute; should be unique for a given
-	// provider
-	name string
-}
-
-type AttributeProofSpec struct {
-	Attributes []Attribute
-	Message    []byte
-}
-
-// Structures defining the identifiers for identity providers and members
-// and members that belong to them.
 
 // IdentityIdentifier is a holder for the identifier of a specific
 // identity, naturally namespaced, by its provider identifier.
@@ -248,5 +193,6 @@ type ProviderType int
 // The ProviderType of a member relative to the member API
 const (
 	FABRIC ProviderType = iota // MSP is of FABRIC type
+	IDEMIX                     // MSP is of IDEMIX type
 	OTHER                      // MSP is of OTHER TYPE
 )

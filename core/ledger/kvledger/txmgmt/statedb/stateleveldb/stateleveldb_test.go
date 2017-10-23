@@ -57,11 +57,11 @@ func TestIterator(t *testing.T) {
 }
 
 func TestEncodeDecodeValueAndVersion(t *testing.T) {
-	testValueAndVersionEncodeing(t, []byte("value1"), version.NewHeight(1, 2))
-	testValueAndVersionEncodeing(t, []byte{}, version.NewHeight(50, 50))
+	testValueAndVersionEncoding(t, []byte("value1"), version.NewHeight(1, 2))
+	testValueAndVersionEncoding(t, []byte{}, version.NewHeight(50, 50))
 }
 
-func testValueAndVersionEncodeing(t *testing.T, value []byte, version *version.Height) {
+func testValueAndVersionEncoding(t *testing.T, value []byte, version *version.Height) {
 	encodedValue := statedb.EncodeValue(value, version)
 	val, ver := statedb.DecodeValue(encodedValue)
 	testutil.AssertEquals(t, val, value)
@@ -79,4 +79,39 @@ func testCompositeKey(t *testing.T, dbName string, ns string, key string) {
 	ns1, key1 := splitCompositeKey(compositeKey)
 	testutil.AssertEquals(t, ns1, ns)
 	testutil.AssertEquals(t, key1, key)
+}
+
+// TestQueryOnLevelDB tests queries on levelDB.
+func TestQueryOnLevelDB(t *testing.T) {
+	env := NewTestVDBEnv(t)
+	defer env.Cleanup()
+	db, err := env.DBProvider.GetDBHandle("testquery")
+	testutil.AssertNoError(t, err, "")
+	db.Open()
+	defer db.Close()
+	batch := statedb.NewUpdateBatch()
+	jsonValue1 := "{\"asset_name\": \"marble1\",\"color\": \"blue\",\"size\": 1,\"owner\": \"tom\"}"
+	batch.Put("ns1", "key1", []byte(jsonValue1), version.NewHeight(1, 1))
+
+	savePoint := version.NewHeight(2, 22)
+	db.ApplyUpdates(batch, savePoint)
+
+	// query for owner=jerry, use namespace "ns1"
+	// As queries are not supported in levelDB, call to ExecuteQuery()
+	// should return a error message
+	itr, err := db.ExecuteQuery("ns1", "{\"selector\":{\"owner\":\"jerry\"}}")
+	testutil.AssertError(t, err, "ExecuteQuery not supported for leveldb")
+	testutil.AssertNil(t, itr)
+}
+
+func TestGetStateMultipleKeys(t *testing.T) {
+	env := NewTestVDBEnv(t)
+	defer env.Cleanup()
+	commontests.TestGetStateMultipleKeys(t, env.DBProvider)
+}
+
+func TestGetVersion(t *testing.T) {
+	env := NewTestVDBEnv(t)
+	defer env.Cleanup()
+	commontests.TestGetVersion(t, env.DBProvider)
 }

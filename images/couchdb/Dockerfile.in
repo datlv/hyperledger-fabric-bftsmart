@@ -1,3 +1,7 @@
+# Copyright Greg Haskins All Rights Reserved
+#
+# SPDX-License-Identifier: Apache-2.0
+#
 FROM _BASE_NS_/fabric-baseimage:_BASE_TAG_
 
 # Based on https://github.com/klaemo/docker-couchdb/blob/master/2.0.0/Dockerfile
@@ -58,19 +62,17 @@ RUN set -x \
  && rm -rf /var/lib/apt/lists/* /usr/lib/node_modules /usr/src/couchdb*
 
 # Add configuration
-COPY payload/local.ini /opt/couchdb/etc/local.d/
+COPY payload/local.ini /opt/couchdb/etc/
 COPY payload/vm.args /opt/couchdb/etc/
 COPY payload/docker-entrypoint.sh /
 
 # Setup directories and permissions
 RUN chmod +x /docker-entrypoint.sh \
- && mkdir /opt/couchdb/data /opt/couchdb/etc/default.d \
+ && mkdir /opt/couchdb/data /opt/couchdb/etc/default.d /opt/couchdb/etc/local.d \
  && chown -R couchdb:couchdb /opt/couchdb/
 
 WORKDIR /opt/couchdb
 EXPOSE 5984 4369 9100
-
-USER couchdb
 
 VOLUME ["/opt/couchdb/data"]
 

@@ -81,7 +81,7 @@ func (index *blockIndex) getLastBlockIndexed() (uint64, error) {
 	var blockNumBytes []byte
 	var err error
 	if blockNumBytes, err = index.db.Get(indexCheckpointKey); err != nil {
-		return 0, nil
+		return 0, err
 	}
 	if blockNumBytes == nil {
 		return 0, errIndexEmpty
@@ -132,12 +132,12 @@ func (index *blockIndex) indexBlock(blockIdxInfo *blockIdxInfo) error {
 	if _, ok := index.indexItemsMap[blkstorage.IndexableAttrBlockNumTranNum]; ok {
 		for txIterator, txoffset := range txOffsets {
 			txFlp := newFileLocationPointer(flp.fileSuffixNum, flp.offset, txoffset.loc)
-			logger.Debugf("Adding txLoc [%s] for tx number:[%d] ID: [%s] to blockNumTranNum index", txFlp, txIterator+1, txoffset.txID)
+			logger.Debugf("Adding txLoc [%s] for tx number:[%d] ID: [%s] to blockNumTranNum index", txFlp, txIterator, txoffset.txID)
 			txFlpBytes, marshalErr := txFlp.marshal()
 			if marshalErr != nil {
 				return marshalErr
 			}
-			batch.Put(constructBlockNumTranNumKey(blockIdxInfo.blockNum, uint64(txIterator+1)), txFlpBytes)
+			batch.Put(constructBlockNumTranNumKey(blockIdxInfo.blockNum, uint64(txIterator)), txFlpBytes)
 		}
 	}
 
@@ -252,7 +252,7 @@ func (index *blockIndex) getTxValidationCodeByTxID(txID string) (peer.TxValidati
 	if err != nil {
 		return peer.TxValidationCode(-1), err
 	} else if raw == nil {
-		return peer.TxValidationCode(-1), blkstorage.ErrAttrNotIndexed
+		return peer.TxValidationCode(-1), blkstorage.ErrNotFoundInIndex
 	} else if len(raw) != 1 {
 		return peer.TxValidationCode(-1), errors.New("Invalid value in indexItems")
 	}

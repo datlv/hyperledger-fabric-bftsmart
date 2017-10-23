@@ -19,11 +19,10 @@ package chaincode
 import (
 	"context"
 
-	"fmt"
-
 	"github.com/hyperledger/fabric/core/common/ccprovider"
 	"github.com/hyperledger/fabric/core/ledger"
 	pb "github.com/hyperledger/fabric/protos/peer"
+	"github.com/pkg/errors"
 )
 
 // ccProviderFactory implements the ccprovider.ChaincodeProviderFactory
@@ -44,7 +43,6 @@ func init() {
 
 // ccProviderImpl is an implementation of the ccprovider.ChaincodeProvider interface
 type ccProviderImpl struct {
-	txsim ledger.TxSimulator
 }
 
 // ccProviderContextImpl contains the state that is passed around to calls to methods of ccProviderImpl
@@ -53,15 +51,15 @@ type ccProviderContextImpl struct {
 }
 
 // GetContext returns a context for the supplied ledger, with the appropriate tx simulator
-func (c *ccProviderImpl) GetContext(ledger ledger.PeerLedger) (context.Context, error) {
+func (c *ccProviderImpl) GetContext(ledger ledger.PeerLedger, txid string) (context.Context, ledger.TxSimulator, error) {
 	var err error
 	// get context for the chaincode execution
-	c.txsim, err = ledger.NewTxSimulator()
+	txsim, err := ledger.NewTxSimulator(txid)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	ctxt := context.WithValue(context.Background(), TXSimulatorKey, c.txsim)
-	return ctxt, nil
+	ctxt := context.WithValue(context.Background(), TXSimulatorKey, txsim)
+	return ctxt, txsim, nil
 }
 
 // GetCCContext returns an interface that encapsulates a
@@ -72,22 +70,22 @@ func (c *ccProviderImpl) GetCCContext(cid, name, version, txid string, syscc boo
 	return &ccProviderContextImpl{ctx: ctx}
 }
 
-// GetCCValidationInfoFromLCCC returns the VSCC and the policy listed in LCCC for the supplied chaincode
-func (c *ccProviderImpl) GetCCValidationInfoFromLCCC(ctxt context.Context, txid string, signedProp *pb.SignedProposal, prop *pb.Proposal, chainID string, chaincodeID string) (string, []byte, error) {
-	// LCCC does not have any notion about its own
+// GetCCValidationInfoFromLSCC returns the VSCC and the policy listed in LSCC for the supplied chaincode
+func (c *ccProviderImpl) GetCCValidationInfoFromLSCC(ctxt context.Context, txid string, signedProp *pb.SignedProposal, prop *pb.Proposal, chainID string, chaincodeID string) (string, []byte, error) {
+	// LSCC does not have any notion about its own
 	// endorsing policy - we should never call this
-	// function with lccc as the chaincodeID
-	if chaincodeID == "lccc" {
-		panic("GetCCValidationInfoFromLCCC invoke for LCCC")
+	// function with lscc as the chaincodeID
+	if chaincodeID == "lscc" {
+		panic("GetCCValidationInfoFromLSCC invoke for LSCC")
 	}
 
-	data, err := GetChaincodeDataFromLCCC(ctxt, txid, signedProp, prop, chainID, chaincodeID)
+	data, err := GetChaincodeDataFromLSCC(ctxt, txid, signedProp, prop, chainID, chaincodeID)
 	if err != nil {
 		return "", nil, err
 	}
 
 	if data == nil || data.Vscc == "" || data.Policy == nil {
-		return "", nil, fmt.Errorf("Incorrect validation info in LCCC")
+		return "", nil, errors.New("incorrect validation info in LSCC")
 	}
 
 	return data.Vscc, data.Policy, nil
@@ -103,20 +101,15 @@ func (c *ccProviderImpl) Execute(ctxt context.Context, cccid interface{}, spec i
 	return Execute(ctxt, cccid.(*ccProviderContextImpl).ctx, spec)
 }
 
-// ExecuteWithErrorFilder executes the chaincode given context and spec and returns payload
+// ExecuteWithErrorFilter executes the chaincode given context and spec and returns payload
 func (c *ccProviderImpl) ExecuteWithErrorFilter(ctxt context.Context, cccid interface{}, spec interface{}) ([]byte, *pb.ChaincodeEvent, error) {
 	return ExecuteWithErrorFilter(ctxt, cccid.(*ccProviderContextImpl).ctx, spec)
 }
 
-// ExecuteWithErrorFilder executes the chaincode given context and spec and returns payload
+// Stop stops the chaincode given context and spec
 func (c *ccProviderImpl) Stop(ctxt context.Context, cccid interface{}, spec *pb.ChaincodeDeploymentSpec) error {
 	if theChaincodeSupport != nil {
 		return theChaincodeSupport.Stop(ctxt, cccid.(*ccProviderContextImpl).ctx, spec)
 	}
 	panic("ChaincodeSupport not initialized")
-}
-
-// ReleaseContext frees up resources held by the context
-func (c *ccProviderImpl) ReleaseContext() {
-	c.txsim.Done()
 }

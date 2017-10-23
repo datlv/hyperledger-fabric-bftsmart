@@ -16,11 +16,11 @@ limitations under the License.
 package factory
 
 import (
-	"fmt"
 	"sync"
 
 	"github.com/hyperledger/fabric/bccsp"
-	"github.com/op/go-logging"
+	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/pkg/errors"
 )
 
 var (
@@ -41,7 +41,7 @@ var (
 	// Factories' Initialization Error
 	factoriesInitError error
 
-	logger = logging.MustGetLogger("BCCSP_FACTORY")
+	logger = flogging.MustGetLogger("bccsp")
 )
 
 // BCCSPFactory is used to get instances of the BCCSP interface.
@@ -62,9 +62,9 @@ func GetDefault() bccsp.BCCSP {
 		bootBCCSPInitOnce.Do(func() {
 			var err error
 			f := &SWFactory{}
-			bootBCCSP, err = f.Get(&DefaultOpts)
+			bootBCCSP, err = f.Get(GetDefaultOpts())
 			if err != nil {
-				panic("BCCSP Internal error, failed initialization with DefaultOpts!")
+				panic("BCCSP Internal error, failed initialization with GetDefaultOpts!")
 			}
 		})
 		return bootBCCSP
@@ -74,13 +74,17 @@ func GetDefault() bccsp.BCCSP {
 
 // GetBCCSP returns a BCCSP created according to the options passed in input.
 func GetBCCSP(name string) (bccsp.BCCSP, error) {
-	return bccspMap[name], nil
+	csp, ok := bccspMap[name]
+	if !ok {
+		return nil, errors.Errorf("Could not find BCCSP, no '%s' provider", name)
+	}
+	return csp, nil
 }
 
 func initBCCSP(f BCCSPFactory, config *FactoryOpts) error {
 	csp, err := f.Get(config)
 	if err != nil {
-		return fmt.Errorf("Could not initialize BCCSP %s [%s]", f.Name(), err)
+		return errors.Errorf("Could not initialize BCCSP %s [%s]", f.Name(), err)
 	}
 
 	logger.Debugf("Initialize BCCSP [%s]", f.Name())

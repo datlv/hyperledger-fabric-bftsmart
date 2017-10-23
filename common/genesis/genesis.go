@@ -17,8 +17,6 @@ limitations under the License.
 package genesis
 
 import (
-	"github.com/golang/protobuf/proto"
-	"github.com/hyperledger/fabric/common/configtx"
 	cb "github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/utils"
 )
@@ -27,38 +25,31 @@ const (
 	msgVersion = int32(1)
 
 	// These values are fixed for the genesis block.
-	lastModified = 0
-	epoch        = 0
+	epoch = 0
 )
 
+// Factory facilitates the creation of genesis blocks.
 type Factory interface {
-	Block(chainID string) (*cb.Block, error)
+	// Block returns a genesis block for a given channel ID.
+	Block(channelID string) (*cb.Block, error)
 }
 
 type factory struct {
-	template configtx.Template
+	channelGroup *cb.ConfigGroup
 }
 
-func NewFactoryImpl(template configtx.Template) Factory {
-	return &factory{template: template}
+// NewFactoryImpl creates a new Factory.
+func NewFactoryImpl(channelGroup *cb.ConfigGroup) Factory {
+	return &factory{channelGroup: channelGroup}
 }
 
-func (f *factory) Block(chainID string) (*cb.Block, error) {
-	configEnv, err := f.template.Envelope(chainID)
-	if err != nil {
-		return nil, err
-	}
-
-	configUpdate := &cb.ConfigUpdate{}
-	err = proto.Unmarshal(configEnv.ConfigUpdate, configUpdate)
-	if err != nil {
-		return nil, err
-	}
-
-	payloadChannelHeader := utils.MakeChannelHeader(cb.HeaderType_CONFIG, msgVersion, chainID, epoch)
+// Block constructs and returns a genesis block for a given channel ID.
+func (f *factory) Block(channelID string) (*cb.Block, error) {
+	payloadChannelHeader := utils.MakeChannelHeader(cb.HeaderType_CONFIG, msgVersion, channelID, epoch)
 	payloadSignatureHeader := utils.MakeSignatureHeader(nil, utils.CreateNonceOrPanic())
+	utils.SetTxID(payloadChannelHeader, payloadSignatureHeader)
 	payloadHeader := utils.MakePayloadHeader(payloadChannelHeader, payloadSignatureHeader)
-	payload := &cb.Payload{Header: payloadHeader, Data: utils.MarshalOrPanic(&cb.ConfigEnvelope{Config: &cb.Config{ChannelGroup: configUpdate.WriteSet}})}
+	payload := &cb.Payload{Header: payloadHeader, Data: utils.MarshalOrPanic(&cb.ConfigEnvelope{Config: &cb.Config{ChannelGroup: f.channelGroup}})}
 	envelope := &cb.Envelope{Payload: utils.MarshalOrPanic(payload), Signature: nil}
 
 	block := cb.NewBlock(0, nil)

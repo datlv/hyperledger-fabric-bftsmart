@@ -17,8 +17,6 @@ limitations under the License.
 package fsblkstorage
 
 import (
-	"fmt"
-
 	"github.com/golang/protobuf/proto"
 	ledgerutil "github.com/hyperledger/fabric/common/ledger/util"
 	"github.com/hyperledger/fabric/protos/common"
@@ -60,15 +58,12 @@ func deserializeBlock(serializedBlockBytes []byte) (*common.Block, error) {
 	var err error
 	b := ledgerutil.NewBuffer(serializedBlockBytes)
 	if block.Header, err = extractHeader(b); err != nil {
-		fmt.Printf("h:%s\n", err)
 		return nil, err
 	}
 	if block.Data, _, err = extractData(b); err != nil {
-		fmt.Printf("d:%s\n", err)
 		return nil, err
 	}
 	if block.Metadata, err = extractMetadata(b); err != nil {
-		fmt.Printf("m:%s\n", err)
 		return nil, err
 	}
 	return block, nil
@@ -137,9 +132,6 @@ func addMetadataBytes(blockMetadata *common.BlockMetadata, buf *proto.Buffer) er
 	if err := buf.EncodeVarint(numItems); err != nil {
 		return err
 	}
-	if numItems == 0 {
-		return nil
-	}
 	for _, b := range blockMetadata.Metadata {
 		if err := buf.EncodeRawBytes(b); err != nil {
 			return err
@@ -159,6 +151,9 @@ func extractHeader(buf *ledgerutil.Buffer) (*common.BlockHeader, error) {
 	}
 	if header.PreviousHash, err = buf.DecodeRawBytes(false); err != nil {
 		return nil, err
+	}
+	if len(header.PreviousHash) == 0 {
+		header.PreviousHash = nil
 	}
 	return header, nil
 }

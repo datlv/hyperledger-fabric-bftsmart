@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package cauthdsl
@@ -20,18 +10,28 @@ import (
 	"bytes"
 	"errors"
 	"testing"
-
-	"github.com/hyperledger/fabric/msp"
+	"time"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/msp"
 	cb "github.com/hyperledger/fabric/protos/common"
 	mb "github.com/hyperledger/fabric/protos/msp"
+	logging "github.com/op/go-logging"
+	"github.com/stretchr/testify/assert"
 )
+
+func init() {
+	logging.SetLevel(logging.DEBUG, "")
+}
 
 var invalidSignature = []byte("badsigned")
 
 type mockIdentity struct {
 	idBytes []byte
+}
+
+func (id *mockIdentity) ExpiresAt() time.Time {
+	return time.Time{}
 }
 
 func (id *mockIdentity) SatisfiesPrincipal(p *mb.MSPPrincipal) error {
@@ -43,7 +43,7 @@ func (id *mockIdentity) SatisfiesPrincipal(p *mb.MSPPrincipal) error {
 }
 
 func (id *mockIdentity) GetIdentifier() *msp.IdentityIdentifier {
-	return &msp.IdentityIdentifier{Mspid: "Mock", Id: "Bob"}
+	return &msp.IdentityIdentifier{Mspid: "Mock", Id: string(id.idBytes)}
 }
 
 func (id *mockIdentity) GetMSPIdentifier() string {
@@ -54,7 +54,7 @@ func (id *mockIdentity) Validate() error {
 	return nil
 }
 
-func (id *mockIdentity) GetOrganizationalUnits() []mb.FabricOUIdentifier {
+func (id *mockIdentity) GetOrganizationalUnits() []*msp.OUIdentifier {
 	return nil
 }
 
@@ -64,14 +64,6 @@ func (id *mockIdentity) Verify(msg []byte, sig []byte) error {
 	} else {
 		return nil
 	}
-}
-
-func (id *mockIdentity) VerifyOpts(msg []byte, sig []byte, opts msp.SignatureOpts) error {
-	return nil
-}
-
-func (id *mockIdentity) VerifyAttributes(proof []byte, spec *msp.AttributeProofSpec) error {
-	return nil
 }
 
 func (id *mockIdentity) Serialize() ([]byte, error) {
@@ -91,13 +83,17 @@ func toSignedData(data [][]byte, identities [][]byte, signatures [][]byte) ([]*c
 }
 
 type mockDeserializer struct {
+	fail error
 }
 
-func NewMockDeserializer() msp.IdentityDeserializer {
-	return &mockDeserializer{}
+func (md *mockDeserializer) IsWellFormed(_ *mb.SerializedIdentity) error {
+	return nil
 }
 
 func (md *mockDeserializer) DeserializeIdentity(serializedIdentity []byte) (msp.Identity, error) {
+	if md.fail != nil {
+		return nil, md.fail
+	}
 	return &mockIdentity{idBytes: serializedIdentity}, nil
 }
 
@@ -109,7 +105,7 @@ var moreMsgs = [][]byte{nil, nil, nil}
 func TestSimpleSignature(t *testing.T) {
 	policy := Envelope(SignedBy(0), signers)
 
-	spe, err := compile(policy.Policy, policy.Identities, &mockDeserializer{})
+	spe, err := compile(policy.Rule, policy.Identities, &mockDeserializer{})
 	if err != nil {
 		t.Fatalf("Could not create a new SignaturePolicyEvaluator using the given policy, crypto-helper: %s", err)
 	}
@@ -128,7 +124,7 @@ func TestSimpleSignature(t *testing.T) {
 func TestMultipleSignature(t *testing.T) {
 	policy := Envelope(And(SignedBy(0), SignedBy(1)), signers)
 
-	spe, err := compile(policy.Policy, policy.Identities, &mockDeserializer{})
+	spe, err := compile(policy.Rule, policy.Identities, &mockDeserializer{})
 	if err != nil {
 		t.Fatalf("Could not create a new SignaturePolicyEvaluator using the given policy, crypto-helper: %s", err)
 	}
@@ -147,7 +143,7 @@ func TestMultipleSignature(t *testing.T) {
 func TestComplexNestedSignature(t *testing.T) {
 	policy := Envelope(And(Or(And(SignedBy(0), SignedBy(1)), And(SignedBy(0), SignedBy(0))), SignedBy(0)), signers)
 
-	spe, err := compile(policy.Policy, policy.Identities, &mockDeserializer{})
+	spe, err := compile(policy.Rule, policy.Identities, &mockDeserializer{})
 	if err != nil {
 		t.Fatalf("Could not create a new SignaturePolicyEvaluator using the given policy, crypto-helper: %s", err)
 	}
@@ -171,12 +167,61 @@ func TestComplexNestedSignature(t *testing.T) {
 
 func TestNegatively(t *testing.T) {
 	rpolicy := Envelope(And(SignedBy(0), SignedBy(1)), signers)
-	rpolicy.Policy.Type = nil
+	rpolicy.Rule.Type = nil
 	b, _ := proto.Marshal(rpolicy)
 	policy := &cb.SignaturePolicyEnvelope{}
 	_ = proto.Unmarshal(b, policy)
-	_, err := compile(policy.Policy, policy.Identities, &mockDeserializer{})
+	_, err := compile(policy.Rule, policy.Identities, &mockDeserializer{})
 	if err == nil {
 		t.Fatal("Should have errored compiling because the Type field was nil")
 	}
+}
+
+func TestNilSignaturePolicyEnvelope(t *testing.T) {
+	_, err := compile(nil, nil, &mockDeserializer{})
+	assert.Error(t, err, "Fail to compile")
+}
+
+func TestDeduplicate(t *testing.T) {
+	ids := []*cb.SignedData{
+		&cb.SignedData{
+			Identity: []byte("id1"),
+		},
+		&cb.SignedData{
+			Identity: []byte("id2"),
+		},
+		&cb.SignedData{
+			Identity: []byte("id3"),
+		},
+	}
+
+	t.Run("Empty", func(t *testing.T) {
+		result := deduplicate([]*cb.SignedData{}, &mockDeserializer{})
+		assert.Equal(t, []*cb.SignedData{}, result, "Should have no identities")
+	})
+
+	t.Run("NoDuplication", func(t *testing.T) {
+		result := deduplicate(ids, &mockDeserializer{})
+		assert.Equal(t, ids, result, "No identities should have been removed")
+	})
+
+	t.Run("AllDuplication", func(t *testing.T) {
+		result := deduplicate([]*cb.SignedData{ids[0], ids[0], ids[0]}, &mockDeserializer{})
+		assert.Equal(t, []*cb.SignedData{ids[0]}, result, "All but the first identity should have been removed")
+	})
+
+	t.Run("DuplicationPreservesOrder", func(t *testing.T) {
+		result := deduplicate([]*cb.SignedData{ids[1], ids[0], ids[0]}, &mockDeserializer{})
+		assert.Equal(t, []*cb.SignedData{ids[1], ids[0]}, result, "The third identity should have been dropped")
+	})
+
+	t.Run("ComplexDuplication", func(t *testing.T) {
+		result := deduplicate([]*cb.SignedData{ids[1], ids[0], ids[0], ids[1], ids[2], ids[0], ids[2], ids[1]}, &mockDeserializer{})
+		assert.Equal(t, []*cb.SignedData{ids[1], ids[0], ids[2]}, result, "Expected only three non-duplicate identities")
+	})
+
+	t.Run("BadIdentity", func(t *testing.T) {
+		result := deduplicate([]*cb.SignedData{ids[1]}, &mockDeserializer{fail: errors.New("error")})
+		assert.Equal(t, []*cb.SignedData{}, result, "No valid identities")
+	})
 }

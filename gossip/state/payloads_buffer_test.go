@@ -1,43 +1,25 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package state
 
 import (
 	"crypto/rand"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/hyperledger/fabric/gossip/util"
 	proto "github.com/hyperledger/fabric/protos/gossip"
 	"github.com/stretchr/testify/assert"
 )
 
-func uuid() (string, error) {
-	uuid := make([]byte, 16)
-	_, err := rand.Read(uuid)
-	if err != nil {
-		return "", err
-	}
-	uuid[8] = uuid[8]&^0xc0 | 0x80
-
-	uuid[6] = uuid[6]&^0xf0 | 0x40
-	return fmt.Sprintf("%x-%x-%x-%x-%x", uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:]), nil
+func init() {
+	util.SetupTestLogging()
 }
 
 func randomPayloadWithSeqNum(seqNum uint64) (*proto.Payload, error) {
@@ -46,12 +28,10 @@ func randomPayloadWithSeqNum(seqNum uint64) (*proto.Payload, error) {
 	if err != nil {
 		return nil, err
 	}
-	uuid, err := uuid()
-	if err != nil {
-		return nil, err
-	}
-
-	return &proto.Payload{seqNum, uuid, data}, nil
+	return &proto.Payload{
+		SeqNum: seqNum,
+		Data:   data,
+	}, nil
 }
 
 func TestNewPayloadsBuffer(t *testing.T) {

@@ -17,16 +17,15 @@ limitations under the License.
 package utils
 
 import (
+	"errors"
 	"fmt"
 	"time"
-
-	cb "github.com/hyperledger/fabric/protos/common"
-
-	"errors"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/golang/protobuf/ptypes/timestamp"
 	"github.com/hyperledger/fabric/common/crypto"
+	cb "github.com/hyperledger/fabric/protos/common"
+	pb "github.com/hyperledger/fabric/protos/peer"
 )
 
 // MarshalOrPanic serializes a protobuf message and panics if this operation fails.
@@ -120,6 +119,25 @@ func UnmarshalSignatureHeader(encoded []byte) (*cb.SignatureHeader, error) {
 	return header, err
 }
 
+// UnmarshalBlockOrPanic unmarshals bytes to an Block structure or panics on error
+func UnmarshalBlockOrPanic(encoded []byte) *cb.Block {
+	block, err := UnmarshalBlock(encoded)
+	if err != nil {
+		panic(fmt.Errorf("Error unmarshaling data to block: %s", err))
+	}
+	return block
+}
+
+// UnmarshalBlock unmarshals bytes to an Block structure
+func UnmarshalBlock(encoded []byte) (*cb.Block, error) {
+	block := &cb.Block{}
+	err := proto.Unmarshal(encoded, block)
+	if err != nil {
+		return nil, err
+	}
+	return block, err
+}
+
 // UnmarshalEnvelopeOfType unmarshals an envelope of the specified type, including
 // the unmarshaling the payload data
 func UnmarshalEnvelopeOfType(envelope *cb.Envelope, headerType cb.HeaderType, message proto.Message) (*cb.ChannelHeader, error) {
@@ -159,6 +177,10 @@ func ExtractEnvelopeOrPanic(block *cb.Block, index int) *cb.Envelope {
 
 // ExtractEnvelope retrieves the requested envelope from a given block and unmarshals it.
 func ExtractEnvelope(block *cb.Block, index int) (*cb.Envelope, error) {
+	if block.Data == nil {
+		return nil, fmt.Errorf("No data in block")
+	}
+
 	envelopeCount := len(block.Data.Data)
 	if index < 0 || index >= envelopeCount {
 		return nil, fmt.Errorf("Envelope index out of bounds")
@@ -266,4 +288,73 @@ func UnmarshalChannelHeader(bytes []byte) (*cb.ChannelHeader, error) {
 	}
 
 	return chdr, nil
+}
+
+// UnmarshalChaincodeID returns a ChaincodeID from bytes
+func UnmarshalChaincodeID(bytes []byte) (*pb.ChaincodeID, error) {
+	ccid := &pb.ChaincodeID{}
+	err := proto.Unmarshal(bytes, ccid)
+	if err != nil {
+		return nil, fmt.Errorf("UnmarshalChaincodeID failed, err %s", err)
+	}
+
+	return ccid, nil
+}
+
+// IsConfigBlock validates whenever given block contains configuration
+// update transaction
+func IsConfigBlock(block *cb.Block) bool {
+	envelope, err := ExtractEnvelope(block, 0)
+	if err != nil {
+		return false
+	}
+
+	payload, err := GetPayload(envelope)
+	if err != nil {
+		return false
+	}
+
+	if payload.Header == nil {
+		return false
+	}
+
+	hdr, err := UnmarshalChannelHeader(payload.Header.ChannelHeader)
+	if err != nil {
+		return false
+	}
+
+	return cb.HeaderType(hdr.Type) == cb.HeaderType_CONFIG
+}
+
+// ChannelHeader returns the *cb.ChannelHeader for a given *cb.Envelope.
+func ChannelHeader(env *cb.Envelope) (*cb.ChannelHeader, error) {
+	envPayload, err := UnmarshalPayload(env.Payload)
+	if err != nil {
+		return nil, fmt.Errorf("payload unmarshaling error: %s", err)
+	}
+
+	if envPayload.Header == nil {
+		return nil, fmt.Errorf("no header was set")
+	}
+
+	if envPayload.Header.ChannelHeader == nil {
+		return nil, fmt.Errorf("no channel header was set")
+	}
+
+	chdr, err := UnmarshalChannelHeader(envPayload.Header.ChannelHeader)
+	if err != nil {
+		return nil, fmt.Errorf("channel header unmarshaling error: %s", err)
+	}
+
+	return chdr, nil
+}
+
+// ChannelID returns the Channel ID for a given *cb.Envelope.
+func ChannelID(env *cb.Envelope) (string, error) {
+	chdr, err := ChannelHeader(env)
+	if err != nil {
+		return "", fmt.Errorf("channel header unmarshaling error: %s", err)
+	}
+
+	return chdr.ChannelId, nil
 }

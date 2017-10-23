@@ -1,17 +1,7 @@
 /*
 Copyright IBM Corp. 2016 All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package chaincode
@@ -26,6 +16,7 @@ import (
 	"github.com/hyperledger/fabric/common/cauthdsl"
 	"github.com/hyperledger/fabric/core/chaincode"
 	"github.com/hyperledger/fabric/core/chaincode/platforms"
+	"github.com/hyperledger/fabric/core/chaincode/shim"
 	"github.com/hyperledger/fabric/core/container"
 	"github.com/hyperledger/fabric/msp"
 	"github.com/hyperledger/fabric/peer/common"
@@ -84,6 +75,14 @@ func getChaincodeSpec(cmd *cobra.Command) (*pb.ChaincodeSpec, error) {
 	}
 
 	chaincodeLang = strings.ToUpper(chaincodeLang)
+	if javaEnabled() {
+		logger.Debug("java chaincode enabled")
+	} else {
+		logger.Debug("java chaincode disabled")
+		if pb.ChaincodeSpec_Type_value[chaincodeLang] == int32(pb.ChaincodeSpec_JAVA) {
+			return nil, fmt.Errorf("Java chaincode is work-in-progress and disabled")
+		}
+	}
 	spec = &pb.ChaincodeSpec{
 		Type:        pb.ChaincodeSpec_Type(pb.ChaincodeSpec_Type_value[chaincodeLang]),
 		ChaincodeId: &pb.ChaincodeID{Path: chaincodePath, Name: chaincodeName, Version: chaincodeVersion},
@@ -98,13 +97,42 @@ func chaincodeInvokeOrQuery(cmd *cobra.Command, args []string, invoke bool, cf *
 		return err
 	}
 
-	proposalResp, err := ChaincodeInvokeOrQuery(spec, chainID, invoke, cf.Signer, cf.EndorserClient, cf.BroadcastClient)
+	proposalResp, err := ChaincodeInvokeOrQuery(
+		spec,
+		chainID,
+		invoke,
+		cf.Signer,
+		cf.EndorserClient,
+		cf.BroadcastClient)
+
 	if err != nil {
-		return err
+		return fmt.Errorf("%s - %v", err, proposalResp)
 	}
 
 	if invoke {
-		logger.Infof("Invoke result: %v", proposalResp)
+		if proposalResp.Response.Status >= shim.ERROR {
+			logger.Debugf("ESCC invoke result: %v", proposalResp)
+			pRespPayload, err := putils.GetProposalResponsePayload(proposalResp.Payload)
+			if err != nil {
+				return fmt.Errorf("Error while unmarshaling proposal response payload: %s", err)
+			}
+			ca, err := putils.GetChaincodeAction(pRespPayload.Extension)
+			if err != nil {
+				return fmt.Errorf("Error while unmarshaling chaincode action: %s", err)
+			}
+			logger.Warningf("Endorsement failure during invoke. chaincode result: %v", ca.Response)
+		} else {
+			logger.Debugf("ESCC invoke result: %v", proposalResp)
+			pRespPayload, err := putils.GetProposalResponsePayload(proposalResp.Payload)
+			if err != nil {
+				return fmt.Errorf("Error while unmarshaling proposal response payload: %s", err)
+			}
+			ca, err := putils.GetChaincodeAction(pRespPayload.Extension)
+			if err != nil {
+				return fmt.Errorf("Error while unmarshaling chaincode action: %s", err)
+			}
+			logger.Infof("Chaincode invoke successful. result: %v", ca.Response)
+		}
 	} else {
 		if proposalResp == nil {
 			return fmt.Errorf("Error query %s by endorsing: %s", chainFuncName, err)
@@ -112,8 +140,7 @@ func chaincodeInvokeOrQuery(cmd *cobra.Command, args []string, invoke bool, cf *
 
 		if chaincodeQueryRaw {
 			if chaincodeQueryHex {
-				err = errors.New("Options --raw (-r) and --hex (-x) are not compatible")
-				return
+				return fmt.Errorf("Options --raw (-r) and --hex (-x) are not compatible")
 			}
 			fmt.Print("Query Result (Raw): ")
 			os.Stdout.Write(proposalResp.Response.Payload)
@@ -125,7 +152,7 @@ func chaincodeInvokeOrQuery(cmd *cobra.Command, args []string, invoke bool, cf *
 			}
 		}
 	}
-	return err
+	return nil
 }
 
 func checkChaincodeCmdParams(cmd *cobra.Command) error {
@@ -134,47 +161,33 @@ func checkChaincodeCmdParams(cmd *cobra.Command) error {
 		return fmt.Errorf("Must supply value for %s name parameter.", chainFuncName)
 	}
 
-	if cmd.Name() == instantiate_cmdname || cmd.Name() == install_cmdname || cmd.Name() == upgrade_cmdname || cmd.Name() == package_cmdname {
+	if cmd.Name() == instantiateCmdName || cmd.Name() == installCmdName ||
+		cmd.Name() == upgradeCmdName || cmd.Name() == packageCmdName {
 		if chaincodeVersion == common.UndefinedParamValue {
 			return fmt.Errorf("Chaincode version is not provided for %s", cmd.Name())
 		}
 	}
 
-	// if it's not a deploy or an upgrade we don't need policy, escc and vscc
-	if cmd.Name() != instantiate_cmdname && cmd.Name() != upgrade_cmdname {
-		if escc != common.UndefinedParamValue {
-			return errors.New("escc should be supplied only to chaincode deploy requests")
-		}
-
-		if vscc != common.UndefinedParamValue {
-			return errors.New("vscc should be supplied only to chaincode deploy requests")
-		}
-
-		if policy != common.UndefinedParamValue {
-			return errors.New("policy should be supplied only to chaincode deploy requests")
-		}
+	if escc != common.UndefinedParamValue {
+		logger.Infof("Using escc %s", escc)
 	} else {
-		if escc != common.UndefinedParamValue {
-			logger.Infof("Using escc %s", escc)
-		} else {
-			logger.Info("Using default escc")
-			escc = "escc"
-		}
+		logger.Info("Using default escc")
+		escc = "escc"
+	}
 
-		if vscc != common.UndefinedParamValue {
-			logger.Infof("Using vscc %s", vscc)
-		} else {
-			logger.Info("Using default vscc")
-			vscc = "vscc"
-		}
+	if vscc != common.UndefinedParamValue {
+		logger.Infof("Using vscc %s", vscc)
+	} else {
+		logger.Info("Using default vscc")
+		vscc = "vscc"
+	}
 
-		if policy != common.UndefinedParamValue {
-			p, err := cauthdsl.FromString(policy)
-			if err != nil {
-				return fmt.Errorf("Invalid policy %s", policy)
-			}
-			policyMarhsalled = putils.MarshalOrPanic(p)
+	if policy != common.UndefinedParamValue {
+		p, err := cauthdsl.FromString(policy)
+		if err != nil {
+			return fmt.Errorf("Invalid policy %s", policy)
 		}
+		policyMarhsalled = putils.MarshalOrPanic(p)
 	}
 
 	// Check that non-empty chaincode parameters contain only Args as a key.
@@ -219,20 +232,32 @@ func InitCmdFactory(isEndorserRequired, isOrdererRequired bool) (*ChaincodeCmdFa
 	var err error
 	var endorserClient pb.EndorserClient
 	if isEndorserRequired {
-		endorserClient, err = common.GetEndorserClient()
+		endorserClient, err = common.GetEndorserClientFnc()
 		if err != nil {
 			return nil, fmt.Errorf("Error getting endorser client %s: %s", chainFuncName, err)
 		}
 	}
 
-	signer, err := common.GetDefaultSigner()
+	signer, err := common.GetDefaultSignerFnc()
 	if err != nil {
 		return nil, fmt.Errorf("Error getting default signer: %s", err)
 	}
 
 	var broadcastClient common.BroadcastClient
 	if isOrdererRequired {
-		broadcastClient, err = common.GetBroadcastClient(orderingEndpoint, tls, caFile)
+		if len(orderingEndpoint) == 0 {
+			orderingEndpoints, err := common.GetOrdererEndpointOfChainFnc(chainID, signer, endorserClient)
+			if err != nil {
+				return nil, fmt.Errorf("Error getting (%s) orderer endpoint: %s", chainID, err)
+			}
+			if len(orderingEndpoints) == 0 {
+				return nil, fmt.Errorf("Error no orderer endpoint got for %s", chainID)
+			}
+			logger.Infof("Get chain(%s) orderer endpoint: %s", chainID, orderingEndpoints[0])
+			orderingEndpoint = orderingEndpoints[0]
+		}
+
+		broadcastClient, err = common.GetBroadcastClientFnc(orderingEndpoint, tls, caFile)
 
 		if err != nil {
 			return nil, fmt.Errorf("Error getting broadcast client: %s", err)
@@ -254,7 +279,14 @@ func InitCmdFactory(isEndorserRequired, isOrdererRequired bool) (*ChaincodeCmdFa
 //
 // NOTE - Query will likely go away as all interactions with the endorser are
 // Proposal and ProposalResponses
-func ChaincodeInvokeOrQuery(spec *pb.ChaincodeSpec, cID string, invoke bool, signer msp.SigningIdentity, endorserClient pb.EndorserClient, bc common.BroadcastClient) (*pb.ProposalResponse, error) {
+func ChaincodeInvokeOrQuery(
+	spec *pb.ChaincodeSpec,
+	cID string,
+	invoke bool,
+	signer msp.SigningIdentity,
+	endorserClient pb.EndorserClient,
+	bc common.BroadcastClient,
+) (*pb.ProposalResponse, error) {
 	// Build the ChaincodeInvocationSpec message
 	invocation := &pb.ChaincodeInvocationSpec{ChaincodeSpec: spec}
 	if customIDGenAlg != common.UndefinedParamValue {
@@ -271,8 +303,16 @@ func ChaincodeInvokeOrQuery(spec *pb.ChaincodeSpec, cID string, invoke bool, sig
 		funcName = "query"
 	}
 
+	// extract the transient field if it exists
+	var tMap map[string][]byte
+	if transient != "" {
+		if err := json.Unmarshal([]byte(transient), &tMap); err != nil {
+			return nil, fmt.Errorf("Error parsing transient string: %s", err)
+		}
+	}
+
 	var prop *pb.Proposal
-	prop, _, err = putils.CreateProposalFromCIS(pcommon.HeaderType_ENDORSER_TRANSACTION, cID, invocation, creator)
+	prop, _, err = putils.CreateChaincodeProposalWithTransient(pcommon.HeaderType_ENDORSER_TRANSACTION, cID, invocation, creator, tMap)
 	if err != nil {
 		return nil, fmt.Errorf("Error creating proposal  %s: %s", funcName, err)
 	}
@@ -291,6 +331,9 @@ func ChaincodeInvokeOrQuery(spec *pb.ChaincodeSpec, cID string, invoke bool, sig
 
 	if invoke {
 		if proposalResp != nil {
+			if proposalResp.Response.Status >= shim.ERROR {
+				return proposalResp, nil
+			}
 			// assemble a signed transaction (it's an Envelope message)
 			env, err := putils.CreateSignedTx(prop, signer, proposalResp)
 			if err != nil {

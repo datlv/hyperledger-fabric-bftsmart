@@ -1,27 +1,20 @@
-Configuring using the configtxgen tool
-======================================
+Channel Configuration (configtxgen)
+===================================
 
 This document describe the usage for the ``configtxgen`` utility for
-manipulating fabric channel configuration.
+manipulating Hyperledger Fabric channel configuration.
 
 For now, the tool is primarily focused on generating the genesis block
 for bootstrapping the orderer, but it is intended to be enhanced in the
 future for generating new channel configurations as well as
 reconfiguring existing channels.
 
-Building the tool
------------------
-
-Building the tool is as simple as ``make configtxgen``. This will create
-a ``configtxgen`` binary at ``build/bin/configtxgen`` which is included
-in the Vagrant development environment path by default.
-
 Configuration Profiles
 ----------------------
 
 The configuration parameters supplied to the ``configtxgen`` tool are
 primarily provided by the ``configtx.yaml`` file. This file is located
-at ``fabric/common/configtx/tool/configtx.yaml`` in the fabric.git
+at ``fabric/sampleconfig/configtx.yaml`` in the fabric.git
 repository.
 
 This configuration file is split primarily into three pieces.
@@ -58,7 +51,7 @@ After creating a configuration profile as desired, simply invoke
 
 ::
 
-    configtxgen -profile &lt;profile_name&gt;
+    configtxgen -profile <profile_name>
 
 This will produce a ``genesis.block`` file in the current directory. You
 may optionally specify another filename by passing in the ``-path``
@@ -77,7 +70,7 @@ The tool can also output a channel creation tx by executing
 
 ::
 
-    configtxgen -profile <profile_name> -outputCreateChannelTx <output.txname>
+    configtxgen -profile <profile_name> -channelID <channel_name> -outputCreateChannelTx <tx_filename>
 
 This will output a marshaled ``Envelope`` message which may be sent to
 broadcast to create a channel.
@@ -104,7 +97,7 @@ example:
     2017/03/01 21:24:24 Checking for configtx.yaml at:
     2017/03/01 21:24:24 Checking for configtx.yaml at:
     2017/03/01 21:24:24 Checking for configtx.yaml at: /home/yellickj/go/src/github.com/hyperledger/fabric/common/configtx/tool
-    2017/03/01 21:24:24 map[orderer:map[BatchSize:map[MaxMessageCount:10 AbsoluteMaxBytes:99 MB PreferredMaxBytes:512 KB] Kafka:map[Brokers:[127.0.0.1:9092]] Organizations:<nil> OrdererType:solo Addresses:[127.0.0.1:7050] BatchTimeout:10s] application:map[Organizations:<nil>] profiles:map[SampleInsecureSolo:map[Orderer:map[BatchTimeout:10s BatchSize:map[MaxMessageCount:10 AbsoluteMaxBytes:99 MB PreferredMaxBytes:512 KB] Kafka:map[Brokers:[127.0.0.1:9092]] Organizations:<nil> OrdererType:solo Addresses:[127.0.0.1:7050]] Application:map[Organizations:<nil>]] SampleInsecureKafka:map[Orderer:map[Addresses:[127.0.0.1:7050] BatchTimeout:10s BatchSize:map[AbsoluteMaxBytes:99 MB PreferredMaxBytes:512 KB MaxMessageCount:10] Kafka:map[Brokers:[127.0.0.1:9092]] Organizations:<nil> OrdererType:kafka] Application:map[Organizations:<nil>]] SampleSingleMSPSolo:map[Orderer:map[OrdererType:solo Addresses:[127.0.0.1:7050] BatchTimeout:10s BatchSize:map[MaxMessageCount:10 AbsoluteMaxBytes:99 MB PreferredMaxBytes:512 KB] Kafka:map[Brokers:[127.0.0.1:9092]] Organizations:[map[Name:SampleOrg ID:DEFAULT MSPDir:msp/sampleconfig BCCSP:map[Default:SW SW:map[Hash:SHA3 Security:256 FileKeyStore:map[KeyStore:<nil>]]] AnchorPeers:[map[Host:127.0.0.1 Port:7051]]]]] Application:map[Organizations:[map[Name:SampleOrg ID:DEFAULT MSPDir:msp/sampleconfig BCCSP:map[Default:SW SW:map[Hash:SHA3 Security:256 FileKeyStore:map[KeyStore:<nil>]]] AnchorPeers:[map[Port:7051 Host:127.0.0.1]]]]]]] organizations:[map[Name:SampleOrg ID:DEFAULT MSPDir:msp/sampleconfig BCCSP:map[Default:SW SW:map[Hash:SHA3 Security:256 FileKeyStore:map[KeyStore:<nil>]]] AnchorPeers:[map[Host:127.0.0.1 Port:7051]]]]]
+    2017/03/01 21:24:24 map[orderer:map[BatchSize:map[MaxMessageCount:10 AbsoluteMaxBytes:99 MB PreferredMaxBytes:512 KB] Kafka:map[Brokers:[127.0.0.1:9092]] Organizations:<nil> OrdererType:solo Addresses:[127.0.0.1:7050] BatchTimeout:10s] application:map[Organizations:<nil>] profiles:map[SampleInsecureSolo:map[Orderer:map[BatchTimeout:10s BatchSize:map[MaxMessageCount:10 AbsoluteMaxBytes:99 MB PreferredMaxBytes:512 KB] Kafka:map[Brokers:[127.0.0.1:9092]] Organizations:<nil> OrdererType:solo Addresses:[127.0.0.1:7050]] Application:map[Organizations:<nil>]] SampleInsecureKafka:map[Orderer:map[Addresses:[127.0.0.1:7050] BatchTimeout:10s BatchSize:map[AbsoluteMaxBytes:99 MB PreferredMaxBytes:512 KB MaxMessageCount:10] Kafka:map[Brokers:[127.0.0.1:9092]] Organizations:<nil> OrdererType:kafka] Application:map[Organizations:<nil>]] SampleSingleMSPSolo:map[Orderer:map[OrdererType:solo Addresses:[127.0.0.1:7050] BatchTimeout:10s BatchSize:map[MaxMessageCount:10 AbsoluteMaxBytes:99 MB PreferredMaxBytes:512 KB] Kafka:map[Brokers:[127.0.0.1:9092]] Organizations:[map[Name:SampleOrg ID:DEFAULT MSPDir:msp BCCSP:map[Default:SW SW:map[Hash:SHA3 Security:256 FileKeyStore:map[KeyStore:<nil>]]] AnchorPeers:[map[Host:127.0.0.1 Port:7051]]]]] Application:map[Organizations:[map[Name:SampleOrg ID:DEFAULT MSPDir:msp BCCSP:map[Default:SW SW:map[Hash:SHA3 Security:256 FileKeyStore:map[KeyStore:<nil>]]] AnchorPeers:[map[Port:7051 Host:127.0.0.1]]]]]]] organizations:[map[Name:SampleOrg ID:DEFAULT MSPDir:msp BCCSP:map[Default:SW SW:map[Hash:SHA3 Security:256 FileKeyStore:map[KeyStore:<nil>]]] AnchorPeers:[map[Host:127.0.0.1 Port:7051]]]]]
     2017/03/01 21:24:24 Generating genesis block
     2017/03/01 21:24:24 Writing genesis block
     2017/03/01 21:24:24 Inspecting block
@@ -205,3 +198,6 @@ example:
             }
         }
     }
+
+.. Licensed under Creative Commons Attribution 4.0 International License
+   https://creativecommons.org/licenses/by/4.0/

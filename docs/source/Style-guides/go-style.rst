@@ -1,7 +1,7 @@
 Coding guidelines
 -----------------
 
-Coding Golang 
+Coding Golang
 ~~~~~~~~~~~~~~
 
 We code in Go™ and strictly follow the `best
@@ -12,7 +12,7 @@ code and fix all errors and warnings: -
 vet <https://golang.org/cmd/vet/>`__ -
 `goimports <https://godoc.org/golang.org/x/tools/cmd/goimports>`__
 
-Generating gRPC code 
+Generating gRPC code
 ---------------------
 
 If you modify any ``.proto`` files, run the following command to
@@ -26,10 +26,10 @@ generate/update the respective ``.pb.go`` files.
 Adding or updating Go packages
 ------------------------------
 
-The Hyperledger Fabric Project uses Go 1.6 vendoring for package
+Hyperledger Fabric uses Govendor for package
 management. This means that all required packages reside in the
-``vendor`` folder within the fabric project. Go will use packages in
-this folder instead of the GOPATH when the ``go install`` or
+``$GOPATH/src/github.com/hyperledger/fabric/vendor`` folder. Go will use
+packages in this folder instead of the GOPATH when the ``go install`` or
 ``go build`` commands are executed. To manage the packages in the
 ``vendor`` folder, we use
 `Govendor <https://github.com/kardianos/govendor>`__, which is installed
@@ -52,3 +52,7 @@ package management:
 
       # List package.
       govendor list
+
+.. Licensed under Creative Commons Attribution 4.0 International License
+   https://creativecommons.org/licenses/by/4.0/
+

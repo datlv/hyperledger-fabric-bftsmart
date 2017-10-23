@@ -1,30 +1,24 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package msgstore
 
 import (
 	"sync"
-
 	"time"
 
 	"github.com/hyperledger/fabric/gossip/common"
 )
 
 var noopLock = func() {}
+
+// Noop is a function that doesn't do anything
+func Noop(_ interface{}) {
+
+}
 
 // invalidationTrigger is invoked on each message that was invalidated because of a message addition
 // i.e: if add(0), add(1) was called one after the other, and the store has only {1} after the sequence of invocations
@@ -42,8 +36,6 @@ func NewMessageStore(pol common.MessageReplacingPolicy, trigger invalidationTrig
 // lock taken, expiration callback invoked and external lock released. Callback and external lock can be nil.
 func NewMessageStoreExpirable(pol common.MessageReplacingPolicy, trigger invalidationTrigger, msgTTL time.Duration, externalLock func(), externalUnlock func(), externalExpire func(interface{})) MessageStore {
 	store := newMsgStore(pol, trigger)
-
-	store.expirable = true
 	store.msgTTL = msgTTL
 
 	if externalLock != nil {
@@ -68,7 +60,6 @@ func newMsgStore(pol common.MessageReplacingPolicy, trigger invalidationTrigger)
 		messages:   make([]*msg, 0),
 		invTrigger: trigger,
 
-		expirable:         false,
 		externalLock:      noopLock,
 		externalUnlock:    noopLock,
 		expireMsgCallback: func(m interface{}) {},
@@ -76,7 +67,6 @@ func newMsgStore(pol common.MessageReplacingPolicy, trigger invalidationTrigger)
 
 		doneCh: make(chan struct{}),
 	}
-
 }
 
 // MessageStore adds messages to an internal buffer.
@@ -102,24 +92,24 @@ type MessageStore interface {
 
 	// Stop all associated go routines
 	Stop()
+
+	// Purge purges all messages that are accepted by
+	// the given predicate
+	Purge(func(interface{}) bool)
 }
 
 type messageStoreImpl struct {
-	pol        common.MessageReplacingPolicy
-	lock       sync.RWMutex
-	messages   []*msg
-	invTrigger invalidationTrigger
-
-	expirable    bool
-	msgTTL       time.Duration
-	expiredCount int
-
+	pol               common.MessageReplacingPolicy
+	lock              sync.RWMutex
+	messages          []*msg
+	invTrigger        invalidationTrigger
+	msgTTL            time.Duration
+	expiredCount      int
 	externalLock      func()
 	externalUnlock    func()
 	expireMsgCallback func(msg interface{})
-
-	doneCh   chan struct{}
-	stopOnce sync.Once
+	doneCh            chan struct{}
+	stopOnce          sync.Once
 }
 
 type msg struct {
@@ -149,6 +139,27 @@ func (s *messageStoreImpl) Add(message interface{}) bool {
 
 	s.messages = append(s.messages, &msg{data: message, created: time.Now()})
 	return true
+}
+
+func (s *messageStoreImpl) Purge(shouldBePurged func(interface{}) bool) {
+	shouldMsgBePurged := func(m *msg) bool {
+		return shouldBePurged(m.data)
+	}
+	if !s.isPurgeNeeded(shouldMsgBePurged) {
+		return
+	}
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	n := len(s.messages)
+	for i := 0; i < n; i++ {
+		if !shouldMsgBePurged(s.messages[i]) {
+			continue
+		}
+		s.invTrigger(s.messages[i].data)
+		s.messages = append(s.messages[:i], s.messages[i+1:]...)
+		n--
+		i--
+	}
 }
 
 // Checks if message is valid for insertion to store
@@ -213,13 +224,11 @@ func (s *messageStoreImpl) expireMessages() {
 	}
 }
 
-func (s *messageStoreImpl) needToExpire() bool {
+func (s *messageStoreImpl) isPurgeNeeded(shouldBePurged func(*msg) bool) bool {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
-	for _, msg := range s.messages {
-		if !msg.expired && time.Since(msg.created) > s.msgTTL {
-			return true
-		} else if time.Since(msg.created) > (s.msgTTL * 2) {
+	for _, m := range s.messages {
+		if shouldBePurged(m) {
 			return true
 		}
 	}
@@ -232,7 +241,15 @@ func (s *messageStoreImpl) expirationRoutine() {
 		case <-s.doneCh:
 			return
 		case <-time.After(s.expirationCheckInterval()):
-			if s.needToExpire() {
+			hasMessageExpired := func(m *msg) bool {
+				if !m.expired && time.Since(m.created) > s.msgTTL {
+					return true
+				} else if time.Since(m.created) > (s.msgTTL * 2) {
+					return true
+				}
+				return false
+			}
+			if s.isPurgeNeeded(hasMessageExpired) {
 				s.expireMessages()
 			}
 		}

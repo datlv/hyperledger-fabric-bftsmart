@@ -1,10 +1,10 @@
-Building the fabric
--------------------
+Building Hyperledger Fabric
+---------------------------
 
 The following instructions assume that you have already set up your
-`development environment <devenv.md>`__.
+:doc:`development environment <devenv>`.
 
-To build the Fabric:
+To build Hyperledger Fabric:
 
 ::
 
@@ -21,6 +21,14 @@ Use the following sequence to run all unit tests
     cd $GOPATH/src/github.com/hyperledger/fabric
     make unit-test
 
+To run a subset of tests, set the TEST_PKGS environment variable.
+Specify a list of packages (separated by space), for example:
+
+::
+
+    export TEST_PKGS="github.com/hyperledger/fabric/core/ledger/..."
+    make unit-test
+
 To run a specific test use the ``-run RE`` flag where RE is a regular
 expression that matches the test case name. To run tests with verbose
 output use the ``-v`` flag. For example, to run the ``TestGetFoo`` test
@@ -31,21 +39,22 @@ call/excecute
 
     go test -v -run=TestGetFoo
 
+
+
 Running Node.js Unit Tests
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 You must also run the Node.js unit tests to insure that the Node.js
 client SDK is not broken by your changes. To run the Node.js unit tests,
 follow the instructions
-`here <https://github.com/hyperledger/fabric-sdk-node/README.md>`__.
+`here <https://github.com/hyperledger/fabric-sdk-node/blob/master/README.md>`__.
 
 Running Behave BDD Tests
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Note:** currently, the behave tests must be run from within in the
-Vagrant environment. See the devenv setup instructions if you have not
-already set up your `Vagrant
-environment <devenv.md#Boostrapping-the-VM-using-Vagrant>`__.
+Vagrant environment. See the :doc:`development environment <devenv>` setup instructions
+if you have not already set up your Vagrant environment.
 
 `Behave <http://pythonhosted.org/behave/>`__ tests will setup networks
 of peers with different security and consensus configurations and verify
@@ -108,7 +117,7 @@ Building on Power Platform
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Development and build on Power (ppc64le) systems is done outside of
-vagrant as outlined `here <#building-outside-of-vagrant->`__. For ease
+vagrant as outlined `here <#building-outside-of-vagrant>`__. For ease
 of setting up the dev environment on Ubuntu, invoke `this
 script <https://github.com/hyperledger/fabric/tree/master/devenv/setupUbuntuOnPPC64le.sh>`__
 as root. This script has been validated on Ubuntu 16.04 and assumes
@@ -154,6 +163,9 @@ library.
 The available log levels in order of increasing verbosity are: *CRITICAL
 \| ERROR \| WARNING \| NOTICE \| INFO \| DEBUG*
 
-See `specific logging
-control <https://github.com/hyperledger/fabric/blob/master/docs/Setup/logging-control.md>`__
-instructions when running the peer process.
+See the :doc:`logging-control` document for
+instructions on tweaking the level of log messages to output when running
+the various Hyperledger Fabric components.
+
+.. Licensed under Creative Commons Attribution 4.0 International License
+   https://creativecommons.org/licenses/by/4.0/

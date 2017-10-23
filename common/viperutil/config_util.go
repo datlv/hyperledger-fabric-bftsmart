@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package viperutil
@@ -29,18 +19,21 @@ import (
 	"encoding/json"
 	"encoding/pem"
 
+	"github.com/Shopify/sarama"
+	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/mitchellh/mapstructure"
-	"github.com/op/go-logging"
 	"github.com/spf13/viper"
 )
 
-var logger = logging.MustGetLogger("viperutil")
+var logger = flogging.MustGetLogger("viperutil")
 
-func getKeysRecursively(base string, v *viper.Viper, nodeKeys map[string]interface{}) map[string]interface{} {
+type viperGetter func(key string) interface{}
+
+func getKeysRecursively(base string, getKey viperGetter, nodeKeys map[string]interface{}) map[string]interface{} {
 	result := make(map[string]interface{})
 	for key := range nodeKeys {
 		fqKey := base + key
-		val := v.Get(fqKey)
+		val := getKey(fqKey)
 		if m, ok := val.(map[interface{}]interface{}); ok {
 			logger.Debugf("Found map[interface{}]interface{} value for %s", fqKey)
 			tmp := make(map[string]interface{})
@@ -51,17 +44,17 @@ func getKeysRecursively(base string, v *viper.Viper, nodeKeys map[string]interfa
 				}
 				tmp[cik] = iv
 			}
-			result[key] = getKeysRecursively(fqKey+".", v, tmp)
+			result[key] = getKeysRecursively(fqKey+".", getKey, tmp)
 		} else if m, ok := val.(map[string]interface{}); ok {
 			logger.Debugf("Found map[string]interface{} value for %s", fqKey)
-			result[key] = getKeysRecursively(fqKey+".", v, m)
+			result[key] = getKeysRecursively(fqKey+".", getKey, m)
 		} else if m, ok := unmarshalJSON(val); ok {
 			logger.Debugf("Found real value for %s setting to map[string]string %v", fqKey, m)
 			result[key] = m
 		} else {
 			if val == nil {
 				fileSubKey := fqKey + ".File"
-				fileVal := v.Get(fileSubKey)
+				fileVal := getKey(fileSubKey)
 				if fileVal != nil {
 					result[key] = map[string]interface{}{"File": fileVal}
 					continue
@@ -252,12 +245,44 @@ func pemBlocksFromFileDecodeHook() mapstructure.DecodeHookFunc {
 	}
 }
 
+func kafkaVersionDecodeHook() mapstructure.DecodeHookFunc {
+	return func(f reflect.Type, t reflect.Type, data interface{}) (interface{}, error) {
+		if f.Kind() != reflect.String || t != reflect.TypeOf(sarama.KafkaVersion{}) {
+			return data, nil
+		}
+		switch data {
+		case "0.8.2.0":
+			return sarama.V0_8_2_0, nil
+		case "0.8.2.1":
+			return sarama.V0_8_2_1, nil
+		case "0.8.2.2":
+			return sarama.V0_8_2_2, nil
+		case "0.9.0.0":
+			return sarama.V0_9_0_0, nil
+		case "0.9.0.1":
+			return sarama.V0_9_0_1, nil
+		case "0.10.0.0":
+			return sarama.V0_10_0_0, nil
+		case "0.10.0.1":
+			return sarama.V0_10_0_1, nil
+		case "0.10.1.0":
+			return sarama.V0_10_1_0, nil
+		case "0.10.2.0":
+			return sarama.V0_10_2_0, nil
+		default:
+			return nil, fmt.Errorf("Unsupported Kafka version: '%s'", data)
+		}
+	}
+}
+
 // EnhancedExactUnmarshal is intended to unmarshal a config file into a structure
 // producing error when extraneous variables are introduced and supporting
 // the time.Duration type
 func EnhancedExactUnmarshal(v *viper.Viper, output interface{}) error {
-	baseKeys := v.AllSettings() // AllKeys doesn't actually return all keys, it only returns the base ones
-	leafKeys := getKeysRecursively("", v, baseKeys)
+	// AllKeys doesn't actually return all keys, it only returns the base ones
+	baseKeys := v.AllSettings()
+	getterWithClass := func(key string) interface{} { return v.Get(key) } // hide receiver
+	leafKeys := getKeysRecursively("", getterWithClass, baseKeys)
 
 	logger.Debugf("%+v", leafKeys)
 	config := &mapstructure.DecoderConfig{
@@ -270,6 +295,7 @@ func EnhancedExactUnmarshal(v *viper.Viper, output interface{}) error {
 			byteSizeDecodeHook(),
 			stringFromFileDecodeHook(),
 			pemBlocksFromFileDecodeHook(),
+			kafkaVersionDecodeHook(),
 		),
 	}
 
@@ -278,4 +304,26 @@ func EnhancedExactUnmarshal(v *viper.Viper, output interface{}) error {
 		return err
 	}
 	return decoder.Decode(leafKeys)
+}
+
+// EnhancedExactUnmarshalKey is intended to unmarshal a config file subtreee into a structure
+func EnhancedExactUnmarshalKey(baseKey string, output interface{}) error {
+	m := make(map[string]interface{})
+	m[baseKey] = nil
+	leafKeys := getKeysRecursively("", viper.Get, m)
+
+	logger.Debugf("%+v", leafKeys)
+
+	config := &mapstructure.DecoderConfig{
+		Metadata:         nil,
+		Result:           output,
+		WeaklyTypedInput: true,
+	}
+
+	decoder, err := mapstructure.NewDecoder(config)
+	if err != nil {
+		return err
+	}
+
+	return decoder.Decode(leafKeys[baseKey])
 }

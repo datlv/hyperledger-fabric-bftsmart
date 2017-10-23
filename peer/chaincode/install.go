@@ -1,17 +1,7 @@
 /*
 Copyright IBM Corp. 2016-2017 All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package chaincode
@@ -35,16 +25,16 @@ import (
 
 var chaincodeInstallCmd *cobra.Command
 
-const install_cmdname = "install"
+const installCmdName = "install"
 
-const install_desc = "Package the specified chaincode into a deployment spec and save it on the peer's path."
+const installDesc = "Package the specified chaincode into a deployment spec and save it on the peer's path."
 
 // installCmd returns the cobra command for Chaincode Deploy
 func installCmd(cf *ChaincodeCmdFactory) *cobra.Command {
 	chaincodeInstallCmd = &cobra.Command{
 		Use:       "install",
-		Short:     fmt.Sprintf(install_desc),
-		Long:      fmt.Sprintf(install_desc),
+		Short:     fmt.Sprint(installDesc),
+		Long:      fmt.Sprint(installDesc),
 		ValidArgs: []string{"1"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var ccpackfile string
@@ -54,6 +44,14 @@ func installCmd(cf *ChaincodeCmdFactory) *cobra.Command {
 			return chaincodeInstall(cmd, ccpackfile, cf)
 		},
 	}
+	flagList := []string{
+		"lang",
+		"ctor",
+		"path",
+		"name",
+		"version",
+	}
+	attachFlags(chaincodeInstallCmd, flagList)
 
 	return chaincodeInstallCmd
 }
@@ -88,11 +86,10 @@ func install(msg proto.Message, cf *ChaincodeCmdFactory) error {
 	return nil
 }
 
-//generateChaincode creates ChaincodeDeploymentSpec as the package to install
-func generateChaincode(cmd *cobra.Command, chaincodeName, chaincodeVersion string) (*pb.ChaincodeDeploymentSpec, error) {
-	tmppkg, _ := ccprovider.GetChaincodePackage(chaincodeName, chaincodeVersion)
-	if tmppkg != nil {
-		return nil, fmt.Errorf("chaincode %s:%s exists", chaincodeName, chaincodeVersion)
+//genChaincodeDeploymentSpec creates ChaincodeDeploymentSpec as the package to install
+func genChaincodeDeploymentSpec(cmd *cobra.Command, chaincodeName, chaincodeVersion string) (*pb.ChaincodeDeploymentSpec, error) {
+	if existed, _ := ccprovider.ChaincodePackageExists(chaincodeName, chaincodeVersion); existed {
+		return nil, fmt.Errorf("chaincode %s:%s already exists", chaincodeName, chaincodeVersion)
 	}
 
 	spec, err := getChaincodeSpec(cmd)
@@ -115,17 +112,14 @@ func getPackageFromFile(ccpackfile string) (proto.Message, *pb.ChaincodeDeployme
 		return nil, nil, err
 	}
 
-	//the bytes should be a valid package (CDS or SigedCDS)
+	//the bytes should be a valid package (CDS or SignedCDS)
 	ccpack, err := ccprovider.GetCCPackage(b)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	//either CDS or Envelope
-	o, err := ccpack.GetPackageObject(), nil
-	if err != nil {
-		return nil, nil, err
-	}
+	o := ccpack.GetPackageObject()
 
 	//try CDS first
 	cds, ok := o.(*pb.ChaincodeDeploymentSpec)
@@ -152,7 +146,7 @@ func getPackageFromFile(ccpackfile string) (proto.Message, *pb.ChaincodeDeployme
 	return o, cds, nil
 }
 
-// chaincodeInstall installs the chaincode. If remoteinstall, does it via a lccc call
+// chaincodeInstall installs the chaincode. If remoteinstall, does it via a lscc call
 func chaincodeInstall(cmd *cobra.Command, ccpackfile string, cf *ChaincodeCmdFactory) error {
 	var err error
 	if cf == nil {
@@ -164,11 +158,11 @@ func chaincodeInstall(cmd *cobra.Command, ccpackfile string, cf *ChaincodeCmdFac
 
 	var ccpackmsg proto.Message
 	if ccpackfile == "" {
-		if chaincodePath == common.UndefinedParamValue || chaincodeVersion == common.UndefinedParamValue {
-			return fmt.Errorf("Must supply value for %s path and version parameters.", chainFuncName)
+		if chaincodePath == common.UndefinedParamValue || chaincodeVersion == common.UndefinedParamValue || chaincodeName == common.UndefinedParamValue {
+			return fmt.Errorf("Must supply value for %s name, path and version parameters.", chainFuncName)
 		}
 		//generate a raw ChaincodeDeploymentSpec
-		ccpackmsg, err = generateChaincode(cmd, chaincodeName, chaincodeVersion)
+		ccpackmsg, err = genChaincodeDeploymentSpec(cmd, chaincodeName, chaincodeVersion)
 		if err != nil {
 			return err
 		}

@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hyperledger/fabric/core/config"
 	"github.com/op/go-logging"
 	"github.com/spf13/viper"
 )
@@ -68,13 +69,18 @@ func SetupTestConfig() {
 }
 
 // SetupCoreYAMLConfig sets up configurations for testing
-func SetupCoreYAMLConfig(coreYamlPath string) {
+func SetupCoreYAMLConfig() {
 	viper.SetConfigName("core")
 	viper.SetEnvPrefix("CORE")
-	viper.AddConfigPath(coreYamlPath)
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
-	err := viper.ReadInConfig()
+
+	err := config.AddDevConfigPath(nil)
+	if err != nil {
+		panic(fmt.Errorf("Fatal error adding dev dir: %s \n", err))
+	}
+
+	err = viper.ReadInConfig()
 	if err != nil { // Handle errors reading the config file
 		panic(fmt.Errorf("Fatal error config file: %s \n", err))
 	}
@@ -83,8 +89,10 @@ func SetupCoreYAMLConfig(coreYamlPath string) {
 // ResetConfigToDefaultValues resets configurations optins back to defaults
 func ResetConfigToDefaultValues() {
 	//reset to defaults
+	viper.Set("ledger.state.couchDBConfig.queryLimit", 10000)
 	viper.Set("ledger.state.stateDatabase", "goleveldb")
-	viper.Set("ledger.state.historyDatabase", false)
+	viper.Set("ledger.history.enableHistoryDatabase", false)
+	viper.Set("peer.fileSystemPath", "/var/hyperledger/production")
 }
 
 // SetLogLevel sets up log level

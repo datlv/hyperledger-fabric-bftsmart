@@ -50,6 +50,10 @@ type chaincodeHandlerList struct {
 }
 
 func (hl *chaincodeHandlerList) add(ie *pb.Interest, h *handler) (bool, error) {
+	if h == nil {
+		return false, fmt.Errorf("cannot add nil chaincode handler")
+	}
+
 	hl.Lock()
 	defer hl.Unlock()
 
@@ -157,6 +161,9 @@ func (hl *chaincodeHandlerList) foreach(e *pb.Event, action func(h *handler)) {
 }
 
 func (hl *genericHandlerList) add(ie *pb.Interest, h *handler) (bool, error) {
+	if h == nil {
+		return false, fmt.Errorf("cannot add nil generic handler")
+	}
 	hl.Lock()
 	if _, ok := hl.handlers[h]; ok {
 		hl.Unlock()
@@ -198,11 +205,11 @@ type eventProcessor struct {
 	//we could generalize this with mutiple channels each with its own size
 	eventChannel chan *pb.Event
 
-	//milliseconds timeout for producer to send an event.
+	//timeout duration for producer to send an event.
 	//if < 0, if buffer full, unblocks immediately and not send
 	//if 0, if buffer full, will block and guarantee the event will be sent out
 	//if > 0, if buffer full, blocks till timeout
-	timeout int
+	timeout time.Duration
 }
 
 //global eventProcessor singleton created by initializeEvents. Openchain producers
@@ -210,7 +217,7 @@ type eventProcessor struct {
 var gEventProcessor *eventProcessor
 
 func (ep *eventProcessor) start() {
-	producerLogger.Info("event processor started")
+	logger.Info("Event processor started")
 	for {
 		//wait for event
 		e := <-ep.eventChannel
@@ -219,7 +226,7 @@ func (ep *eventProcessor) start() {
 		eType := getMessageType(e)
 		ep.Lock()
 		if hl, _ = ep.eventConsumers[eType]; hl == nil {
-			producerLogger.Errorf("Event of type %s does not exist", eType)
+			logger.Errorf("Event of type %s does not exist", eType)
 			ep.Unlock()
 			continue
 		}
@@ -236,7 +243,7 @@ func (ep *eventProcessor) start() {
 }
 
 //initialize and start
-func initializeEvents(bufferSize uint, tout int) {
+func initializeEvents(bufferSize uint, tout time.Duration) {
 	if gEventProcessor != nil {
 		panic("should not be called twice")
 	}
@@ -252,7 +259,7 @@ func initializeEvents(bufferSize uint, tout int) {
 //AddEventType supported event
 func AddEventType(eventType pb.EventType) error {
 	gEventProcessor.Lock()
-	producerLogger.Debugf("registering %s", pb.EventType_name[int32(eventType)])
+	logger.Debugf("Registering %s", pb.EventType_name[int32(eventType)])
 	if _, ok := gEventProcessor.eventConsumers[eventType]; ok {
 		gEventProcessor.Unlock()
 		return fmt.Errorf("event type exists %s", pb.EventType_name[int32(eventType)])
@@ -260,6 +267,8 @@ func AddEventType(eventType pb.EventType) error {
 
 	switch eventType {
 	case pb.EventType_BLOCK:
+		gEventProcessor.eventConsumers[eventType] = &genericHandlerList{handlers: make(map[*handler]bool)}
+	case pb.EventType_FILTEREDBLOCK:
 		gEventProcessor.eventConsumers[eventType] = &genericHandlerList{handlers: make(map[*handler]bool)}
 	case pb.EventType_CHAINCODE:
 		gEventProcessor.eventConsumers[eventType] = &chaincodeHandlerList{handlers: make(map[string]map[string]map[*handler]bool)}
@@ -272,8 +281,7 @@ func AddEventType(eventType pb.EventType) error {
 }
 
 func registerHandler(ie *pb.Interest, h *handler) error {
-	producerLogger.Debugf("registerHandler %s", ie.EventType)
-
+	logger.Debugf("registering event type: %s", ie.EventType)
 	gEventProcessor.Lock()
 	defer gEventProcessor.Unlock()
 	if hl, ok := gEventProcessor.eventConsumers[ie.EventType]; !ok {
@@ -286,7 +294,7 @@ func registerHandler(ie *pb.Interest, h *handler) error {
 }
 
 func deRegisterHandler(ie *pb.Interest, h *handler) error {
-	producerLogger.Debugf("deRegisterHandler %s", ie.EventType)
+	logger.Debugf("deregistering event type: %s", ie.EventType)
 
 	gEventProcessor.Lock()
 	defer gEventProcessor.Unlock()
@@ -303,30 +311,37 @@ func deRegisterHandler(ie *pb.Interest, h *handler) error {
 
 //Send sends the event to interested consumers
 func Send(e *pb.Event) error {
+	logger.Debugf("Entry")
+	defer logger.Debugf("Exit")
 	if e.Event == nil {
-		producerLogger.Error("event not set")
+		logger.Error("event not set")
 		return fmt.Errorf("event not set")
 	}
 
 	if gEventProcessor == nil {
+		logger.Debugf("Event processor is nil")
 		return nil
 	}
 
 	if gEventProcessor.timeout < 0 {
+		logger.Debugf("Event processor timeout < 0")
 		select {
 		case gEventProcessor.eventChannel <- e:
 		default:
 			return fmt.Errorf("could not send the blocking event")
 		}
 	} else if gEventProcessor.timeout == 0 {
+		logger.Debugf("Event processor timeout = 0")
 		gEventProcessor.eventChannel <- e
 	} else {
+		logger.Debugf("Event processor timeout > 0")
 		select {
 		case gEventProcessor.eventChannel <- e:
-		case <-time.After(time.Duration(gEventProcessor.timeout) * time.Millisecond):
+		case <-time.After(gEventProcessor.timeout):
 			return fmt.Errorf("could not send the blocking event")
 		}
 	}
 
+	logger.Debugf("Event sent successfully")
 	return nil
 }

@@ -21,6 +21,7 @@ import (
 
 	"os"
 
+	configtxtest "github.com/hyperledger/fabric/common/configtx/test"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/example"
 	"github.com/hyperledger/fabric/core/ledger/ledgerconfig"
@@ -50,12 +51,14 @@ func init() {
 	logger.Debugf("Marble Example main init()")
 
 	//call a helper method to load the core.yaml
-	testutil.SetupCoreYAMLConfig("./../../../../../peer")
+	testutil.SetupCoreYAMLConfig()
 
 	cleanup()
-	ledgermgmt.Initialize()
+	ledgermgmt.Initialize(nil)
 	var err error
-	peerLedger, err = ledgermgmt.CreateLedger(ledgerID)
+	gb, _ := configtxtest.MakeGenesisBlock(ledgerID)
+	peerLedger, err = ledgermgmt.CreateLedger(gb)
+
 	if err != nil {
 		panic(fmt.Errorf("Error in NewKVLedger(): %s", err))
 	}

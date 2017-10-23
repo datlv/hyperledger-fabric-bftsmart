@@ -1,23 +1,13 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package comm
 
 import (
-	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -25,22 +15,31 @@ import (
 	"github.com/hyperledger/fabric/gossip/util"
 	proto "github.com/hyperledger/fabric/protos/gossip"
 	"github.com/op/go-logging"
+	"github.com/pkg/errors"
+	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 )
 
 type handler func(message *proto.SignedGossipMessage)
+
+type blockingBehavior bool
+
+const (
+	blockingSend    = blockingBehavior(true)
+	nonBlockingSend = blockingBehavior(false)
+)
 
 type connFactory interface {
 	createConnection(endpoint string, pkiID common.PKIidType) (*connection, error)
 }
 
 type connectionStore struct {
-	logger           *logging.Logger          // logger
-	isClosing        bool                     // whether this connection store is shutting down
-	connFactory      connFactory              // creates a connection to remote peer
-	sync.RWMutex                              // synchronize access to shared variables
-	pki2Conn         map[string]*connection   // mapping between pkiID to connections
-	destinationLocks map[string]*sync.RWMutex //mapping between pkiIDs and locks,
+	logger           *logging.Logger        // logger
+	isClosing        bool                   // whether this connection store is shutting down
+	connFactory      connFactory            // creates a connection to remote peer
+	sync.RWMutex                            // synchronize access to shared variables
+	pki2Conn         map[string]*connection // mapping between pkiID to connections
+	destinationLocks map[string]*sync.Mutex //mapping between pkiIDs and locks,
 	// used to prevent concurrent connection establishment to the same remote endpoint
 }
 
@@ -49,7 +48,7 @@ func newConnStore(connFactory connFactory, logger *logging.Logger) *connectionSt
 		connFactory:      connFactory,
 		isClosing:        false,
 		pki2Conn:         make(map[string]*connection),
-		destinationLocks: make(map[string]*sync.RWMutex),
+		destinationLocks: make(map[string]*sync.Mutex),
 		logger:           logger,
 	}
 }
@@ -60,7 +59,7 @@ func (cs *connectionStore) getConnection(peer *RemotePeer) (*connection, error) 
 	cs.RUnlock()
 
 	if isClosing {
-		return nil, errors.New("Shutting down")
+		return nil, fmt.Errorf("Shutting down")
 	}
 
 	pkiID := peer.PKIID
@@ -69,7 +68,7 @@ func (cs *connectionStore) getConnection(peer *RemotePeer) (*connection, error) 
 	cs.Lock()
 	destinationLock, hasConnected := cs.destinationLocks[string(pkiID)]
 	if !hasConnected {
-		destinationLock = &sync.RWMutex{}
+		destinationLock = &sync.Mutex{}
 		cs.destinationLocks[string(pkiID)] = destinationLock
 	}
 	cs.Unlock()
@@ -93,7 +92,7 @@ func (cs *connectionStore) getConnection(peer *RemotePeer) (*connection, error) 
 	isClosing = cs.isClosing
 	cs.RUnlock()
 	if isClosing {
-		return nil, errors.New("ConnStore is closing")
+		return nil, fmt.Errorf("ConnStore is closing")
 	}
 
 	cs.Lock()
@@ -201,11 +200,11 @@ func newConnection(cl proto.GossipClient, c *grpc.ClientConn, cs proto.Gossip_Go
 		stopFlag:     int32(0),
 		stopChan:     make(chan struct{}, 1),
 	}
-
 	return connection
 }
 
 type connection struct {
+	cancel       context.CancelFunc
 	info         *proto.ConnectionInfo
 	outBuff      chan *msgSending
 	logger       *logging.Logger                 // logger
@@ -232,7 +231,9 @@ func (conn *connection) close() {
 
 	conn.stopChan <- struct{}{}
 
+	conn.drainOutputBuffer()
 	conn.Lock()
+	defer conn.Unlock()
 
 	if conn.clientStream != nil {
 		conn.clientStream.CloseSend()
@@ -241,28 +242,36 @@ func (conn *connection) close() {
 		conn.conn.Close()
 	}
 
-	conn.Unlock()
-
+	if conn.cancel != nil {
+		conn.cancel()
+	}
 }
 
 func (conn *connection) toDie() bool {
 	return atomic.LoadInt32(&(conn.stopFlag)) == int32(1)
 }
 
-func (conn *connection) send(msg *proto.SignedGossipMessage, onErr func(error)) {
-	conn.Lock()
-	defer conn.Unlock()
-
-	if len(conn.outBuff) == util.GetIntOrDefault("peer.gossip.sendBuffSize", defSendBuffSize) {
-		go onErr(errSendOverflow)
+func (conn *connection) send(msg *proto.SignedGossipMessage, onErr func(error), shouldBlock blockingBehavior) {
+	if conn.toDie() {
+		conn.logger.Debug("Aborting send() to ", conn.info.Endpoint, "because connection is closing")
 		return
 	}
+	conn.Lock()
+	defer conn.Unlock()
 
 	m := &msgSending{
 		envelope: msg.Envelope,
 		onErr:    onErr,
 	}
 
+	if len(conn.outBuff) == util.GetIntOrDefault("peer.gossip.sendBuffSize", defSendBuffSize) {
+		if conn.logger.IsEnabledFor(logging.DEBUG) {
+			conn.logger.Debug("Buffer to", conn.info.Endpoint, "overflowed, dropping message", msg.String())
+		}
+		if !shouldBlock {
+			return
+		}
+	}
 	conn.outBuff <- m
 }
 
@@ -309,12 +318,18 @@ func (conn *connection) writeToStream() {
 				go m.onErr(err)
 				return
 			}
-			break
 		case stop := <-conn.stopChan:
 			conn.logger.Debug("Closing writing to stream")
 			conn.stopChan <- stop
 			return
 		}
+	}
+}
+
+func (conn *connection) drainOutputBuffer() {
+	// Drain the output buffer
+	for len(conn.outBuff) > 0 {
+		<-conn.outBuff
 	}
 }
 
@@ -326,7 +341,7 @@ func (conn *connection) readFromStream(errChan chan error, msgChan chan *proto.S
 		stream := conn.getStream()
 		if stream == nil {
 			conn.logger.Error(conn.pkiID, "Stream is nil, aborting!")
-			errChan <- errors.New("Stream is nil")
+			errChan <- fmt.Errorf("Stream is nil")
 			return
 		}
 		envelope, err := stream.Recv()
@@ -336,13 +351,13 @@ func (conn *connection) readFromStream(errChan chan error, msgChan chan *proto.S
 		}
 		if err != nil {
 			errChan <- err
-			conn.logger.Debug(conn.pkiID, "Got error, aborting:", err)
+			conn.logger.Debugf("%v Got error, aborting: %v", err)
 			return
 		}
 		msg, err := envelope.ToGossipMessage()
 		if err != nil {
 			errChan <- err
-			conn.logger.Warning(conn.pkiID, "Got error, aborting:", err)
+			conn.logger.Warning("%v Got error, aborting: %v", err)
 		}
 		msgChan <- msg
 	}
@@ -353,8 +368,8 @@ func (conn *connection) getStream() stream {
 	defer conn.Unlock()
 
 	if conn.clientStream != nil && conn.serverStream != nil {
-		e := "Both client and server stream are not nil, something went wrong"
-		conn.logger.Error(e)
+		e := errors.New("Both client and server stream are not nil, something went wrong")
+		conn.logger.Errorf("%+v", e)
 	}
 
 	if conn.clientStream != nil {

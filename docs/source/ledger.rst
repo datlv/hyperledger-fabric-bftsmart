@@ -1,13 +1,13 @@
 Ledger
 ======
 
-The ledger is the sequenced, tamper-resistant record of all state transitions in the fabric.  State
+The ledger is the sequenced, tamper-resistant record of all state transitions.  State
 transitions are a result of chaincode invocations ('transactions') submitted by participating
 parties.  Each transaction results in a set of asset key-value pairs that are committed to the
 ledger as creates, updates, or deletes.
 
 The ledger is comprised of a blockchain ('chain') to store the immutable, sequenced record in
-blocks, as well as a state database to maintain current fabric state.  There is one ledger per
+blocks, as well as a state database to maintain current state.  There is one ledger per
 channel. Each peer maintains a copy of the ledger for each channel of which they are a member.
 
 Chain
@@ -56,7 +56,7 @@ will authenticate the signatures against the transaction payload.
 
 Secondly, peers will perform a versioning check against the transaction read set, to ensure
 data integrity and protect against threats such as double-spending.
-The fabric has concurrency control whereby transactions execute in parallel (by endorsers)
+Hyperledger Fabric has concurrency control whereby transactions execute in parallel (by endorsers)
 to increase throughput, and upon commit (by all peers) each transaction is verified to ensure
 that no other transaction has modified data it has read. In other words, it ensures that the data
 that was read during chaincode execution has not changed since execution (endorsement) time,
@@ -65,13 +65,13 @@ database. If the data that was read has been changed by another transaction, the
 transaction in the block is marked as invalid and is not applied to the ledger state database.
 The client application is alerted, and can handle the error or retry as appropriate.
 
-See the :doc:`txflow` and :doc:`readwrite` topics for a deeper dive on transaction structure, 
-concurrency control, and the state DB.  
+See the :doc:`txflow` and :doc:`readwrite` topics for a deeper dive on transaction structure,
+concurrency control, and the state DB.
 
 State Database options
 ----------------------
 
-State database options include LevelDB and CouchDB (beta). LevelDB is the default key/value state
+State database options include LevelDB and CouchDB. LevelDB is the default key/value state
 database embedded in the peer process. CouchDB is an optional alternative external state database.
 Like the LevelDB key/value store, CouchDB can store any binary data that is modeled in chaincode
 (CouchDB attachment functionality is used internally for non-JSON binary data). But as a JSON
@@ -89,7 +89,7 @@ If you model assets as JSON and use CouchDB, you can also perform complex rich q
 chaincode data values, using the CouchDB JSON query language within chaincode. These types of
 queries are excellent for understanding what is on the ledger. Proposal responses for these types
 of queries are typically useful to the client application, but are not typically submitted as
-transactions to the ordering service. In fact the fabric does not guarantee the result set is stable
+transactions to the ordering service. In fact, there is no guarantee the result set is stable
 between chaincode execution and commit time for rich queries, and therefore rich queries
 are not appropriate for use in update transactions, unless your application can guarantee the
 result set is stable between chaincode execution time and commit time, or can handle potential
@@ -104,6 +104,64 @@ default embedded LevelDB, and move to CouchDB if you require the additional comp
 It is a good practice to model chaincode asset data as JSON, so that you have the option to perform
 complex rich queries if needed in the future.
 
-To enable CouchDB as the state database, configure the /fabric/peer/core.yaml ``stateDatabase``
-section.
+CouchDB Configuration
+----------------------
 
+CouchDB is enabled as the state database by changing the stateDatabase configuration option from
+goleveldb to CouchDB.   Additionally, the ``couchDBAddress`` needs to configured to point to the
+CouchDB to be used by the peer.  The username and password properties should be populated with
+an admin username and password if CouchDB is configured with a username and password.  Additional
+options are provided in the ``couchDBConfig`` section and are documented in place.  Changes to the
+*core.yaml* will be effective immediately after restarting the peer.
+
+You can also pass in docker environment variables to override core.yaml values, for example
+``CORE_LEDGER_STATE_STATEDATABASE`` and ``CORE_LEDGER_STATE_COUCHDBCONFIG_COUCHDBADDRESS``.
+
+Below is the ``stateDatabase`` section from *core.yaml*:
+
+.. code:: bash
+
+    state:
+      # stateDatabase - options are "goleveldb", "CouchDB"
+      # goleveldb - default state database stored in goleveldb.
+      # CouchDB - store state database in CouchDB
+      stateDatabase: goleveldb
+      couchDBConfig:
+         # It is recommended to run CouchDB on the same server as the peer, and
+         # not map the CouchDB container port to a server port in docker-compose.
+         # Otherwise proper security must be provided on the connection between
+         # CouchDB client (on the peer) and server.
+         couchDBAddress: couchdb:5984
+         # This username must have read and write authority on CouchDB
+         username:
+         # The password is recommended to pass as an environment variable
+         # during start up (e.g. LEDGER_COUCHDBCONFIG_PASSWORD).
+         # If it is stored here, the file must be access control protected
+         # to prevent unintended users from discovering the password.
+         password:
+         # Number of retries for CouchDB errors
+         maxRetries: 3
+         # Number of retries for CouchDB errors during peer startup
+         maxRetriesOnStartup: 10
+         # CouchDB request timeout (unit: duration, e.g. 20s)
+         requestTimeout: 35s
+         # Limit on the number of records to return per query
+         queryLimit: 10000
+
+
+CouchDB hosted in docker containers supplied with Hyperledger Fabric have the
+capability of setting the CouchDB username and password with environment
+variables passed in with the ``COUCHDB_USER`` and ``COUCHDB_PASSWORD`` environment
+variables using Docker Compose scripting.
+
+For CouchDB installations outside of the docker images supplied with Fabric, the
+*local.ini* file must be edited to set the admin username and password.
+
+Docker compose scripts only set the username and password at the creation of
+the container.  The *local.ini* file must be edited if the username or password
+is to be changed after creation of the container.
+
+.. note:: CouchDB peer options are read on each peer startup.
+
+.. Licensed under Creative Commons Attribution 4.0 International License
+   https://creativecommons.org/licenses/by/4.0/

@@ -17,29 +17,35 @@ limitations under the License.
 package scc
 
 import (
+	"github.com/hyperledger/fabric/core/aclmgmt"
+
 	//import system chain codes here
 	"github.com/hyperledger/fabric/core/scc/cscc"
 	"github.com/hyperledger/fabric/core/scc/escc"
-	"github.com/hyperledger/fabric/core/scc/lccc"
+	"github.com/hyperledger/fabric/core/scc/lscc"
 	"github.com/hyperledger/fabric/core/scc/qscc"
+	"github.com/hyperledger/fabric/core/scc/rscc"
 	"github.com/hyperledger/fabric/core/scc/vscc"
 )
 
 //see systemchaincode_test.go for an example using "sample_syscc"
 var systemChaincodes = []*SystemChaincode{
 	{
-		Enabled:   true,
-		Name:      "cscc",
-		Path:      "github.com/hyperledger/fabric/core/scc/cscc",
-		InitArgs:  [][]byte{[]byte("")},
-		Chaincode: &cscc.PeerConfiger{},
+		Enabled:           true,
+		Name:              "cscc",
+		Path:              "github.com/hyperledger/fabric/core/scc/cscc",
+		InitArgs:          [][]byte{[]byte("")},
+		Chaincode:         &cscc.PeerConfiger{},
+		InvokableExternal: true, // cscc is invoked to join a channel
 	},
 	{
-		Enabled:   true,
-		Name:      "lccc",
-		Path:      "github.com/hyperledger/fabric/core/scc/lccc",
-		InitArgs:  [][]byte{[]byte("")},
-		Chaincode: &lccc.LifeCycleSysCC{},
+		Enabled:           true,
+		Name:              "lscc",
+		Path:              "github.com/hyperledger/fabric/core/scc/lscc",
+		InitArgs:          [][]byte{[]byte("")},
+		Chaincode:         &lscc.LifeCycleSysCC{},
+		InvokableExternal: true, // lscc is invoked to deploy new chaincodes
+		InvokableCC2CC:    true, // lscc can be invoked by other chaincodes
 	},
 	{
 		Enabled:   true,
@@ -56,20 +62,41 @@ var systemChaincodes = []*SystemChaincode{
 		Chaincode: &vscc.ValidatorOneValidSignature{},
 	},
 	{
-		Enabled:   true,
-		Name:      "qscc",
-		Path:      "github.com/hyperledger/fabric/core/chaincode/qscc",
-		InitArgs:  [][]byte{[]byte("")},
-		Chaincode: &qscc.LedgerQuerier{},
+		Enabled:           true,
+		Name:              "qscc",
+		Path:              "github.com/hyperledger/fabric/core/chaincode/qscc",
+		InitArgs:          [][]byte{[]byte("")},
+		Chaincode:         &qscc.LedgerQuerier{},
+		InvokableExternal: true, // qscc can be invoked to retrieve blocks
+		InvokableCC2CC:    true, // qscc can be invoked to retrieve blocks also by a cc
+	},
+	{
+		Enabled:           true,
+		Name:              "rscc",
+		Path:              "github.com/hyperledger/fabric/core/chaincode/rscc",
+		InitArgs:          [][]byte{[]byte("")},
+		Chaincode:         rscc.NewRscc(),
+		InvokableExternal: true,  // rscc can be invoked to update policies
+		InvokableCC2CC:    false, // rscc cannot be invoked from a cc
 	},
 }
 
 //RegisterSysCCs is the hook for system chaincodes where system chaincodes are registered with the fabric
 //note the chaincode must still be deployed and launched like a user chaincode will be
 func RegisterSysCCs() {
+	var aclProvider aclmgmt.ACLProvider
 	for _, sysCC := range systemChaincodes {
-		RegisterSysCC(sysCC)
+		if reg, _ := registerSysCC(sysCC); reg {
+			//rscc is registered, lets make it the aclProvider
+			if sysCC.Name == "rscc" {
+				aclProvider = sysCC.Chaincode.(aclmgmt.ACLProvider)
+			}
+		}
 	}
+	//a nil aclProvider will initialize defaultACLProvider
+	//which will provide 1.0 ACL defaults
+	aclmgmt.RegisterACLProvider(aclProvider)
+
 }
 
 //DeploySysCCs is the hook for system chaincodes where system chaincodes are registered with the fabric
@@ -95,6 +122,30 @@ func IsSysCC(name string) bool {
 	for _, sysCC := range systemChaincodes {
 		if sysCC.Name == name {
 			return true
+		}
+	}
+	return false
+}
+
+// IsSysCCAndNotInvokableExternal returns true if the chaincode
+// is a system chaincode and *CANNOT* be invoked through
+// a proposal to this peer
+func IsSysCCAndNotInvokableExternal(name string) bool {
+	for _, sysCC := range systemChaincodes {
+		if sysCC.Name == name {
+			return !sysCC.InvokableExternal
+		}
+	}
+	return false
+}
+
+// IsSysCCAndNotInvokableCC2CC returns true if the chaincode
+// is a system chaincode and *CANNOT* be invoked through
+// a cc2cc invocation
+func IsSysCCAndNotInvokableCC2CC(name string) bool {
+	for _, sysCC := range systemChaincodes {
+		if sysCC.Name == name {
+			return !sysCC.InvokableCC2CC
 		}
 	}
 	return false

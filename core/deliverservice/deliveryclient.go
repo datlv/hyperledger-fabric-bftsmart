@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package deliverclient
@@ -23,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/core/deliverservice/blocksprovider"
 	"github.com/hyperledger/fabric/gossip/api"
@@ -34,20 +25,29 @@ import (
 var logger *logging.Logger // package-level logger
 
 func init() {
-	logger = logging.MustGetLogger("deliveryClient")
+	logger = flogging.MustGetLogger("deliveryClient")
 }
 
 var (
 	reConnectTotalTimeThreshold = time.Second * 60 * 5
 	connTimeout                 = time.Second * 3
+	reConnectBackoffThreshold   = float64(time.Hour)
 )
 
+// SetReconnectTotalTimeThreshold sets the total time the delivery service
+// may spend in reconnection attempts until its retry logic gives up
+// and returns an error
+func SetReconnectTotalTimeThreshold(duration time.Duration) {
+	reConnectTotalTimeThreshold = duration
+}
+
 // DeliverService used to communicate with orderers to obtain
-// new block and send the to the committer service
+// new blocks and send them to the committer service
 type DeliverService interface {
 	// StartDeliverForChannel dynamically starts delivery of new blocks from ordering service
 	// to channel peers.
-	StartDeliverForChannel(chainID string, ledgerInfo blocksprovider.LedgerInfo) error
+	// When the delivery finishes, the finalizer func is called
+	StartDeliverForChannel(chainID string, ledgerInfo blocksprovider.LedgerInfo, finalizer func()) error
 
 	// StopDeliverForChannel dynamically stops delivery of new blocks from ordering service
 	// to channel peers.
@@ -72,8 +72,8 @@ type deliverServiceImpl struct {
 // how it verifies messages received from it,
 // and how it disseminates the messages to other peers
 type Config struct {
-	// ConnFactory creates a connection to an endpoint
-	ConnFactory func(endpoint string) (*grpc.ClientConn, error)
+	// ConnFactory returns a function that creates a connection to an endpoint
+	ConnFactory func(channelID string) func(endpoint string) (*grpc.ClientConn, error)
 	// ABCFactory creates an AtomicBroadcastClient out of a connection
 	ABCFactory func(*grpc.ClientConn) orderer.AtomicBroadcastClient
 	// CryptoSvc performs cryptographic actions like message verification and signing
@@ -125,7 +125,7 @@ func (d *deliverServiceImpl) validateConfiguration() error {
 // initializes the grpc stream for given chainID, creates blocks provider instance
 // that spawns in go routine to read new blocks starting from the position provided by ledger
 // info instance.
-func (d *deliverServiceImpl) StartDeliverForChannel(chainID string, ledgerInfo blocksprovider.LedgerInfo) error {
+func (d *deliverServiceImpl) StartDeliverForChannel(chainID string, ledgerInfo blocksprovider.LedgerInfo, finalizer func()) error {
 	d.lock.Lock()
 	defer d.lock.Unlock()
 	if d.stopping {
@@ -139,9 +139,12 @@ func (d *deliverServiceImpl) StartDeliverForChannel(chainID string, ledgerInfo b
 		return errors.New(errMsg)
 	} else {
 		client := d.newClient(chainID, ledgerInfo)
-		logger.Debug("This peer will pass blocks from orderer service to other peers")
+		logger.Debug("This peer will pass blocks from orderer service to other peers for channel", chainID)
 		d.blockProviders[chainID] = blocksprovider.NewBlocksProvider(chainID, client, d.conf.Gossip, d.conf.CryptoSvc)
-		go d.blockProviders[chainID].DeliverBlocks()
+		go func() {
+			d.blockProviders[chainID].DeliverBlocks()
+			finalizer()
+		}()
 	}
 	return nil
 }
@@ -190,24 +193,37 @@ func (d *deliverServiceImpl) newClient(chainID string, ledgerInfoProvider blocks
 		if elapsedTime.Nanoseconds() > reConnectTotalTimeThreshold.Nanoseconds() {
 			return 0, false
 		}
-		return time.Duration(math.Pow(2, float64(attemptNum))) * time.Millisecond * 500, true
+		sleepIncrement := float64(time.Millisecond * 500)
+		attempt := float64(attemptNum)
+		return time.Duration(math.Min(math.Pow(2, attempt)*sleepIncrement, reConnectBackoffThreshold)), true
 	}
-	connProd := comm.NewConnectionProducer(d.conf.ConnFactory, d.conf.Endpoints)
+	connProd := comm.NewConnectionProducer(d.conf.ConnFactory(chainID), d.conf.Endpoints)
 	bClient := NewBroadcastClient(connProd, d.conf.ABCFactory, broadcastSetup, backoffPolicy)
 	requester.client = bClient
 	return bClient
 }
 
-func DefaultConnectionFactory(endpoint string) (*grpc.ClientConn, error) {
-	dialOpts := []grpc.DialOption{grpc.WithTimeout(connTimeout), grpc.WithBlock()}
+func DefaultConnectionFactory(channelID string) func(endpoint string) (*grpc.ClientConn, error) {
+	return func(endpoint string) (*grpc.ClientConn, error) {
+		dialOpts := []grpc.DialOption{grpc.WithTimeout(connTimeout), grpc.WithBlock()}
+		// set max send/recv msg sizes
+		dialOpts = append(dialOpts, grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(comm.MaxRecvMsgSize()),
+			grpc.MaxCallSendMsgSize(comm.MaxSendMsgSize())))
+		// set the keepalive options
+		dialOpts = append(dialOpts, comm.ClientKeepaliveOptions()...)
 
-	if comm.TLSEnabled() {
-		dialOpts = append(dialOpts, grpc.WithTransportCredentials(comm.GetCASupport().GetDeliverServiceCredentials()))
-	} else {
-		dialOpts = append(dialOpts, grpc.WithInsecure())
+		if comm.TLSEnabled() {
+			creds, err := comm.GetCASupport().GetDeliverServiceCredentials(channelID)
+			if err != nil {
+				return nil, fmt.Errorf("Failed obtaining credentials for channel %s: %v", channelID, err)
+			}
+			dialOpts = append(dialOpts, grpc.WithTransportCredentials(creds))
+		} else {
+			dialOpts = append(dialOpts, grpc.WithInsecure())
+		}
+		grpc.EnableTracing = true
+		return grpc.Dial(endpoint, dialOpts...)
 	}
-	grpc.EnableTracing = true
-	return grpc.Dial(endpoint, dialOpts...)
 }
 
 func DefaultABCFactory(conn *grpc.ClientConn) orderer.AtomicBroadcastClient {

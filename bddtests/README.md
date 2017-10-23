@@ -62,6 +62,12 @@ make clean
 make peer
 ```
 
+The peer executable will be located in the build/bin folder. Make sure that your PATH enviroment variable contains the location.
+Execute the following command if necessary.
+```
+    export PATH=$PATH:$GOPATH/src/github.com/hyperledger/fabric/build/bin
+```
+
 The behave system also uses several docker containers.  Execute the following commands to create the required docker containers.
 
 ```
@@ -96,3 +102,6 @@ python environment, issue the following command.
 ```
     deactivate
 ```
+
+<a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" style="border-width:0" src="https://i.creativecommons.org/l/by/4.0/88x31.png" /></a><br />This work is licensed under a <a rel="license" href="http://creativecommons.org/licenses/by/4.0/">Creative Commons Attribution 4.0 International License</a>.
+s

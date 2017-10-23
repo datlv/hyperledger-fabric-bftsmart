@@ -17,7 +17,11 @@ limitations under the License.
 package scc
 
 import (
+	"fmt"
+
 	"github.com/hyperledger/fabric/core/common/sysccprovider"
+	"github.com/hyperledger/fabric/core/ledger"
+	"github.com/hyperledger/fabric/core/peer"
 )
 
 // sccProviderFactory implements the sysccprovider.SystemChaincodeProviderFactory
@@ -43,4 +47,27 @@ type sccProviderImpl struct {
 // IsSysCC returns true if the supplied chaincode is a system chaincode
 func (c *sccProviderImpl) IsSysCC(name string) bool {
 	return IsSysCC(name)
+}
+
+// IsSysCCAndNotInvokableCC2CC returns true if the supplied chaincode is
+// ia system chaincode and it NOT invokable through a cc2cc invocation
+func (c *sccProviderImpl) IsSysCCAndNotInvokableCC2CC(name string) bool {
+	return IsSysCCAndNotInvokableCC2CC(name)
+}
+
+// GetQueryExecutorForLedger returns a query executor for the specified channel
+func (c *sccProviderImpl) GetQueryExecutorForLedger(cid string) (ledger.QueryExecutor, error) {
+	l := peer.GetLedger(cid)
+	if l == nil {
+		return nil, fmt.Errorf("Could not retrieve ledger for channel %s", cid)
+	}
+
+	return l.NewQueryExecutor()
+}
+
+// IsSysCCAndNotInvokableExternal returns true if the supplied chaincode is
+// ia system chaincode and it NOT invokable
+func (c *sccProviderImpl) IsSysCCAndNotInvokableExternal(name string) bool {
+	// call the static method of the same name
+	return IsSysCCAndNotInvokableExternal(name)
 }

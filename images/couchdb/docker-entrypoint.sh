@@ -21,11 +21,11 @@ if [ "$1" = '/opt/couchdb/bin/couchdb' ]; then
 
 	if [ "$COUCHDB_USER" ] && [ "$COUCHDB_PASSWORD" ]; then
 		# Create admin
-		printf "[admins]\n%s = %s\n" "$COUCHDB_USER" "$COUCHDB_PASSWORD" > /opt/couchdb/etc/local.d/docker.ini
+		sed -i -e "s/; \[admins\]/\[admins\]/" -e "s/; admin = admin/$COUCHDB_USER = $COUCHDB_PASSWORD/" /opt/couchdb/etc/local.ini
 	fi
 
 	# if we don't find an [admins] section followed by a non-comment, display a warning
-	if ! grep -Pzoqr '\[admins\]\n[^;]\w+' /opt/couchdb/etc/local.d/*.ini; then
+	if ! grep -Pzoqr '\[admins\]\n[^;]\w+' /opt/couchdb/etc/*.ini; then
 		# The - option suppresses leading tabs but *not* spaces. :)
 		cat >&2 <<-'EOWARN'
 			****************************************************
@@ -44,4 +44,6 @@ if [ "$1" = '/opt/couchdb/bin/couchdb' ]; then
 	sleep 1
 fi
 
-exec "$@"
+chown -R couchdb:couchdb /opt/couchdb/data
+
+su-exec couchdb "$@"

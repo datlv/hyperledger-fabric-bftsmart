@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package comm
@@ -19,21 +9,17 @@ package comm
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
 	"sync"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 )
 
 //A SecureServerConfig structure is used to configure security (e.g. TLS) for a
 //GRPCServer instance
 type SecureServerConfig struct {
-	//Whether or not to use TLS for communication
-	UseTLS bool
 	//PEM-encoded X509 public key to be used by the server for TLS communication
 	ServerCertificate []byte
 	//PEM-encoded private key to be used by the server for TLS communication
@@ -41,11 +27,13 @@ type SecureServerConfig struct {
 	//Set of PEM-encoded X509 certificate authorities to optionally send
 	//as part of the server handshake
 	ServerRootCAs [][]byte
-	//Whether or not TLS client must present certificates for authentication
-	RequireClientCert bool
 	//Set of PEM-encoded X509 certificate authorities to use when verifying
 	//client certificates
 	ClientRootCAs [][]byte
+	//Whether or not to use TLS for communication
+	UseTLS bool
+	//Whether or not TLS client must present certificates for authentication
+	RequireClientCert bool
 }
 
 //GRPCServer defines an interface representing a GRPC-based server
@@ -102,8 +90,26 @@ type grpcServerImpl struct {
 }
 
 //NewGRPCServer creates a new implementation of a GRPCServer given a
-//listen address.
+//listen address
 func NewGRPCServer(address string, secureConfig SecureServerConfig) (GRPCServer, error) {
+	return newGRPCServerWithKa(address, secureConfig, &keepaliveOptions)
+}
+
+//NewChaincodeGRPCServer creates a new implementation of a chaincode GRPCServer given a
+//listen address
+func NewChaincodeGRPCServer(address string, secureConfig SecureServerConfig) (GRPCServer, error) {
+	return newGRPCServerWithKa(address, secureConfig, &chaincodeKeepaliveOptions)
+}
+
+//NewGRPCServerFromListener creates a new implementation of a GRPCServer given
+//an existing net.Listener instance using default keepalive
+func NewGRPCServerFromListener(listener net.Listener, secureConfig SecureServerConfig) (GRPCServer, error) {
+	return newGRPCServerFromListenerWithKa(listener, secureConfig, &keepaliveOptions)
+}
+
+//newGRPCServerWithKa creates a new implementation of a GRPCServer given a
+//listen address with specified keepalive options
+func newGRPCServerWithKa(address string, secureConfig SecureServerConfig, ka *KeepaliveOptions) (GRPCServer, error) {
 
 	if address == "" {
 		return nil, errors.New("Missing address parameter")
@@ -115,14 +121,13 @@ func NewGRPCServer(address string, secureConfig SecureServerConfig) (GRPCServer,
 		return nil, err
 	}
 
-	return NewGRPCServerFromListener(lis, secureConfig)
+	return newGRPCServerFromListenerWithKa(lis, secureConfig, ka)
 
 }
 
-//NewGRPCServerFromListener creates a new implementation of a GRPCServer given
-//an existing net.Listener instance.
-func NewGRPCServerFromListener(listener net.Listener, secureConfig SecureServerConfig) (GRPCServer, error) {
-
+//newGRPCServerFromListenerWithKa creates a new implementation of a GRPCServer given
+//an existing net.Listener instance with specfied keepalive
+func newGRPCServerFromListenerWithKa(listener net.Listener, secureConfig SecureServerConfig, ka *KeepaliveOptions) (GRPCServer, error) {
 	grpcServer := &grpcServerImpl{
 		address:  listener.Addr().String(),
 		listener: listener,
@@ -151,7 +156,8 @@ func NewGRPCServerFromListener(listener net.Listener, secureConfig SecureServerC
 				Certificates:           certificates,
 				SessionTicketsDisabled: true,
 			}
-			//checkif client authentication is required
+			grpcServer.tlsConfig.ClientAuth = tls.RequestClientCert
+			//check if client authentication is required
 			if secureConfig.RequireClientCert {
 				//require TLS client auth
 				grpcServer.tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
@@ -168,17 +174,20 @@ func NewGRPCServerFromListener(listener net.Listener, secureConfig SecureServerC
 				}
 			}
 
-			//create credentials
-			creds := credentials.NewTLS(grpcServer.tlsConfig)
-
-			//add to server options
+			// create credentials and add to server options
+			creds := NewServerTransportCredentials(grpcServer.tlsConfig)
 			serverOpts = append(serverOpts, grpc.Creds(creds))
-
 		} else {
 			return nil, errors.New("secureConfig must contain both ServerKey and " +
 				"ServerCertificate when UseTLS is true")
 		}
 	}
+	// set max send and recv msg sizes
+	serverOpts = append(serverOpts, grpc.MaxSendMsgSize(MaxSendMsgSize()))
+	serverOpts = append(serverOpts, grpc.MaxRecvMsgSize(MaxRecvMsgSize()))
+	// set the keepalive options
+	serverOpts = append(serverOpts, serverKeepaliveOptionsWithKa(ka)...)
+
 	grpcServer.server = grpc.NewServer(serverOpts...)
 
 	return grpcServer, nil
@@ -338,34 +347,4 @@ func (gServer *grpcServerImpl) SetClientRootCAs(clientRoots [][]byte) error {
 	//replace the current ClientCAs pool
 	gServer.tlsConfig.ClientCAs = certPool
 	return nil
-}
-
-//utility function to parse PEM-encoded certs
-func pemToX509Certs(pemCerts []byte) ([]*x509.Certificate, []string, error) {
-
-	//it's possible that multiple certs are encoded
-	certs := []*x509.Certificate{}
-	subjects := []string{}
-	for len(pemCerts) > 0 {
-		var block *pem.Block
-		block, pemCerts = pem.Decode(pemCerts)
-		if block == nil {
-			break
-		}
-		/** TODO: check why msp does not add type to PEM header
-		if block.Type != "CERTIFICATE" || len(block.Headers) != 0 {
-			continue
-		}
-		*/
-
-		cert, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			return nil, subjects, err
-		} else {
-			certs = append(certs, cert)
-			//extract and append the subject
-			subjects = append(subjects, string(cert.RawSubject))
-		}
-	}
-	return certs, subjects, nil
 }

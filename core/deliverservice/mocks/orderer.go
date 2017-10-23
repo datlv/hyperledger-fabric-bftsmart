@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2017 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package mocks
@@ -36,6 +26,8 @@ type Orderer struct {
 	t                *testing.T
 	blockChannel     chan uint64
 	stopChan         chan struct{}
+	failFlag         int32
+	connCount        uint32
 }
 
 func NewOrderer(port int, t *testing.T) *Orderer {
@@ -44,7 +36,6 @@ func NewOrderer(port int, t *testing.T) *Orderer {
 	if err != nil {
 		panic(err)
 	}
-	go srv.Serve(lsnr)
 	o := &Orderer{Server: srv,
 		Listener:         lsnr,
 		t:                t,
@@ -53,6 +44,7 @@ func NewOrderer(port int, t *testing.T) *Orderer {
 		stopChan:         make(chan struct{}, 1),
 	}
 	orderer.RegisterAtomicBroadcastServer(srv, o)
+	go srv.Serve(lsnr)
 	return o
 }
 
@@ -60,6 +52,31 @@ func (o *Orderer) Shutdown() {
 	o.stopChan <- struct{}{}
 	o.Server.Stop()
 	o.Listener.Close()
+}
+
+func (o *Orderer) Fail() {
+	atomic.StoreInt32(&o.failFlag, int32(1))
+	o.blockChannel <- 0
+}
+
+func (o *Orderer) Resurrect() {
+	atomic.StoreInt32(&o.failFlag, int32(0))
+	for {
+		select {
+		case <-o.blockChannel:
+			continue
+		default:
+			return
+		}
+	}
+}
+
+func (o *Orderer) ConnCount() int {
+	return int(atomic.LoadUint32(&o.connCount))
+}
+
+func (o *Orderer) hasFailed() bool {
+	return atomic.LoadInt32(&o.failFlag) == int32(1)
 }
 
 func (*Orderer) Broadcast(orderer.AtomicBroadcast_BroadcastServer) error {
@@ -75,10 +92,14 @@ func (o *Orderer) SendBlock(seq uint64) {
 }
 
 func (o *Orderer) Deliver(stream orderer.AtomicBroadcast_DeliverServer) error {
+	atomic.AddUint32(&o.connCount, 1)
+	defer atomic.AddUint32(&o.connCount, ^uint32(0))
 	envlp, err := stream.Recv()
 	if err != nil {
-		fmt.Println(err)
 		return nil
+	}
+	if o.hasFailed() {
+		return stream.Send(statusUnavailable())
 	}
 	payload := &common.Payload{}
 	proto.Unmarshal(envlp.Payload, payload)
@@ -92,8 +113,20 @@ func (o *Orderer) Deliver(stream orderer.AtomicBroadcast_DeliverServer) error {
 		case <-o.stopChan:
 			return nil
 		case seq := <-o.blockChannel:
+			if o.hasFailed() {
+				return stream.Send(statusUnavailable())
+			}
 			o.sendBlock(stream, seq)
 		}
+	}
+
+}
+
+func statusUnavailable() *orderer.DeliverResponse {
+	return &orderer.DeliverResponse{
+		Type: &orderer.DeliverResponse_Status{
+			Status: common.Status_SERVICE_UNAVAILABLE,
+		},
 	}
 }
 

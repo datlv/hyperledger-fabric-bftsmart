@@ -19,31 +19,109 @@ package ccprovider
 import (
 	"context"
 
+	commonledger "github.com/hyperledger/fabric/common/ledger"
+	"github.com/hyperledger/fabric/core/chaincode/shim"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/protos/peer"
 )
 
+type ExecuteChaincodeResultProvider interface {
+	ExecuteChaincodeResult() (*peer.Response, *peer.ChaincodeEvent, error)
+}
+
 // MockCcProviderFactory is a factory that returns
 // mock implementations of the ccprovider.ChaincodeProvider interface
 type MockCcProviderFactory struct {
+	ExecuteResultProvider ExecuteChaincodeResultProvider
 }
 
 // NewChaincodeProvider returns a mock implementation of the ccprovider.ChaincodeProvider interface
 func (c *MockCcProviderFactory) NewChaincodeProvider() ccprovider.ChaincodeProvider {
-	return &mockCcProviderImpl{}
+	return &mockCcProviderImpl{c.ExecuteResultProvider}
 }
 
 // mockCcProviderImpl is a mock implementation of the chaincode provider
 type mockCcProviderImpl struct {
+	executeResultProvider ExecuteChaincodeResultProvider
 }
 
 type mockCcProviderContextImpl struct {
 }
 
-// GetContext does nothing
-func (c *mockCcProviderImpl) GetContext(ledger ledger.PeerLedger) (context.Context, error) {
+type mockTxSim struct {
+}
+
+func (m *mockTxSim) GetState(namespace string, key string) ([]byte, error) {
 	return nil, nil
+}
+
+func (m *mockTxSim) GetStateMultipleKeys(namespace string, keys []string) ([][]byte, error) {
+	return nil, nil
+}
+
+func (m *mockTxSim) GetStateRangeScanIterator(namespace string, startKey string, endKey string) (commonledger.ResultsIterator, error) {
+	return nil, nil
+}
+
+func (m *mockTxSim) ExecuteQuery(namespace, query string) (commonledger.ResultsIterator, error) {
+	return nil, nil
+}
+
+func (m *mockTxSim) Done() {
+}
+
+func (m *mockTxSim) SetState(namespace string, key string, value []byte) error {
+	return nil
+}
+
+func (m *mockTxSim) DeleteState(namespace string, key string) error {
+	return nil
+}
+
+func (m *mockTxSim) SetStateMultipleKeys(namespace string, kvs map[string][]byte) error {
+	return nil
+}
+
+func (m *mockTxSim) ExecuteUpdate(query string) error {
+	return nil
+}
+
+func (m *mockTxSim) GetTxSimulationResults() (*ledger.TxSimulationResults, error) {
+	return nil, nil
+}
+
+func (m *mockTxSim) DeletePrivateData(namespace, collection, key string) error {
+	return nil
+}
+
+func (m *mockTxSim) ExecuteQueryOnPrivateData(namespace, collection, query string) (commonledger.ResultsIterator, error) {
+	return nil, nil
+}
+
+func (m *mockTxSim) GetPrivateData(namespace, collection, key string) ([]byte, error) {
+	return nil, nil
+}
+
+func (m *mockTxSim) GetPrivateDataMultipleKeys(namespace, collection string, keys []string) ([][]byte, error) {
+	return nil, nil
+}
+
+func (m *mockTxSim) GetPrivateDataRangeScanIterator(namespace, collection, startKey, endKey string) (commonledger.ResultsIterator, error) {
+	return nil, nil
+}
+
+func (m *mockTxSim) SetPrivateData(namespace, collection, key string, value []byte) error {
+	return nil
+}
+
+func (m *mockTxSim) SetPrivateDataMultipleKeys(namespace, collection string, kvs map[string][]byte) error {
+	return nil
+}
+
+// GetContext does nothing
+func (c *mockCcProviderImpl) GetContext(ledger ledger.PeerLedger, txid string) (context.Context, ledger.TxSimulator, error) {
+	return nil, &mockTxSim{}, nil
 }
 
 // GetCCContext does nothing
@@ -51,14 +129,17 @@ func (c *mockCcProviderImpl) GetCCContext(cid, name, version, txid string, syscc
 	return &mockCcProviderContextImpl{}
 }
 
-// GetCCValidationInfoFromLCCC does nothing
-func (c *mockCcProviderImpl) GetCCValidationInfoFromLCCC(ctxt context.Context, txid string, signedProp *peer.SignedProposal, prop *peer.Proposal, chainID string, chaincodeID string) (string, []byte, error) {
+// GetCCValidationInfoFromLSCC does nothing
+func (c *mockCcProviderImpl) GetCCValidationInfoFromLSCC(ctxt context.Context, txid string, signedProp *peer.SignedProposal, prop *peer.Proposal, chainID string, chaincodeID string) (string, []byte, error) {
 	return "vscc", nil, nil
 }
 
 // ExecuteChaincode does nothing
 func (c *mockCcProviderImpl) ExecuteChaincode(ctxt context.Context, cccid interface{}, args [][]byte) (*peer.Response, *peer.ChaincodeEvent, error) {
-	return nil, nil, nil
+	if c.executeResultProvider != nil {
+		return c.executeResultProvider.ExecuteChaincodeResult()
+	}
+	return &peer.Response{Status: shim.OK}, nil, nil
 }
 
 // Execute executes the chaincode given context and spec (invocation or deploy)
@@ -66,7 +147,7 @@ func (c *mockCcProviderImpl) Execute(ctxt context.Context, cccid interface{}, sp
 	return nil, nil, nil
 }
 
-// ExecuteWithErrorFilder executes the chaincode given context and spec and returns payload
+// ExecuteWithErrorFilter executes the chaincode given context and spec and returns payload
 func (c *mockCcProviderImpl) ExecuteWithErrorFilter(ctxt context.Context, cccid interface{}, spec interface{}) ([]byte, *peer.ChaincodeEvent, error) {
 	return nil, nil, nil
 }
@@ -74,8 +155,4 @@ func (c *mockCcProviderImpl) ExecuteWithErrorFilter(ctxt context.Context, cccid 
 // Stop stops the chaincode given context and deployment spec
 func (c *mockCcProviderImpl) Stop(ctxt context.Context, cccid interface{}, spec *peer.ChaincodeDeploymentSpec) error {
 	return nil
-}
-
-// ReleaseContext does nothing
-func (c *mockCcProviderImpl) ReleaseContext() {
 }

@@ -19,42 +19,66 @@ package common
 import (
 	"fmt"
 	"os"
-	"path/filepath"
+	"strings"
 
 	"github.com/hyperledger/fabric/bccsp/factory"
+	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/flogging"
-	"github.com/hyperledger/fabric/core/errors"
+	"github.com/hyperledger/fabric/common/viperutil"
+	"github.com/hyperledger/fabric/core/config"
 	"github.com/hyperledger/fabric/core/peer"
+	"github.com/hyperledger/fabric/core/scc/cscc"
 	"github.com/hyperledger/fabric/msp"
 	mspmgmt "github.com/hyperledger/fabric/msp/mgmt"
+	pcommon "github.com/hyperledger/fabric/protos/common"
 	pb "github.com/hyperledger/fabric/protos/peer"
+	putils "github.com/hyperledger/fabric/protos/utils"
+	"github.com/op/go-logging"
+	"github.com/pkg/errors"
 	"github.com/spf13/viper"
+	"golang.org/x/net/context"
 )
 
 // UndefinedParamValue defines what undefined parameters in the command line will initialise to
 const UndefinedParamValue = ""
 
+var (
+	// These function variables (xyzFnc) can be used to invoke corresponding xyz function
+	// this will allow the invoking packages to mock these functions in their unit test cases
+
+	// GetEndorserClientFnc is a function that returns a new endorser client connection,
+	// by default it is set to GetEndorserClient function
+	GetEndorserClientFnc func() (pb.EndorserClient, error)
+
+	// GetDefaultSignerFnc is a function that returns a default Signer(Default/PERR)
+	// by default it is set to GetDefaultSigner function
+	GetDefaultSignerFnc func() (msp.SigningIdentity, error)
+
+	// GetBroadcastClientFnc returns an instance of the BroadcastClient interface
+	// by default it is set to GetBroadcastClient function
+	GetBroadcastClientFnc func(orderingEndpoint string, tlsEnabled bool,
+		caFile string) (BroadcastClient, error)
+
+	// GetOrdererEndpointOfChainFnc returns orderer endpoints of given chain
+	// by default it is set to GetOrdererEndpointOfChain function
+	GetOrdererEndpointOfChainFnc func(chainID string, signer msp.SigningIdentity,
+		endorserClient pb.EndorserClient) ([]string, error)
+)
+
+func init() {
+	GetEndorserClientFnc = GetEndorserClient
+	GetDefaultSignerFnc = GetDefaultSigner
+	GetBroadcastClientFnc = GetBroadcastClient
+	GetOrdererEndpointOfChainFnc = GetOrdererEndpointOfChain
+}
+
 //InitConfig initializes viper config
 func InitConfig(cmdRoot string) error {
-	var alternativeCfgPath = os.Getenv("PEER_CFG_PATH")
-	if alternativeCfgPath != "" {
-		viper.AddConfigPath(alternativeCfgPath) // Path to look for the config file in
-	} else {
-		viper.AddConfigPath("./") // Path to look for the config file in
-		// Path to look for the config file in based on GOPATH
-		gopath := os.Getenv("GOPATH")
-		for _, p := range filepath.SplitList(gopath) {
-			peerpath := filepath.Join(p, "src/github.com/hyperledger/fabric/peer")
-			viper.AddConfigPath(peerpath)
-		}
-	}
-
-	// Now set the configuration file.
-	viper.SetConfigName(cmdRoot) // Name of config file (without extension)
+	config.InitViper(nil, cmdRoot)
 
 	err := viper.ReadInConfig() // Find and read the config file
 	if err != nil {             // Handle errors reading the config file
-		return fmt.Errorf("Fatal error when reading %s config file: %s\n", cmdRoot, err)
+		return errors.WithMessage(err, fmt.Sprintf("error when reading %s config file", cmdRoot))
 	}
 
 	return nil
@@ -62,16 +86,24 @@ func InitConfig(cmdRoot string) error {
 
 //InitCrypto initializes crypto for this peer
 func InitCrypto(mspMgrConfigDir string, localMSPID string) error {
+	var err error
+	// Check whenever msp folder exists
+	_, err = os.Stat(mspMgrConfigDir)
+	if os.IsNotExist(err) {
+		// No need to try to load MSP from folder which is not available
+		return errors.Errorf("cannot init crypto, missing %s folder", mspMgrConfigDir)
+	}
+
 	// Init the BCCSP
 	var bccspConfig *factory.FactoryOpts
-	err := viper.UnmarshalKey("peer.BCCSP", &bccspConfig)
+	err = viperutil.EnhancedExactUnmarshalKey("peer.BCCSP", &bccspConfig)
 	if err != nil {
-		return fmt.Errorf("Could not parse YAML config [%s]", err)
+		return errors.WithMessage(err, "could not parse YAML config")
 	}
 
 	err = mspmgmt.LoadLocalMsp(mspMgrConfigDir, bccspConfig, localMSPID)
 	if err != nil {
-		return fmt.Errorf("Fatal error when setting up MSP from directory %s: err %s\n", mspMgrConfigDir, err)
+		return errors.WithMessage(err, fmt.Sprintf("error when setting up MSP from directory %s", mspMgrConfigDir))
 	}
 
 	return nil
@@ -81,8 +113,7 @@ func InitCrypto(mspMgrConfigDir string, localMSPID string) error {
 func GetEndorserClient() (pb.EndorserClient, error) {
 	clientConn, err := peer.NewPeerClientConnection()
 	if err != nil {
-		err = errors.ErrorWithCallstack("Peer", "ConnectionError", "Error trying to connect to local peer: %s", err.Error())
-		return nil, err
+		return nil, errors.WithMessage(err, "error trying to connect to local peer")
 	}
 	endorserClient := pb.NewEndorserClient(clientConn)
 	return endorserClient, nil
@@ -92,30 +123,105 @@ func GetEndorserClient() (pb.EndorserClient, error) {
 func GetAdminClient() (pb.AdminClient, error) {
 	clientConn, err := peer.NewPeerClientConnection()
 	if err != nil {
-		err = errors.ErrorWithCallstack("Peer", "ConnectionError", "Error trying to connect to local peer: %s", err.Error())
-		return nil, err
+		return nil, errors.WithMessage(err, "error trying to connect to local peer")
 	}
 	adminClient := pb.NewAdminClient(clientConn)
 	return adminClient, nil
-}
-
-// SetLogLevelFromViper sets the log level for 'module' logger to the value in
-// core.yaml
-func SetLogLevelFromViper(module string) error {
-	var err error
-	if module != "" {
-		logLevelFromViper := viper.GetString("logging." + module)
-		_, err = flogging.SetModuleLevel(module, logLevelFromViper)
-	}
-	return err
 }
 
 // GetDefaultSigner return a default Signer(Default/PERR) for cli
 func GetDefaultSigner() (msp.SigningIdentity, error) {
 	signer, err := mspmgmt.GetLocalMSP().GetDefaultSigningIdentity()
 	if err != nil {
-		return nil, fmt.Errorf("Error obtaining the default signing identity, err %s", err)
+		return nil, errors.WithMessage(err, "error obtaining the default signing identity")
 	}
 
 	return signer, err
+}
+
+// GetOrdererEndpointOfChain returns orderer endpoints of given chain
+func GetOrdererEndpointOfChain(chainID string, signer msp.SigningIdentity, endorserClient pb.EndorserClient) ([]string, error) {
+
+	// query cscc for chain config block
+	invocation := &pb.ChaincodeInvocationSpec{
+		ChaincodeSpec: &pb.ChaincodeSpec{
+			Type:        pb.ChaincodeSpec_Type(pb.ChaincodeSpec_Type_value["GOLANG"]),
+			ChaincodeId: &pb.ChaincodeID{Name: "cscc"},
+			Input:       &pb.ChaincodeInput{Args: [][]byte{[]byte(cscc.GetConfigBlock), []byte(chainID)}},
+		},
+	}
+
+	creator, err := signer.Serialize()
+	if err != nil {
+		return nil, errors.WithMessage(err, fmt.Sprintf("error serializing identity for %s", signer.GetIdentifier()))
+	}
+
+	prop, _, err := putils.CreateProposalFromCIS(pcommon.HeaderType_CONFIG, "", invocation, creator)
+	if err != nil {
+		return nil, errors.WithMessage(err, "error creating GetConfigBlock proposal")
+	}
+
+	signedProp, err := putils.GetSignedProposal(prop, signer)
+	if err != nil {
+		return nil, errors.WithMessage(err, "error creating signed GetConfigBlock proposal")
+	}
+
+	proposalResp, err := endorserClient.ProcessProposal(context.Background(), signedProp)
+	if err != nil {
+		return nil, errors.WithMessage(err, "error endorsing GetConfigBlock")
+	}
+
+	if proposalResp == nil {
+		return nil, errors.WithMessage(err, "error nil proposal response")
+	}
+
+	if proposalResp.Response.Status != 0 && proposalResp.Response.Status != 200 {
+		return nil, errors.Errorf("error bad proposal response %d", proposalResp.Response.Status)
+	}
+
+	// parse config block
+	block, err := putils.GetBlockFromBlockBytes(proposalResp.Response.Payload)
+	if err != nil {
+		return nil, errors.WithMessage(err, "error unmarshaling config block")
+	}
+
+	envelopeConfig, err := putils.ExtractEnvelope(block, 0)
+	if err != nil {
+		return nil, errors.WithMessage(err, "error extracting config block envelope")
+	}
+	bundle, err := channelconfig.NewBundleFromEnvelope(envelopeConfig)
+	if err != nil {
+		return nil, errors.WithMessage(err, "error loading config block")
+	}
+
+	return bundle.ChannelConfig().OrdererAddresses(), nil
+}
+
+// SetLogLevelFromViper sets the log level for 'module' logger to the value in
+// core.yaml
+func SetLogLevelFromViper(module string) error {
+	var err error
+	if module == "" {
+		return errors.New("log level not set, no module name provided")
+	}
+	logLevelFromViper := viper.GetString("logging." + module)
+	err = CheckLogLevel(logLevelFromViper)
+	if err != nil {
+		return err
+	}
+	// replace period in module name with forward slash to allow override
+	// of logging submodules
+	module = strings.Replace(module, ".", "/", -1)
+	// only set logging modules that begin with the supplied module name here
+	_, err = flogging.SetModuleLevel("^"+module, logLevelFromViper)
+	return err
+}
+
+// CheckLogLevel checks that a given log level string is valid
+func CheckLogLevel(level string) error {
+	_, err := logging.LogLevel(level)
+	if err != nil {
+		err = errors.Errorf("invalid log level provided - %s", level)
+	}
+	return err
 }

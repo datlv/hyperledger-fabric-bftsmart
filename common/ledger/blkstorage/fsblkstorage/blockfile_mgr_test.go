@@ -43,6 +43,7 @@ func TestBlockfileMgrCrashDuringWriting(t *testing.T) {
 	testBlockfileMgrCrashDuringWriting(t, 10, 2, 1000, 1)
 	testBlockfileMgrCrashDuringWriting(t, 10, 2, 1000, 0)
 	testBlockfileMgrCrashDuringWriting(t, 0, 0, 1000, 10)
+	testBlockfileMgrCrashDuringWriting(t, 0, 5, 1000, 10)
 }
 
 func testBlockfileMgrCrashDuringWriting(t *testing.T, numBlocksBeforeCheckpoint int,
@@ -51,8 +52,25 @@ func testBlockfileMgrCrashDuringWriting(t *testing.T, numBlocksBeforeCheckpoint 
 	defer env.Cleanup()
 	ledgerid := "testLedger"
 	blkfileMgrWrapper := newTestBlockfileWrapper(env, ledgerid)
-	bg := testutil.NewBlockGenerator(t)
-	blocksBeforeCP := bg.NextTestBlocks(numBlocksBeforeCheckpoint)
+	bg, gb := testutil.NewBlockGenerator(t, ledgerid, false)
+
+	// create all necessary blocks
+	totalBlocks := numBlocksBeforeCheckpoint + numBlocksAfterCheckpoint
+	allBlocks := []*common.Block{gb}
+	allBlocks = append(allBlocks, bg.NextTestBlocks(totalBlocks+1)...)
+
+	// identify the blocks that are to be added beforeCP, afterCP, and after restart
+	blocksBeforeCP := []*common.Block{}
+	blocksAfterCP := []*common.Block{}
+	if numBlocksBeforeCheckpoint != 0 {
+		blocksBeforeCP = allBlocks[0:numBlocksBeforeCheckpoint]
+	}
+	if numBlocksAfterCheckpoint != 0 {
+		blocksAfterCP = allBlocks[numBlocksBeforeCheckpoint : numBlocksBeforeCheckpoint+numBlocksAfterCheckpoint]
+	}
+	blocksAfterRestart := allBlocks[numBlocksBeforeCheckpoint+numBlocksAfterCheckpoint:]
+
+	// add blocks before cp
 	blkfileMgrWrapper.addBlocks(blocksBeforeCP)
 	currentCPInfo := blkfileMgrWrapper.blockfileMgr.cpInfo
 	cpInfo1 := &checkpointInfo{
@@ -61,7 +79,7 @@ func testBlockfileMgrCrashDuringWriting(t *testing.T, numBlocksBeforeCheckpoint 
 		currentCPInfo.isChainEmpty,
 		currentCPInfo.lastBlockNumber}
 
-	blocksAfterCP := bg.NextTestBlocks(numBlocksAfterCheckpoint)
+	// add blocks after cp
 	blkfileMgrWrapper.addBlocks(blocksAfterCP)
 	cpInfo2 := blkfileMgrWrapper.blockfileMgr.cpInfo
 
@@ -83,12 +101,7 @@ func testBlockfileMgrCrashDuringWriting(t *testing.T, numBlocksBeforeCheckpoint 
 	testutil.AssertEquals(t, cpInfo3, cpInfo2)
 
 	// add fresh blocks after restart
-	blocksAfterRestart := bg.NextTestBlocks(2)
 	blkfileMgrWrapper.addBlocks(blocksAfterRestart)
-	allBlocks := []*common.Block{}
-	allBlocks = append(allBlocks, blocksBeforeCP...)
-	allBlocks = append(allBlocks, blocksAfterCP...)
-	allBlocks = append(allBlocks, blocksAfterRestart...)
 	testBlockfileMgrBlockIterator(t, blkfileMgrWrapper.blockfileMgr, 0, len(allBlocks)-1, allBlocks)
 }
 
@@ -111,7 +124,7 @@ func testBlockfileMgrBlockIterator(t *testing.T, blockfileMgr *blockfileMgr,
 	for {
 		block, err := itr.Next()
 		testutil.AssertNoError(t, err, fmt.Sprintf("Error while getting block number [%d] from iterator", numBlocksItrated))
-		testutil.AssertEquals(t, block.(*blockHolder).GetBlock(), expectedBlocks[numBlocksItrated])
+		testutil.AssertEquals(t, block, expectedBlocks[numBlocksItrated])
 		numBlocksItrated++
 		if numBlocksItrated == lastBlockNum-firstBlockNum+1 {
 			break
@@ -140,11 +153,11 @@ func TestBlockfileMgrGetTxById(t *testing.T) {
 	defer env.Cleanup()
 	blkfileMgrWrapper := newTestBlockfileWrapper(env, "testLedger")
 	defer blkfileMgrWrapper.close()
-	blocks := testutil.ConstructTestBlocks(t, 10)
+	blocks := testutil.ConstructTestBlocks(t, 2)
 	blkfileMgrWrapper.addBlocks(blocks)
 	for _, blk := range blocks {
 		for j, txEnvelopeBytes := range blk.Data.Data {
-			// blockNum starts with 1
+			// blockNum starts with 0
 			txID, err := extractTxID(blk.Data.Data[j])
 			testutil.AssertNoError(t, err, "")
 			txEnvelopeFromFileMgr, err := blkfileMgrWrapper.blockfileMgr.retrieveTransactionByID(txID)
@@ -165,8 +178,8 @@ func TestBlockfileMgrGetTxByBlockNumTranNum(t *testing.T) {
 	blkfileMgrWrapper.addBlocks(blocks)
 	for blockIndex, blk := range blocks {
 		for tranIndex, txEnvelopeBytes := range blk.Data.Data {
-			// blockNum starts with 1, tranNum starts with 1
-			txEnvelopeFromFileMgr, err := blkfileMgrWrapper.blockfileMgr.retrieveTransactionByBlockNumTranNum(uint64(blockIndex), uint64(tranIndex+1))
+			// blockNum and tranNum both start with 0
+			txEnvelopeFromFileMgr, err := blkfileMgrWrapper.blockfileMgr.retrieveTransactionByBlockNumTranNum(uint64(blockIndex), uint64(tranIndex))
 			testutil.AssertNoError(t, err, "Error while retrieving tx from blkfileMgr")
 			txEnvelope, err := putil.GetEnvelopeFromBlock(txEnvelopeBytes)
 			testutil.AssertNoError(t, err, "Error while unmarshalling tx")

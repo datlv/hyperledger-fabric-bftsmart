@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	pb "github.com/hyperledger/fabric/protos/peer"
 )
@@ -31,7 +30,15 @@ import (
 type SimpleChaincode struct {
 }
 
-// Init takes two arguements, a string and int. These are stored in the key/value pair in the state
+func toChaincodeArgs(args ...string) [][]byte {
+	bargs := make([][]byte, len(args))
+	for i, arg := range args {
+		bargs[i] = []byte(arg)
+	}
+	return bargs
+}
+
+// Init takes two arguments, a string and int. These are stored in the key/value pair in the state
 func (t *SimpleChaincode) Init(stub shim.ChaincodeStubInterface) pb.Response {
 	var event string // Indicates whether event has happened. Initially 0
 	var eventVal int // State of event
@@ -63,8 +70,8 @@ func (t *SimpleChaincode) invoke(stub shim.ChaincodeStubInterface, args []string
 	var eventVal int // State of event
 	var err error
 
-	if len(args) != 3 {
-		return shim.Error("Incorrect number of arguments. Expecting 3")
+	if len(args) != 3 && len(args) != 4 {
+		return shim.Error("Incorrect number of arguments. Expecting 3 or 4")
 	}
 
 	chainCodeToCall := args[0]
@@ -73,6 +80,10 @@ func (t *SimpleChaincode) invoke(stub shim.ChaincodeStubInterface, args []string
 	if err != nil {
 		return shim.Error("Expected integer value for event state change")
 	}
+	channelID := ""
+	if len(args) == 4 {
+		channelID = args[3]
+	}
 
 	if eventVal != 1 {
 		fmt.Printf("Unexpected event. Doing nothing\n")
@@ -80,8 +91,8 @@ func (t *SimpleChaincode) invoke(stub shim.ChaincodeStubInterface, args []string
 	}
 
 	f := "invoke"
-	invokeArgs := util.ToChaincodeArgs(f, "a", "b", "10")
-	response := stub.InvokeChaincode(chainCodeToCall, invokeArgs, "")
+	invokeArgs := toChaincodeArgs(f, "a", "b", "10")
+	response := stub.InvokeChaincode(chainCodeToCall, invokeArgs, channelID)
 	if response.Status != shim.OK {
 		errStr := fmt.Sprintf("Failed to invoke chaincode. Got error: %s", string(response.Payload))
 		fmt.Printf(errStr)
@@ -127,7 +138,7 @@ func (t *SimpleChaincode) query(stub shim.ChaincodeStubInterface, args []string)
 		queryKey := args[2]
 		channel := args[3]
 		f := "query"
-		invokeArgs := util.ToChaincodeArgs(f, queryKey)
+		invokeArgs := toChaincodeArgs(f, queryKey)
 		response := stub.InvokeChaincode(chainCodeToCall, invokeArgs, channel)
 		if response.Status != shim.OK {
 			errStr := fmt.Sprintf("Failed to invoke chaincode. Got error: %s", err.Error())

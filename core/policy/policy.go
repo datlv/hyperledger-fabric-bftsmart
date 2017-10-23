@@ -82,17 +82,17 @@ func (p *policyChecker) CheckPolicy(channelID, policyName string, signedProp *pb
 	// Prepare SignedData
 	proposal, err := utils.GetProposal(signedProp.ProposalBytes)
 	if err != nil {
-		return fmt.Errorf("Failing extracting proposal during check policy on channel [%s] with policy [%s}: [%s]", channelID, policyName, err)
+		return fmt.Errorf("Failing extracting proposal during check policy on channel [%s] with policy [%s]: [%s]", channelID, policyName, err)
 	}
 
 	header, err := utils.GetHeader(proposal.Header)
 	if err != nil {
-		return fmt.Errorf("Failing extracting header during check policy on channel [%s] with policy [%s}: [%s]", channelID, policyName, err)
+		return fmt.Errorf("Failing extracting header during check policy on channel [%s] with policy [%s]: [%s]", channelID, policyName, err)
 	}
 
 	shdr, err := utils.GetSignatureHeader(header.SignatureHeader)
 	if err != nil {
-		return fmt.Errorf("Invalid Proposal's SignatureHeader during check policy on channel [%s] with policy [%s}: [%s]", channelID, policyName, err)
+		return fmt.Errorf("Invalid Proposal's SignatureHeader during check policy on channel [%s] with policy [%s]: [%s]", channelID, policyName, err)
 	}
 
 	sd := []*common.SignedData{&common.SignedData{
@@ -117,35 +117,35 @@ func (p *policyChecker) CheckPolicyNoChannel(policyName string, signedProp *pb.S
 
 	proposal, err := utils.GetProposal(signedProp.ProposalBytes)
 	if err != nil {
-		return fmt.Errorf("Failing extracting proposal during channelless check policy with policy [%s}: [%s]", policyName, err)
+		return fmt.Errorf("Failing extracting proposal during channelless check policy with policy [%s]: [%s]", policyName, err)
 	}
 
 	header, err := utils.GetHeader(proposal.Header)
 	if err != nil {
-		return fmt.Errorf("Failing extracting header during channelless check policy with policy [%s}: [%s]", policyName, err)
+		return fmt.Errorf("Failing extracting header during channelless check policy with policy [%s]: [%s]", policyName, err)
 	}
 
 	shdr, err := utils.GetSignatureHeader(header.SignatureHeader)
 	if err != nil {
-		return fmt.Errorf("Invalid Proposal's SignatureHeader during channelless check policy with policy [%s}: [%s]", policyName, err)
+		return fmt.Errorf("Invalid Proposal's SignatureHeader during channelless check policy with policy [%s]: [%s]", policyName, err)
 	}
 
 	// Deserialize proposal's creator with the local MSP
 	id, err := p.localMSP.DeserializeIdentity(shdr.Creator)
 	if err != nil {
-		return fmt.Errorf("Failed deserializing proposal creator during channelless check policy with policy [%s}: [%s]", policyName, err)
+		return fmt.Errorf("Failed deserializing proposal creator during channelless check policy with policy [%s]: [%s]", policyName, err)
 	}
 
 	// Load MSPPrincipal for policy
 	principal, err := p.principalGetter.Get(policyName)
 	if err != nil {
-		return fmt.Errorf("Failed getting local MSP principal during channelless check policy with policy [%s}: [%s]", policyName, err)
+		return fmt.Errorf("Failed getting local MSP principal during channelless check policy with policy [%s]: [%s]", policyName, err)
 	}
 
 	// Verify that proposal's creator satisfies the principal
 	err = id.SatisfiesPrincipal(principal)
 	if err != nil {
-		return fmt.Errorf("Failed verifying that proposal's creator satisfies local MSP principal during channelless check policy with policy [%s}: [%s]", policyName, err)
+		return fmt.Errorf("Failed verifying that proposal's creator satisfies local MSP principal during channelless check policy with policy [%s]: [%s]", policyName, err)
 	}
 
 	// Verify the signature
@@ -179,8 +179,32 @@ func (p *policyChecker) CheckPolicyBySignedData(channelID, policyName string, sd
 	// Evaluate the policy
 	err := policy.Evaluate(sd)
 	if err != nil {
-		return fmt.Errorf("Failed evaluating policy on signed data during check policy on channel [%s] with policy [%s}: [%s]", channelID, policyName, err)
+		return fmt.Errorf("Failed evaluating policy on signed data during check policy on channel [%s] with policy [%s]: [%s]", channelID, policyName, err)
 	}
 
 	return nil
+}
+
+var pcFactory PolicyCheckerFactory
+
+// PolicyCheckerFactory defines a factory interface so
+// that the actual implementation can be injected
+type PolicyCheckerFactory interface {
+	NewPolicyChecker() PolicyChecker
+}
+
+// RegisterPolicyCheckerFactory is to be called once to set
+// the factory that will be used to obtain instances of PolicyChecker
+func RegisterPolicyCheckerFactory(f PolicyCheckerFactory) {
+	pcFactory = f
+}
+
+// GetPolicyChecker returns instances of PolicyChecker;
+// the actual implementation is controlled by the factory that
+// is registered via RegisterPolicyCheckerFactory
+func GetPolicyChecker() PolicyChecker {
+	if pcFactory == nil {
+		panic("The factory must be set first via RegisterPolicyCheckerFactory")
+	}
+	return pcFactory.NewPolicyChecker()
 }

@@ -32,15 +32,14 @@ constructed.
 Policy Types
 ------------
 
-There are presently two different types of policies implemented in the
-hyperledger fabric.
+There are presently two different types of policies implemented:
 
 1. **SignaturePolicy**: This policy type is the most powerful, and
    specifies the policy as a combination of evaluation rules for MSP
    Principals. It supports arbitrary combinations of *AND*, *OR*, and
    *NOutOf*, allowing the construction of extremely powerful rules like:
    "An admin of org A and 2 other admins, or 11 of 20 org admins".
-2. **ImplicitMetaPolicy**: Tihs policy type is less flexible than
+2. **ImplicitMetaPolicy**: This policy type is less flexible than
    SignaturePolicy, and is only valid in the context of configuration.
    It aggregates the result of evaluating policies deeper in the
    configuration hierarchy, which are ultimately defined by
@@ -116,7 +115,7 @@ minimally as follows:
 Consider the Writers policy referred to with the ``------->`` mark in
 the above example. This policy may be referred to by the shorthand
 notation ``/Channel/Application/Writers``. Note that the elements
-resembling directory components are group names, whlie the last
+resembling directory components are group names, while the last
 component resembling a file basename is the policy name.
 
 Different components of the system will refer to these policy names. For
@@ -181,7 +180,7 @@ For example:
         identities: [mspP1, mspP2],
     }
 
-This defines a signature policy over MSP Prinicipals ``mspP1`` and
+This defines a signature policy over MSP Principals ``mspP1`` and
 ``mspP2``. It requires both that there is a signature satisfying
 ``mspP1`` and a signature satisfying ``mspP2``.
 
@@ -221,6 +220,42 @@ may be expressed using the SignaturePolicy policy type. For code which
 constructs signature policies, consult
 ``fabric/common/cauthdsl/cauthdsl_builder.go``.
 
+---------
+
+**Limitations**: When evaluating a signature policy against a signature set,
+signatures are 'consumed', in the order in which they appear, regardless of
+whether they satisfy multiple policy principals.
+
+For example.  Consider a policy which requires
+
+::
+
+ 2 of [org1.Member, org1.Admin]
+
+The naive intent of this policy is to require that both an admin, and a member
+sign. For the signature set
+
+::
+
+ [org1.MemberSignature, org1.AdminSignature]
+
+the policy evaluates to true, just as expected.  However, consider the
+signature set
+
+::
+
+ [org1.AdminSignature, org1.MemberSignature]
+
+This signature set does not satisfy the policy.  This failure is because when
+``org1.AdminSignature`` satisfies the ``org1.Member`` role it is considered
+'consumed' by the ``org1.Member`` requirement.  Because the ``org1.Admin``
+principal cannot be satisfied by the ``org1.MemberSignature``, the policy
+evaluates to false.
+
+To avoid this pitfall, identities should be specified from most privileged to
+least privileged in the policy identities specification, and signatures should
+be ordered from least privileged to most privileged in the signature set.
+
 MSP Principals
 --------------
 
@@ -228,7 +263,7 @@ The MSP Principal is a generalized notion of cryptographic identity.
 Although the MSP framework is designed to work with types of
 cryptography other than X.509, for the purposes of this document, the
 discussion will assume that the underlying MSP implementation is the
-fabric MSP type, based on X.509 cryptography.
+default MSP type, based on X.509 cryptography.
 
 An MSP Principal is defined in ``fabric/protos/msp_principal.proto`` as
 follows:
@@ -313,7 +348,7 @@ For example, consider a policy defined at ``/Channel/Readers`` as
         sub_policy: "foo",
     }
 
-This policy will implicity select the sub-groups of ``/Channel``, in
+This policy will implicitly select the sub-groups of ``/Channel``, in
 this case, ``Application`` and ``Orderer``, and retrieve the policy of
 name ``foo``, to give the policies ``/Channel/Application/foo`` and
 ``/Channel/Orderer/foo``. Then, when the policy is evaluated, it will
@@ -368,3 +403,7 @@ Note that policies higher in the hierarchy are all defined as
 organizations change, and the individual organizations may pick their
 own rules and thresholds for what is means to be a a Reader, Writer, and
 Admin.
+
+.. Licensed under Creative Commons Attribution 4.0 International License
+   https://creativecommons.org/licenses/by/4.0/
+

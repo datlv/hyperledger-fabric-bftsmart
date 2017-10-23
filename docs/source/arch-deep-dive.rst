@@ -1,7 +1,7 @@
 Architecture Explained
 ======================
 
-The v1 architecture delivers the following advantages:
+The Hyperledger Fabric architecture delivers the following advantages:
 
 -  **Chaincode trust flexibility.** The architecture separates *trust
    assumptions* for chaincodes (blockchain applications) from trust
@@ -229,13 +229,13 @@ transactions for inclusion in the blockchain state.
 
 **Partitioning (ordering service channels).** Ordering service may
 support multiple *channels* similar to the *topics* of a
-publish/subscribe (pub/sub) messaging system. Clients can connects to a
+publish/subscribe (pub/sub) messaging system. Clients can connect to a
 given channel and can then send messages and obtain the messages that
 arrive. Channels can be thought of as partitions - clients connecting to
 one channel are unaware of the existence of other channels, but clients
 may connect to multiple channels. Even though some ordering service
-implementations included with Hyperledger Fabric v1 will support
-multiple channels, for simplicity of presentation, in the rest of this
+implementations included with Hyperledger Fabric support multiple
+channels, for simplicity of presentation, in the rest of this
 document, we assume ordering service consists of a single channel/topic.
 
 **Ordering service API.** Peers connect to the channel provided by the
@@ -416,7 +416,7 @@ following.
          are accessible to all peers, such as the endorsement policy.
          Note that endorsement policies are not supplied with
          ``txPayload`` in a ``deploy`` transaction, but
-         ``txPayload of a``\ deploy\` contains endorsement policy ID and
+         ``txPayload`` of a ``deploy`` contains endorsement policy ID and
          its parameters (see Section 3).
 
 -  ``anchor`` contains *read version dependencies*, or more
@@ -590,13 +590,10 @@ conclusion whether a transaction contained in a blob is valid. Hence,
 all peers commit and apply the same sequence of transactions and update
 their state in the same way.
 
-.. figure:: http://vukolic.com/hyperledger/flow-4.png
+.. image:: images/flow-4.png
    :alt: Illustration of the transaction flow (common-case path).
 
-   Illustration of the transaction flow (common-case path).
-
-Figure 1. Illustration of one possible transaction flow (common-case
-path).
+*Figure 1. Illustration of one possible transaction flow (common-case path).*
 
 3. Endorsement policies
 -----------------------
@@ -723,11 +720,12 @@ peer does this by itself (e.g., by using the bitmask associated with
 ``PeerLedger``). A vBlock is defined as a block without the invalid
 transactions, that have been filtered out. Such vBlocks are inherently
 dynamic in size and may be empty. An illustration of vBlock construction
-is given in the figure below. |Illustration of the transaction flow
-(common-case path).|
+is given in the figure below.
 
-Figure 2. Illustration of validated ledger block (vBlock) formation from
-ledger (``PeerLedger``) blocks.
+.. image:: images/blocks-3.png
+   :alt: Illustration of vBlock formation
+
+*Figure 2. Illustration of validated ledger block (vBlock) formation from ledger (PeerLedger) blocks.*
 
 vBlocks are chained together to a hash chain by every peer. More
 specifically, every block of a validated ledger contains:
@@ -828,5 +826,5 @@ also be combined:
       checkpoint if confirmed by *f+1* different peers collocated with
       orderers.
 
-.. |Illustration of the transaction flow (common-case path).| image:: http://vukolic.com/hyperledger/blocks-3.png
-
+.. Licensed under Creative Commons Attribution 4.0 International License
+   https://creativecommons.org/licenses/by/4.0/

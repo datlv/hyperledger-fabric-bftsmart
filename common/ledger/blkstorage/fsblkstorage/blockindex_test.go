@@ -86,7 +86,7 @@ func testBlockIndexSync(t *testing.T, numBlocks int, numBlocksToIndex int, syncB
 
 		// Plug-in back the original index
 		blkfileMgr.index = origIndex
-		// The first set of blocks should be present in the orginal index
+		// The first set of blocks should be present in the original index
 		for i := 0; i < numBlocksToIndex; i++ {
 			block, err := blkfileMgr.retrieveBlockByNumber(uint64(i))
 			testutil.AssertNoError(t, err, fmt.Sprintf("block [%d] should have been present in the index", i))
@@ -119,6 +119,7 @@ func testBlockIndexSync(t *testing.T, numBlocks int, numBlocksToIndex int, syncB
 }
 
 func TestBlockIndexSelectiveIndexing(t *testing.T) {
+	testBlockIndexSelectiveIndexing(t, []blkstorage.IndexableAttr{})
 	testBlockIndexSelectiveIndexing(t, []blkstorage.IndexableAttr{blkstorage.IndexableAttrBlockHash})
 	testBlockIndexSelectiveIndexing(t, []blkstorage.IndexableAttr{blkstorage.IndexableAttrBlockNum})
 	testBlockIndexSelectiveIndexing(t, []blkstorage.IndexableAttr{blkstorage.IndexableAttrTxID})
@@ -179,7 +180,7 @@ func testBlockIndexSelectiveIndexing(t *testing.T, indexItems []blkstorage.Index
 		}
 
 		//test 'retrieveTrasnactionsByBlockNumTranNum
-		txEnvelope2, err := blockfileMgr.retrieveTransactionByBlockNumTranNum(0, 1)
+		txEnvelope2, err := blockfileMgr.retrieveTransactionByBlockNumTranNum(0, 0)
 		if testutil.Contains(indexItems, blkstorage.IndexableAttrBlockNumTranNum) {
 			testutil.AssertNoError(t, err, "Error while retrieving tx by blockNum and tranNum")
 			txEnvelopeBytes2 := blocks[0].Data.Data[0]

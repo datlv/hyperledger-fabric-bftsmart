@@ -1,12 +1,24 @@
 #!/bin/bash
+#
+# Copyright IBM Corp. All Rights Reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
 
-UP_DOWN=$1
-CH_NAME=$2
 
-COMPOSE_FILE=docker-compose.yaml
+UP_DOWN="$1"
+CH_NAME="$2"
+CLI_TIMEOUT="$3"
+IF_COUCHDB="$4"
+
+: ${CLI_TIMEOUT:="10000"}
+
+COMPOSE_FILE=docker-compose-cli.yaml
+COMPOSE_FILE_COUCH=docker-compose-couch.yaml
+#COMPOSE_FILE=docker-compose-e2e.yaml
 
 function printHelp () {
-	echo "Usage: ./network_setup <up|down> <channel-name>"
+	echo "Usage: ./network_setup <up|down> <\$channel-name> <\$cli_timeout> <couchdb>.\nThe arguments must be in order."
 }
 
 function validateArgs () {
@@ -40,24 +52,37 @@ function removeUnwantedImages() {
 }
 
 function networkUp () {
-	CURRENT_DIR=$PWD
-        source generateCfgTrx.sh $CH_NAME
-	cd $CURRENT_DIR
+    if [ -d "./crypto-config" ]; then
+      echo "crypto-config directory already exists."
+    else
+      #Generate all the artifacts that includes org certs, orderer genesis block,
+      # channel configuration transaction
+      source generateArtifacts.sh $CH_NAME
+    fi
 
-	CHANNEL_NAME=$CH_NAME docker-compose -f $COMPOSE_FILE up -d 2>&1
-	if [ $? -ne 0 ]; then
-		echo "ERROR !!!! Unable to pull the images "
-		exit 1
-	fi
-	docker logs -f cli
+    if [ "${IF_COUCHDB}" == "couchdb" ]; then
+      CHANNEL_NAME=$CH_NAME TIMEOUT=$CLI_TIMEOUT docker-compose -f $COMPOSE_FILE -f $COMPOSE_FILE_COUCH up -d 2>&1
+    else
+      CHANNEL_NAME=$CH_NAME TIMEOUT=$CLI_TIMEOUT docker-compose -f $COMPOSE_FILE up -d 2>&1
+    fi
+    if [ $? -ne 0 ]; then
+	echo "ERROR !!!! Unable to pull the images "
+	exit 1
+    fi
+    docker logs -f cli
 }
 
 function networkDown () {
-        docker-compose -f $COMPOSE_FILE down
-        #Cleanup the chaincode containers
-	clearContainers
-	#Cleanup images
-	removeUnwantedImages
+    docker-compose -f $COMPOSE_FILE down
+
+    #Cleanup the chaincode containers
+    clearContainers
+
+    #Cleanup images
+    removeUnwantedImages
+
+    # remove orderer block and other channel configuration transactions and certs
+    rm -rf channel-artifacts/*.block channel-artifacts/*.tx crypto-config
 }
 
 validateArgs

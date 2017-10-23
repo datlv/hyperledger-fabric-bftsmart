@@ -19,15 +19,15 @@ package ledgermgmt
 import (
 	"os"
 
-	"fmt"
-
 	"github.com/hyperledger/fabric/core/ledger/ledgerconfig"
+
+	"fmt"
 )
 
 // InitializeTestEnv initializes ledgermgmt for tests
 func InitializeTestEnv() {
 	remove()
-	initialize()
+	initialize(nil)
 }
 
 // CleanupTestEnv closes the ledgermagmt and removes the store directory

@@ -42,7 +42,7 @@ func TestAnd(t *testing.T) {
 
 	p2 := &common.SignaturePolicyEnvelope{
 		Version:    0,
-		Policy:     And(SignedBy(0), SignedBy(1)),
+		Rule:       And(SignedBy(0), SignedBy(1)),
 		Identities: principals,
 	}
 
@@ -65,7 +65,7 @@ func TestOr(t *testing.T) {
 
 	p2 := &common.SignaturePolicyEnvelope{
 		Version:    0,
-		Policy:     Or(SignedBy(0), SignedBy(1)),
+		Rule:       Or(SignedBy(0), SignedBy(1)),
 		Identities: principals,
 	}
 
@@ -92,7 +92,7 @@ func TestComplex1(t *testing.T) {
 
 	p2 := &common.SignaturePolicyEnvelope{
 		Version:    0,
-		Policy:     Or(SignedBy(2), And(SignedBy(0), SignedBy(1))),
+		Rule:       Or(SignedBy(2), And(SignedBy(0), SignedBy(1))),
 		Identities: principals,
 	}
 
@@ -123,9 +123,16 @@ func TestComplex2(t *testing.T) {
 
 	p2 := &common.SignaturePolicyEnvelope{
 		Version:    0,
-		Policy:     Or(And(SignedBy(0), SignedBy(1)), Or(SignedBy(2), SignedBy(3))),
+		Rule:       Or(And(SignedBy(0), SignedBy(1)), Or(SignedBy(2), SignedBy(3))),
 		Identities: principals,
 	}
 
 	assert.True(t, reflect.DeepEqual(p1, p2))
+}
+
+func TestBadStringsNoPanic(t *testing.T) {
+	_, err := FromString("OR('A.member', 'Bmember')")
+	assert.Error(t, err)
+	_, err = FromString("OR('A.member', Bmember)")
+	assert.Error(t, err)
 }

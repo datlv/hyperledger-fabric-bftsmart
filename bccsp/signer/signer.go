@@ -17,62 +17,56 @@ package signer
 
 import (
 	"crypto"
-	"errors"
-	"fmt"
 	"io"
 
 	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/bccsp/utils"
+	"github.com/pkg/errors"
 )
 
-// CryptoSigner is the BCCSP-based implementation of a crypto.Signer
-type CryptoSigner struct {
+// bccspCryptoSigner is the BCCSP-based implementation of a crypto.Signer
+type bccspCryptoSigner struct {
 	csp bccsp.BCCSP
 	key bccsp.Key
 	pk  interface{}
 }
 
-// Init initializes this CryptoSigner.
-func (s *CryptoSigner) Init(csp bccsp.BCCSP, key bccsp.Key) error {
+// New returns a new BCCSP-based crypto.Signer
+// for the given BCCSP instance and key.
+func New(csp bccsp.BCCSP, key bccsp.Key) (crypto.Signer, error) {
 	// Validate arguments
 	if csp == nil {
-		return errors.New("Invalid BCCSP. Nil.")
+		return nil, errors.New("bccsp instance must be different from nil.")
 	}
 	if key == nil {
-		return errors.New("Invalid Key. Nil.")
+		return nil, errors.New("key must be different from nil.")
 	}
 	if key.Symmetric() {
-		return errors.New("Invalid Key. Symmetric.")
+		return nil, errors.New("key must be asymmetric.")
 	}
 
 	// Marshall the bccsp public key as a crypto.PublicKey
 	pub, err := key.PublicKey()
 	if err != nil {
-		return fmt.Errorf("Failed getting public key [%s]", err)
+		return nil, errors.Wrap(err, "failed getting public key")
 	}
 
 	raw, err := pub.Bytes()
 	if err != nil {
-		return fmt.Errorf("Failed marshalling public key [%s]", err)
+		return nil, errors.Wrap(err, "failed marshalling public key")
 	}
 
 	pk, err := utils.DERToPublicKey(raw)
 	if err != nil {
-		return fmt.Errorf("Failed marshalling public key [%s]", err)
+		return nil, errors.Wrap(err, "failed marshalling der to public key")
 	}
 
-	// Init fields
-	s.csp = csp
-	s.key = key
-	s.pk = pk
-
-	return nil
-
+	return &bccspCryptoSigner{csp, key, pk}, nil
 }
 
 // Public returns the public key corresponding to the opaque,
 // private key.
-func (s *CryptoSigner) Public() crypto.PublicKey {
+func (s *bccspCryptoSigner) Public() crypto.PublicKey {
 	return s.pk
 }
 
@@ -89,15 +83,6 @@ func (s *CryptoSigner) Public() crypto.PublicKey {
 // Note that when a signature of a hash of a larger message is needed,
 // the caller is responsible for hashing the larger message and passing
 // the hash (as digest) and the hash function (as opts) to Sign.
-func (s *CryptoSigner) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) (signature []byte, err error) {
-	if opts == nil {
-		return s.csp.Sign(s.key, digest, nil)
-	}
-
-	so, ok := opts.(bccsp.SignerOpts)
-	if !ok {
-		return nil, errors.New("Invalid opts type. Expecting bccsp.SignerOpts")
-	}
-
-	return s.csp.Sign(s.key, digest, so)
+func (s *bccspCryptoSigner) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) (signature []byte, err error) {
+	return s.csp.Sign(s.key, digest, opts)
 }

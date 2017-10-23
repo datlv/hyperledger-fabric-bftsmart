@@ -19,8 +19,8 @@ package mgmt
 import (
 	"testing"
 
-	configvaluesmsp "github.com/hyperledger/fabric/common/config/msp"
 	"github.com/hyperledger/fabric/msp"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestGetManagerForChains(t *testing.T) {
@@ -40,17 +40,23 @@ func TestGetManagerForChains(t *testing.T) {
 }
 
 func TestGetManagerForChains_usingMSPConfigHandlers(t *testing.T) {
-	XXXSetMSPManager("test", &configvaluesmsp.MSPConfigHandler{MSPManager: nil})
-	msp1 := GetManagerForChain("test")
-	// return value should be nil because the MSPManager was not initialized
-	if msp1 != nil {
-		t.Fatal("MSPManager should have been nil")
-	}
-
-	XXXSetMSPManager("foo", &configvaluesmsp.MSPConfigHandler{MSPManager: msp.NewMSPManager()})
+	XXXSetMSPManager("foo", msp.NewMSPManager())
 	msp2 := GetManagerForChain("foo")
 	// return value should be set because the MSPManager was initialized
 	if msp2 == nil {
 		t.FailNow()
 	}
+}
+
+func TestGetIdentityDeserializer(t *testing.T) {
+	XXXSetMSPManager("baz", msp.NewMSPManager())
+	ids := GetIdentityDeserializer("baz")
+	assert.NotNil(t, ids)
+	ids = GetIdentityDeserializer("")
+	assert.NotNil(t, ids)
+}
+
+func TestGetLocalSigningIdentityOrPanic(t *testing.T) {
+	sid := GetLocalSigningIdentityOrPanic()
+	assert.NotNil(t, sid)
 }

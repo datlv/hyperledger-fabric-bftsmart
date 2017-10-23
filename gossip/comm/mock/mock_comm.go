@@ -1,22 +1,14 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package mock
 
 import (
+	"time"
+
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/comm"
 	"github.com/hyperledger/fabric/gossip/common"
@@ -85,11 +77,17 @@ func NewCommMock(id string, members map[string]*socketMock) comm.Comm {
 
 // Respond sends a GossipMessage to the origin from which this ReceivedMessage was sent from
 func (packet *packetMock) Respond(msg *proto.GossipMessage) {
+	sMsg, _ := msg.NoopSign()
 	packet.src.socket <- &packetMock{
 		src: packet.dst,
 		dst: packet.src,
-		msg: msg.NoopSign(),
+		msg: sMsg,
 	}
+}
+
+// Ack returns to the sender an acknowledgement for the message
+func (packet *packetMock) Ack(err error) {
+
 }
 
 // GetSourceEnvelope Returns the Envelope the ReceivedMessage was
@@ -153,6 +151,10 @@ func (mock *commMock) Send(msg *proto.SignedGossipMessage, peers ...*comm.Remote
 	}
 }
 
+func (mock *commMock) SendWithAck(_ *proto.SignedGossipMessage, _ time.Duration, _ int, _ ...*comm.RemotePeer) comm.AggregatedSendResult {
+	panic("not implemented")
+}
+
 // Probe probes a remote node and returns nil if its responsive,
 // and an error if it's not.
 func (mock *commMock) Probe(peer *comm.RemotePeer) error {
@@ -191,9 +193,4 @@ func (mock *commMock) Stop() {
 	}
 	logger.Debug("[XXX]: Sending done signal to close the module.")
 	mock.done <- struct{}{}
-}
-
-// BlackListPKIid prohibits the module communicating with the given PKIid
-func (mock *commMock) BlackListPKIid(PKIid common.PKIidType) {
-	// NOOP
 }

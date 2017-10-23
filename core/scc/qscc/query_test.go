@@ -20,192 +20,329 @@ import (
 	"os"
 	"testing"
 
-	"github.com/spf13/viper"
-
-	"strings"
-
-	"github.com/hyperledger/fabric/common/policies"
+	"github.com/hyperledger/fabric/common/ledger/testutil"
+	"github.com/hyperledger/fabric/common/util"
+	"github.com/hyperledger/fabric/core/aclmgmt"
+	"github.com/hyperledger/fabric/core/aclmgmt/mocks"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
+	ledger2 "github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/peer"
-	"github.com/hyperledger/fabric/core/policy"
+	"github.com/hyperledger/fabric/protos/common"
 	peer2 "github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/pkg/errors"
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestInit(t *testing.T) {
-	viper.Set("peer.fileSystemPath", "/var/hyperledger/test1/")
-	defer os.RemoveAll("/var/hyperledger/test1/")
+func setupTestLedger(chainid string, path string) (*shim.MockStub, error) {
+	mockAclProvider.Reset()
+
+	viper.Set("peer.fileSystemPath", path)
 	peer.MockInitialize()
-	peer.MockCreateChain("mytestchainid1")
+	peer.MockCreateChain(chainid)
 
-	e := new(LedgerQuerier)
-	stub := shim.NewMockStub("LedgerQuerier", e)
-
+	lq := new(LedgerQuerier)
+	stub := shim.NewMockStub("LedgerQuerier", lq)
 	if res := stub.MockInit("1", nil); res.Status != shim.OK {
-		fmt.Println("Init failed", string(res.Message))
-		t.FailNow()
+		return nil, fmt.Errorf("Init failed for test ledger [%s] with message: %s", chainid, string(res.Message))
 	}
+	return stub, nil
+}
+
+//pass the prop so we can conveniently inline it in the call and get it back
+func resetProvider(res, chainid string, prop *peer2.SignedProposal, retErr error) *peer2.SignedProposal {
+	mockAclProvider.Reset()
+	mockAclProvider.On("CheckACL", res, chainid, prop).Return(retErr)
+	return prop
 }
 
 func TestQueryGetChainInfo(t *testing.T) {
-	viper.Set("peer.fileSystemPath", "/var/hyperledger/test2/")
-	defer os.RemoveAll("/var/hyperledger/test2/")
-	peer.MockInitialize()
-	peer.MockCreateChain("mytestchainid2")
-
-	e := new(LedgerQuerier)
-	stub := shim.NewMockStub("LedgerQuerier", e)
-
-	if res := stub.MockInit("1", nil); res.Status != shim.OK {
-		fmt.Println("Init failed", string(res.Message))
-		t.FailNow()
+	chainid := "mytestchainid1"
+	path := "/var/hyperledger/test1/"
+	stub, err := setupTestLedger(chainid, path)
+	defer os.RemoveAll(path)
+	if err != nil {
+		t.Fatalf(err.Error())
 	}
 
-	args := [][]byte{[]byte(GetChainInfo), []byte("mytestchainid2")}
-	if res := stub.MockInvoke("2", args); res.Status != shim.OK {
-		t.Fatalf("qscc GetChainInfo failed with err: %s", res.Message)
-	}
+	args := [][]byte{[]byte(GetChainInfo), []byte(chainid)}
+	prop := resetProvider(aclmgmt.QSCC_GetChainInfo, chainid, &peer2.SignedProposal{}, nil)
+	res := stub.MockInvokeWithSignedProposal("1", args, prop)
+	assert.Equal(t, int32(shim.OK), res.Status, "GetChainInfo failed with err: %s", res.Message)
+
+	args = [][]byte{[]byte(GetChainInfo)}
+	res = stub.MockInvoke("2", args)
+	assert.Equal(t, int32(shim.ERROR), res.Status, "GetChainInfo should have failed because no channel id was provided")
+
+	args = [][]byte{[]byte(GetChainInfo), []byte("fakechainid")}
+	res = stub.MockInvoke("3", args)
+	assert.Equal(t, int32(shim.ERROR), res.Status, "GetChainInfo should have failed because the channel id does not exist")
 }
 
 func TestQueryGetTransactionByID(t *testing.T) {
-	viper.Set("peer.fileSystemPath", "/var/hyperledger/test3/")
-	defer os.RemoveAll("/var/hyperledger/test3/")
-	peer.MockInitialize()
-	peer.MockCreateChain("mytestchainid3")
-
-	e := new(LedgerQuerier)
-	stub := shim.NewMockStub("LedgerQuerier", e)
-
-	if res := stub.MockInit("1", nil); res.Status != shim.OK {
-		fmt.Println("Init failed", string(res.Message))
-		t.FailNow()
+	chainid := "mytestchainid2"
+	path := "/var/hyperledger/test2/"
+	stub, err := setupTestLedger(chainid, path)
+	defer os.RemoveAll(path)
+	if err != nil {
+		t.Fatalf(err.Error())
 	}
 
-	args := [][]byte{[]byte(GetTransactionByID), []byte("mytestchainid3"), []byte("1")}
-	if res := stub.MockInvoke("2", args); res.Status == shim.OK {
-		t.Fatal("qscc getTransactionByID should have failed with invalid txid: 2")
-	}
-}
+	args := [][]byte{[]byte(GetTransactionByID), []byte(chainid), []byte("1")}
+	prop := resetProvider(aclmgmt.QSCC_GetTransactionByID, chainid, &peer2.SignedProposal{}, nil)
+	res := stub.MockInvokeWithSignedProposal("1", args, prop)
+	assert.Equal(t, int32(shim.ERROR), res.Status, "GetTransactionByID should have failed with invalid txid: 1")
 
-func TestQueryWithWrongParameters(t *testing.T) {
-	viper.Set("peer.fileSystemPath", "/var/hyperledger/test4/")
-	defer os.RemoveAll("/var/hyperledger/test4/")
-	peer.MockInitialize()
-	peer.MockCreateChain("mytestchainid4")
-
-	e := new(LedgerQuerier)
-	stub := shim.NewMockStub("LedgerQuerier", e)
-
-	if res := stub.MockInit("1", nil); res.Status != shim.OK {
-		fmt.Println("Init failed", string(res.Message))
-		t.FailNow()
-	}
+	args = [][]byte{[]byte(GetTransactionByID), []byte(chainid), []byte(nil)}
+	res = stub.MockInvoke("2", args)
+	assert.Equal(t, int32(shim.ERROR), res.Status, "GetTransactionByID should have failed with invalid txid: nil")
 
 	// Test with wrong number of parameters
-	args := [][]byte{[]byte(GetTransactionByID), []byte("mytestchainid4")}
-	if res := stub.MockInvoke("2", args); res.Status == shim.OK {
-		t.Fatal("qscc getTransactionByID should have failed with invalid txid: 2")
-	}
+	args = [][]byte{[]byte(GetTransactionByID), []byte(chainid)}
+	res = stub.MockInvoke("3", args)
+	assert.Equal(t, int32(shim.ERROR), res.Status, "GetTransactionByID should have failed due to incorrect number of arguments")
 }
 
 func TestQueryGetBlockByNumber(t *testing.T) {
-	//t.Skip()
-	viper.Set("peer.fileSystemPath", "/var/hyperledger/test5/")
-	defer os.RemoveAll("/var/hyperledger/test5/")
-	peer.MockInitialize()
-	peer.MockCreateChain("mytestchainid5")
-
-	e := new(LedgerQuerier)
-	stub := shim.NewMockStub("LedgerQuerier", e)
-
-	if res := stub.MockInit("1", nil); res.Status != shim.OK {
-		fmt.Println("Init failed", string(res.Message))
-		t.FailNow()
+	chainid := "mytestchainid3"
+	path := "/var/hyperledger/test3/"
+	stub, err := setupTestLedger(chainid, path)
+	defer os.RemoveAll(path)
+	if err != nil {
+		t.Fatalf(err.Error())
 	}
 
-	args := [][]byte{[]byte(GetBlockByNumber), []byte("mytestchainid5"), []byte("0")}
-	if res := stub.MockInvoke("2", args); res.Status == shim.OK {
-		t.Fatal("qscc GetBlockByNumber should have failed with invalid number: 0")
-	}
+	// block number 0 (genesis block) would already be present in the ledger
+	args := [][]byte{[]byte(GetBlockByNumber), []byte(chainid), []byte("0")}
+	prop := resetProvider(aclmgmt.QSCC_GetBlockByNumber, chainid, &peer2.SignedProposal{}, nil)
+	res := stub.MockInvokeWithSignedProposal("1", args, prop)
+	assert.Equal(t, int32(shim.OK), res.Status, "GetBlockByNumber should have succeeded for block number: 0")
+
+	// block number 1 should not be present in the ledger
+	args = [][]byte{[]byte(GetBlockByNumber), []byte(chainid), []byte("1")}
+	res = stub.MockInvoke("2", args)
+	assert.Equal(t, int32(shim.ERROR), res.Status, "GetBlockByNumber should have failed with invalid number: 1")
+
+	// block number cannot be nil
+	args = [][]byte{[]byte(GetBlockByNumber), []byte(chainid), []byte(nil)}
+	res = stub.MockInvoke("3", args)
+	assert.Equal(t, int32(shim.ERROR), res.Status, "GetBlockByNumber should have failed with nil block number")
 }
 
 func TestQueryGetBlockByHash(t *testing.T) {
-	viper.Set("peer.fileSystemPath", "/var/hyperledger/test6/")
-	defer os.RemoveAll("/var/hyperledger/test6/")
-	peer.MockInitialize()
-	peer.MockCreateChain("mytestchainid6")
-
-	e := new(LedgerQuerier)
-	stub := shim.NewMockStub("LedgerQuerier", e)
-
-	if res := stub.MockInit("1", nil); res.Status != shim.OK {
-		fmt.Println("Init failed", string(res.Message))
-		t.FailNow()
+	chainid := "mytestchainid4"
+	path := "/var/hyperledger/test4/"
+	stub, err := setupTestLedger(chainid, path)
+	defer os.RemoveAll(path)
+	if err != nil {
+		t.Fatalf(err.Error())
 	}
 
-	args := [][]byte{[]byte(GetBlockByHash), []byte("mytestchainid6"), []byte("0")}
-	if res := stub.MockInvoke("2", args); res.Status == shim.OK {
-		t.Fatal("qscc GetBlockByHash should have failed with invalid hash: 0")
-	}
+	args := [][]byte{[]byte(GetBlockByHash), []byte(chainid), []byte("0")}
+	prop := resetProvider(aclmgmt.QSCC_GetBlockByHash, chainid, &peer2.SignedProposal{}, nil)
+	res := stub.MockInvokeWithSignedProposal("1", args, prop)
+	assert.Equal(t, int32(shim.ERROR), res.Status, "GetBlockByHash should have failed with invalid hash: 0")
+
+	args = [][]byte{[]byte(GetBlockByHash), []byte(chainid), []byte(nil)}
+	res = stub.MockInvoke("2", args)
+	assert.Equal(t, int32(shim.ERROR), res.Status, "GetBlockByHash should have failed with nil hash")
 }
 
 func TestQueryGetBlockByTxID(t *testing.T) {
-	viper.Set("peer.fileSystemPath", "/var/hyperledger/test8/")
-	defer os.RemoveAll("/var/hyperledger/test8/")
-	peer.MockInitialize()
-	peer.MockCreateChain("mytestchainid8")
-
-	e := new(LedgerQuerier)
-	stub := shim.NewMockStub("LedgerQuerier", e)
-
-	txID := ""
-
-	if res := stub.MockInit("1", nil); res.Status != shim.OK {
-		fmt.Println("Init failed", string(res.Message))
-		t.FailNow()
+	chainid := "mytestchainid5"
+	path := "/var/hyperledger/test5/"
+	stub, err := setupTestLedger(chainid, path)
+	defer os.RemoveAll(path)
+	if err != nil {
+		t.Fatalf(err.Error())
 	}
 
-	args := [][]byte{[]byte(GetBlockByTxID), []byte("mytestchainid8"), []byte(txID)}
-	if res := stub.MockInvoke("2", args); res.Status == shim.OK {
-		t.Fatalf("qscc GetBlockByTxID should have failed with invalid txID: %s", txID)
-	}
+	args := [][]byte{[]byte(GetBlockByTxID), []byte(chainid), []byte("")}
+	prop := resetProvider(aclmgmt.QSCC_GetBlockByTxID, chainid, &peer2.SignedProposal{}, nil)
+	res := stub.MockInvokeWithSignedProposal("1", args, prop)
+	assert.Equal(t, int32(shim.ERROR), res.Status, "GetBlockByTxID should have failed with blank txId.")
 }
 
 func TestFailingAccessControl(t *testing.T) {
-	viper.Set("peer.fileSystemPath", "/var/hyperledger/test9/")
-	defer os.RemoveAll("/var/hyperledger/test9/")
-	peer.MockInitialize()
-	peer.MockCreateChain("mytestchainid9")
-
-	e := new(LedgerQuerier)
-	// Init the policy checker to have a failure
-	policyManagerGetter := &policy.MockChannelPolicyManagerGetter{
-		Managers: map[string]policies.Manager{
-			"mytestchainid9": &policy.MockChannelPolicyManager{MockPolicy: &policy.MockPolicy{Deserializer: &policy.MockIdentityDeserializer{[]byte("Alice"), []byte("msg1")}}},
-		},
+	chainid := "mytestchainid6"
+	path := "/var/hyperledger/test6/"
+	_, err := setupTestLedger(chainid, path)
+	defer os.RemoveAll(path)
+	if err != nil {
+		t.Fatalf(err.Error())
 	}
-
-	e.policyChecker = policy.NewPolicyChecker(
-		policyManagerGetter,
-		&policy.MockIdentityDeserializer{[]byte("Alice"), []byte("msg1")},
-		&policy.MockMSPPrincipalGetter{Principal: []byte("Alice")},
-	)
-
+	e := new(LedgerQuerier)
 	stub := shim.NewMockStub("LedgerQuerier", e)
 
-	args := [][]byte{[]byte(GetChainInfo), []byte("mytestchainid9")}
-	sProp, _ := utils.MockSignedEndorserProposalOrPanic("mytestchainid9", &peer2.ChaincodeSpec{}, []byte("Alice"), []byte("msg1"))
-	policyManagerGetter.Managers["mytestchainid9"].(*policy.MockChannelPolicyManager).MockPolicy.(*policy.MockPolicy).Deserializer.(*policy.MockIdentityDeserializer).Msg = sProp.ProposalBytes
+	// GetChainInfo
+	args := [][]byte{[]byte(GetChainInfo), []byte(chainid)}
+	sProp, _ := utils.MockSignedEndorserProposalOrPanic(chainid, &peer2.ChaincodeSpec{}, []byte("Alice"), []byte("msg1"))
 	sProp.Signature = sProp.ProposalBytes
-	if res := stub.MockInvokeWithSignedProposal("2", args, sProp); res.Status != shim.OK {
-		t.Fatalf("qscc GetChainInfo failed with err: %s", res.Message)
+	// Set the ACLProvider to have a failure
+	resetProvider(aclmgmt.QSCC_GetChainInfo, chainid, sProp, errors.New("Failed access control"))
+	res := stub.MockInvokeWithSignedProposal("2", args, sProp)
+	assert.Equal(t, int32(shim.ERROR), res.Status, "GetChainInfo must fail: %s", res.Message)
+	assert.Contains(t, res.Message, "Failed access control")
+	// assert that the expectations were met
+	mockAclProvider.AssertExpectations(t)
+
+	// GetBlockByNumber
+	args = [][]byte{[]byte(GetBlockByNumber), []byte(chainid), []byte("1")}
+	sProp, _ = utils.MockSignedEndorserProposalOrPanic(chainid, &peer2.ChaincodeSpec{}, []byte("Alice"), []byte("msg1"))
+	sProp.Signature = sProp.ProposalBytes
+	// Set the ACLProvider to have a failure
+	resetProvider(aclmgmt.QSCC_GetBlockByNumber, chainid, sProp, errors.New("Failed access control"))
+	res = stub.MockInvokeWithSignedProposal("2", args, sProp)
+	assert.Equal(t, int32(shim.ERROR), res.Status, "GetBlockByNumber must fail: %s", res.Message)
+	assert.Contains(t, res.Message, "Failed access control")
+	// assert that the expectations were met
+	mockAclProvider.AssertExpectations(t)
+
+	// GetBlockByHash
+	args = [][]byte{[]byte(GetBlockByHash), []byte(chainid), []byte("1")}
+	sProp, _ = utils.MockSignedEndorserProposalOrPanic(chainid, &peer2.ChaincodeSpec{}, []byte("Alice"), []byte("msg1"))
+	sProp.Signature = sProp.ProposalBytes
+	// Set the ACLProvider to have a failure
+	resetProvider(aclmgmt.QSCC_GetBlockByHash, chainid, sProp, errors.New("Failed access control"))
+	res = stub.MockInvokeWithSignedProposal("2", args, sProp)
+	assert.Equal(t, int32(shim.ERROR), res.Status, "GetBlockByHash must fail: %s", res.Message)
+	assert.Contains(t, res.Message, "Failed access control")
+	// assert that the expectations were met
+	mockAclProvider.AssertExpectations(t)
+
+	// GetBlockByTxID
+	args = [][]byte{[]byte(GetBlockByTxID), []byte(chainid), []byte("1")}
+	sProp, _ = utils.MockSignedEndorserProposalOrPanic(chainid, &peer2.ChaincodeSpec{}, []byte("Alice"), []byte("msg1"))
+	sProp.Signature = sProp.ProposalBytes
+	// Set the ACLProvider to have a failure
+	resetProvider(aclmgmt.QSCC_GetBlockByTxID, chainid, sProp, errors.New("Failed access control"))
+	res = stub.MockInvokeWithSignedProposal("2", args, sProp)
+	assert.Equal(t, int32(shim.ERROR), res.Status, "GetBlockByTxID must fail: %s", res.Message)
+	assert.Contains(t, res.Message, "Failed access control")
+	// assert that the expectations were met
+	mockAclProvider.AssertExpectations(t)
+
+	// GetTransactionByID
+	args = [][]byte{[]byte(GetTransactionByID), []byte(chainid), []byte("1")}
+	sProp, _ = utils.MockSignedEndorserProposalOrPanic(chainid, &peer2.ChaincodeSpec{}, []byte("Alice"), []byte("msg1"))
+	sProp.Signature = sProp.ProposalBytes
+	// Set the ACLProvider to have a failure
+	resetProvider(aclmgmt.QSCC_GetTransactionByID, chainid, sProp, errors.New("Failed access control"))
+	res = stub.MockInvokeWithSignedProposal("2", args, sProp)
+	assert.Equal(t, int32(shim.ERROR), res.Status, "QSCC_GetTransactionByID must fail: %s", res.Message)
+	assert.Contains(t, res.Message, "Failed access control")
+	// assert that the expectations were met
+	mockAclProvider.AssertExpectations(t)
+}
+
+func TestQueryNonexistentFunction(t *testing.T) {
+	chainid := "mytestchainid7"
+	path := "/var/hyperledger/test7/"
+	stub, err := setupTestLedger(chainid, path)
+	defer os.RemoveAll(path)
+	if err != nil {
+		t.Fatalf(err.Error())
 	}
 
-	sProp, _ = utils.MockSignedEndorserProposalOrPanic("mytestchainid9", &peer2.ChaincodeSpec{}, []byte("Bob"), []byte("msg2"))
-	res := stub.MockInvokeWithSignedProposal("3", args, sProp)
-	if res.Status == shim.OK {
-		t.Fatalf("qscc GetChainInfo must fail: %s", res.Message)
+	args := [][]byte{[]byte("GetBlocks"), []byte(chainid), []byte("arg1")}
+	prop := resetProvider("QSCC.GetBlocks", chainid, &peer2.SignedProposal{}, nil)
+	res := stub.MockInvokeWithSignedProposal("1", args, prop)
+	assert.Equal(t, int32(shim.ERROR), res.Status, "GetBlocks should have failed because the function does not exist")
+}
+
+// TestQueryGeneratedBlock tests various queries for a newly generated block
+// that contains two transactions
+func TestQueryGeneratedBlock(t *testing.T) {
+	chainid := "mytestchainid8"
+	path := "/var/hyperledger/test8/"
+	stub, err := setupTestLedger(chainid, path)
+	defer os.RemoveAll(path)
+	if err != nil {
+		t.Fatalf(err.Error())
 	}
-	assert.True(t, strings.HasPrefix(res.Message, "Authorization request failed"))
+
+	block1 := addBlockForTesting(t, chainid)
+
+	// block number 1 should now exist
+	args := [][]byte{[]byte(GetBlockByNumber), []byte(chainid), []byte("1")}
+	prop := resetProvider(aclmgmt.QSCC_GetBlockByNumber, chainid, &peer2.SignedProposal{}, nil)
+	res := stub.MockInvokeWithSignedProposal("1", args, prop)
+	assert.Equal(t, int32(shim.OK), res.Status, "GetBlockByNumber should have succeeded for block number 1")
+
+	// block number 1
+	args = [][]byte{[]byte(GetBlockByHash), []byte(chainid), []byte(block1.Header.Hash())}
+	prop = resetProvider(aclmgmt.QSCC_GetBlockByHash, chainid, &peer2.SignedProposal{}, nil)
+	res = stub.MockInvokeWithSignedProposal("2", args, prop)
+	assert.Equal(t, int32(shim.OK), res.Status, "GetBlockByHash should have succeeded for block 1 hash")
+
+	// drill into the block to find the transaction ids it contains
+	for _, d := range block1.Data.Data {
+		ebytes := d
+		if ebytes != nil {
+			if env, err := utils.GetEnvelopeFromBlock(ebytes); err != nil {
+				t.Fatalf("error getting envelope from block: %s", err)
+			} else if env != nil {
+				payload, err := utils.GetPayload(env)
+				if err != nil {
+					t.Fatalf("error extracting payload from envelope: %s", err)
+				}
+				chdr, err := utils.UnmarshalChannelHeader(payload.Header.ChannelHeader)
+				if err != nil {
+					t.Fatalf(err.Error())
+				}
+				if common.HeaderType(chdr.Type) == common.HeaderType_ENDORSER_TRANSACTION {
+					args = [][]byte{[]byte(GetBlockByTxID), []byte(chainid), []byte(chdr.TxId)}
+					mockAclProvider.Reset()
+					prop = resetProvider(aclmgmt.QSCC_GetBlockByTxID, chainid, &peer2.SignedProposal{}, nil)
+					res = stub.MockInvokeWithSignedProposal("3", args, prop)
+					assert.Equal(t, int32(shim.OK), res.Status, "GetBlockByTxId should have succeeded for txid: %s", chdr.TxId)
+
+					args = [][]byte{[]byte(GetTransactionByID), []byte(chainid), []byte(chdr.TxId)}
+					prop = resetProvider(aclmgmt.QSCC_GetTransactionByID, chainid, &peer2.SignedProposal{}, nil)
+					res = stub.MockInvokeWithSignedProposal("4", args, prop)
+					assert.Equal(t, int32(shim.OK), res.Status, "GetTransactionById should have succeeded for txid: %s", chdr.TxId)
+				}
+			}
+		}
+	}
+}
+
+func addBlockForTesting(t *testing.T, chainid string) *common.Block {
+	bg, _ := testutil.NewBlockGenerator(t, chainid, false)
+	ledger := peer.GetLedger(chainid)
+	defer ledger.Close()
+
+	txid1 := util.GenerateUUID()
+	simulator, _ := ledger.NewTxSimulator(txid1)
+	simulator.SetState("ns1", "key1", []byte("value1"))
+	simulator.SetState("ns1", "key2", []byte("value2"))
+	simulator.SetState("ns1", "key3", []byte("value3"))
+	simulator.Done()
+	simRes1, _ := simulator.GetTxSimulationResults()
+	pubSimResBytes1, _ := simRes1.GetPubSimulationBytes()
+
+	txid2 := util.GenerateUUID()
+	simulator, _ = ledger.NewTxSimulator(txid2)
+	simulator.SetState("ns2", "key4", []byte("value4"))
+	simulator.SetState("ns2", "key5", []byte("value5"))
+	simulator.SetState("ns2", "key6", []byte("value6"))
+	simulator.Done()
+	simRes2, _ := simulator.GetTxSimulationResults()
+	pubSimResBytes2, _ := simRes2.GetPubSimulationBytes()
+
+	block1 := bg.NextBlock([][]byte{pubSimResBytes1, pubSimResBytes2})
+	ledger.CommitWithPvtData(&ledger2.BlockAndPvtData{Block: block1})
+
+	return block1
+}
+
+var mockAclProvider *mocks.MockACLProvider
+
+func TestMain(m *testing.M) {
+	mockAclProvider = &mocks.MockACLProvider{}
+	mockAclProvider.Reset()
+
+	aclmgmt.RegisterACLProvider(mockAclProvider)
+	os.Exit(m.Run())
 }

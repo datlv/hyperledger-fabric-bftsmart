@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package configtx
@@ -20,30 +10,23 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/hyperledger/fabric/common/configtx/api"
 	mockconfigtx "github.com/hyperledger/fabric/common/mocks/configtx"
 	mockpolicies "github.com/hyperledger/fabric/common/mocks/policies"
+	"github.com/hyperledger/fabric/common/policies"
 	cb "github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/utils"
 
 	"github.com/stretchr/testify/assert"
 )
 
-var defaultChain = "DefaultChainID"
+var defaultChain = "default.chain.id"
 
 func defaultInitializer() *mockconfigtx.Initializer {
 	return &mockconfigtx.Initializer{
-		Resources: mockconfigtx.Resources{
-			PolicyManagerVal: &mockpolicies.Manager{
-				Policy: &mockpolicies.Policy{},
-			},
+		PolicyManagerVal: &mockpolicies.Manager{
+			Policy: &mockpolicies.Policy{},
 		},
-		PolicyProposerVal: &mockconfigtx.PolicyProposer{
-			Transactional: mockconfigtx.Transactional{},
-		},
-		ValueProposerVal: &mockconfigtx.ValueProposer{
-			Transactional: mockconfigtx.Transactional{},
-		},
+		RootGroupKeyVal: "foo",
 	}
 }
 
@@ -113,30 +96,28 @@ func makeConfigUpdateEnvelope(chainID string, readSet, writeSet *cb.ConfigGroup)
 	}
 }
 
-func TestCallback(t *testing.T) {
-	var calledBack api.Manager
-	callback := func(m api.Manager) {
-		calledBack = m
-	}
-
-	cm, err := NewManagerImpl(
-		makeEnvelopeConfig(defaultChain, makeConfigPair("foo", "foo", 0, []byte("foo"))),
-		defaultInitializer(), []func(api.Manager){callback})
-
-	if err != nil {
-		t.Fatalf("Error constructing config manager: %s", err)
-	}
-
-	if calledBack != cm {
-		t.Fatalf("Should have called back with the correct manager")
-	}
+func TestEmptyChannel(t *testing.T) {
+	_, err := NewManagerImpl(&cb.Envelope{
+		Payload: utils.MarshalOrPanic(&cb.Payload{
+			Header: &cb.Header{
+				ChannelHeader: utils.MarshalOrPanic(&cb.ChannelHeader{
+					Type:      int32(cb.HeaderType_CONFIG),
+					ChannelId: "foo",
+				}),
+			},
+			Data: utils.MarshalOrPanic(&cb.ConfigEnvelope{
+				Config: &cb.Config{},
+			}),
+		}),
+	}, defaultInitializer())
+	assert.Error(t, err)
 }
 
 // TestDifferentChainID tests that a config update for a different chain ID fails
 func TestDifferentChainID(t *testing.T) {
 	cm, err := NewManagerImpl(
 		makeEnvelopeConfig(defaultChain, makeConfigPair("foo", "foo", 0, []byte("foo"))),
-		defaultInitializer(), nil)
+		defaultInitializer())
 
 	if err != nil {
 		t.Fatalf("Error constructing config manager: %s", err)
@@ -154,7 +135,7 @@ func TestDifferentChainID(t *testing.T) {
 func TestOldConfigReplay(t *testing.T) {
 	cm, err := NewManagerImpl(
 		makeEnvelopeConfig(defaultChain, makeConfigPair("foo", "foo", 0, []byte("foo"))),
-		defaultInitializer(), nil)
+		defaultInitializer())
 
 	if err != nil {
 		t.Fatalf("Error constructing config manager: %s", err)
@@ -172,7 +153,7 @@ func TestOldConfigReplay(t *testing.T) {
 func TestValidConfigChange(t *testing.T) {
 	cm, err := NewManagerImpl(
 		makeEnvelopeConfig(defaultChain, makeConfigPair("foo", "foo", 0, []byte("foo"))),
-		defaultInitializer(), nil)
+		defaultInitializer())
 
 	if err != nil {
 		t.Fatalf("Error constructing config manager: %s", err)
@@ -189,11 +170,6 @@ func TestValidConfigChange(t *testing.T) {
 	if err != nil {
 		t.Errorf("Should not have errored validating config: %s", err)
 	}
-
-	err = cm.Apply(configEnv)
-	if err != nil {
-		t.Errorf("Should not have errored applying config: %s", err)
-	}
 }
 
 // TestConfigChangeRegressedSequence tests to make sure that a new config cannot roll back one of the
@@ -201,7 +177,7 @@ func TestValidConfigChange(t *testing.T) {
 func TestConfigChangeRegressedSequence(t *testing.T) {
 	cm, err := NewManagerImpl(
 		makeEnvelopeConfig(defaultChain, makeConfigPair("foo", "foo", 1, []byte("foo"))),
-		defaultInitializer(), nil)
+		defaultInitializer())
 
 	if err != nil {
 		t.Fatalf("Error constructing config manager: %s", err)
@@ -224,7 +200,7 @@ func TestConfigChangeRegressedSequence(t *testing.T) {
 func TestConfigChangeOldSequence(t *testing.T) {
 	cm, err := NewManagerImpl(
 		makeEnvelopeConfig(defaultChain, makeConfigPair("foo", "foo", 1, []byte("foo"))),
-		defaultInitializer(), nil)
+		defaultInitializer())
 
 	if err != nil {
 		t.Fatalf("Error constructing config manager: %s", err)
@@ -254,7 +230,7 @@ func TestConfigPartialUpdate(t *testing.T) {
 			makeConfigPair("foo", "foo", 0, []byte("foo")),
 			makeConfigPair("bar", "bar", 0, []byte("bar")),
 		),
-		defaultInitializer(), nil)
+		defaultInitializer())
 
 	if err != nil {
 		t.Fatalf("Error constructing config manager: %s", err)
@@ -274,7 +250,7 @@ func TestConfigPartialUpdate(t *testing.T) {
 func TestEmptyConfigUpdate(t *testing.T) {
 	cm, err := NewManagerImpl(
 		makeEnvelopeConfig(defaultChain, makeConfigPair("foo", "foo", 0, []byte("foo"))),
-		defaultInitializer(), nil)
+		defaultInitializer())
 
 	if err != nil {
 		t.Fatalf("Error constructing config manager: %s", err)
@@ -298,7 +274,7 @@ func TestSilentConfigModification(t *testing.T) {
 			makeConfigPair("foo", "foo", 0, []byte("foo")),
 			makeConfigPair("bar", "bar", 0, []byte("bar")),
 		),
-		defaultInitializer(), nil)
+		defaultInitializer())
 
 	if err != nil {
 		t.Fatalf("Error constructing config manager: %s", err)
@@ -325,13 +301,13 @@ func TestConfigChangeViolatesPolicy(t *testing.T) {
 	initializer := defaultInitializer()
 	cm, err := NewManagerImpl(
 		makeEnvelopeConfig(defaultChain, makeConfigPair("foo", "foo", 0, []byte("foo"))),
-		initializer, nil)
+		initializer)
 
 	if err != nil {
 		t.Fatalf("Error constructing config manager: %s", err)
 	}
 	// Set the mock policy to error
-	initializer.Resources.PolicyManagerVal.Policy.Err = fmt.Errorf("err")
+	initializer.PolicyManagerVal.Policy.Err = fmt.Errorf("err")
 
 	newConfig := makeConfigUpdateEnvelope(defaultChain, makeConfigSet(), makeConfigSet(makeConfigPair("foo", "foo", 1, []byte("foo"))))
 
@@ -347,15 +323,15 @@ func TestUnchangedConfigViolatesPolicy(t *testing.T) {
 	initializer := defaultInitializer()
 	cm, err := NewManagerImpl(
 		makeEnvelopeConfig(defaultChain, makeConfigPair("foo", "foo", 0, []byte("foo"))),
-		initializer, nil)
+		initializer)
 
 	if err != nil {
 		t.Fatalf("Error constructing config manager: %s", err)
 	}
 
 	// Set the mock policy to error
-	initializer.Resources.PolicyManagerVal.PolicyMap = make(map[string]*mockpolicies.Policy)
-	initializer.Resources.PolicyManagerVal.PolicyMap["foo"] = &mockpolicies.Policy{Err: fmt.Errorf("err")}
+	initializer.PolicyManagerVal.PolicyMap = make(map[string]policies.Policy)
+	initializer.PolicyManagerVal.PolicyMap["foo"] = &mockpolicies.Policy{Err: fmt.Errorf("err")}
 
 	newConfig := makeConfigUpdateEnvelope(
 		defaultChain,
@@ -372,11 +348,6 @@ func TestUnchangedConfigViolatesPolicy(t *testing.T) {
 	if err != nil {
 		t.Errorf("Should not have errored validating config, but got %s", err)
 	}
-
-	err = cm.Apply(configEnv)
-	if err != nil {
-		t.Errorf("Should not have errored applying config, but got %s", err)
-	}
 }
 
 // TestInvalidProposal checks that even if the policy allows the transaction and the sequence etc. is well formed,
@@ -385,13 +356,13 @@ func TestInvalidProposal(t *testing.T) {
 	initializer := defaultInitializer()
 	cm, err := NewManagerImpl(
 		makeEnvelopeConfig(defaultChain, makeConfigPair("foo", "foo", 0, []byte("foo"))),
-		initializer, nil)
+		initializer)
 
 	if err != nil {
 		t.Fatalf("Error constructing config manager: %s", err)
 	}
 
-	initializer.ValueProposerVal = &mockconfigtx.ValueProposer{DeserializeError: fmt.Errorf("err")}
+	initializer.PolicyManagerVal.Policy.Err = fmt.Errorf("err")
 
 	newConfig := makeConfigUpdateEnvelope(defaultChain, makeConfigSet(), makeConfigSet(makeConfigPair("foo", "foo", 1, []byte("foo"))))
 
@@ -407,7 +378,7 @@ func TestMissingHeader(t *testing.T) {
 	group.Values["foo"] = &cb.ConfigValue{}
 	_, err := NewManagerImpl(
 		&cb.Envelope{Payload: utils.MarshalOrPanic(&cb.Payload{Data: utils.MarshalOrPanic(&cb.ConfigEnvelope{Config: &cb.Config{ChannelGroup: group}})})},
-		defaultInitializer(), nil)
+		defaultInitializer())
 
 	if err == nil {
 		t.Error("Should have errored creating the config manager because of the missing header")
@@ -418,7 +389,7 @@ func TestMissingHeader(t *testing.T) {
 func TestMissingChainID(t *testing.T) {
 	_, err := NewManagerImpl(
 		makeEnvelopeConfig("", makeConfigPair("foo", "foo", 0, []byte("foo"))),
-		defaultInitializer(), nil)
+		defaultInitializer())
 
 	if err == nil {
 		t.Error("Should have errored creating the config manager because of the missing header")

@@ -26,6 +26,7 @@ import (
 
 func TestFetchChain(t *testing.T) {
 	InitMSP()
+	resetFlags()
 
 	mockchain := "mockchain"
 
@@ -56,7 +57,7 @@ func TestFetchChain(t *testing.T) {
 
 	AddFlags(cmd)
 
-	args = []string{"-c", mockchain}
+	args = []string{"-c", mockchain, "oldest", mockchain + ".block"}
 	cmd.SetArgs(args)
 
 	assert.NoError(t, cmd.Execute(), "Join command expected to succeed")

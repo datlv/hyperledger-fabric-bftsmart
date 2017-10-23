@@ -33,6 +33,18 @@ type endorserClient struct {
 	cf *ChannelCmdFactory
 }
 
+func listCmd(cf *ChannelCmdFactory) *cobra.Command {
+	// Set the flags on the channel start command.
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List of channels peer has joined.",
+		Long:  "List of channels peer has joined.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return list(cf)
+		},
+	}
+}
+
 func (cc *endorserClient) getChannels() ([]*pb.ChannelInfo, error) {
 	var err error
 
@@ -75,23 +87,10 @@ func (cc *endorserClient) getChannels() ([]*pb.ChannelInfo, error) {
 	return channelQueryResponse.Channels, nil
 }
 
-func listCmd(cf *ChannelCmdFactory) *cobra.Command {
-	// Set the flags on the channel start command.
-
-	return &cobra.Command{
-		Use:   "list",
-		Short: "List of channels peer has been joined to.",
-		Long:  "List of channels peer has been joined to.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return list(cf)
-		},
-	}
-}
-
 func list(cf *ChannelCmdFactory) error {
 	var err error
 	if cf == nil {
-		cf, err = InitCmdFactory(true)
+		cf, err = InitCmdFactory(EndorserRequired, OrdererNotRequired)
 		if err != nil {
 			return err
 		}
@@ -102,9 +101,10 @@ func list(cf *ChannelCmdFactory) error {
 	if channels, err := client.getChannels(); err != nil {
 		return err
 	} else {
-		fmt.Println("Channels peers has joined to:")
+		fmt.Println("Channels peers has joined: ")
+
 		for _, channel := range channels {
-			fmt.Println("\t", channel.ChannelId)
+			fmt.Printf("%s\n", channel.ChannelId)
 		}
 	}
 

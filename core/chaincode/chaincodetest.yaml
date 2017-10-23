@@ -1,3 +1,8 @@
+# Copyright IBM Corp. All Rights Reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
 # CA server parameters
 #
 server:
@@ -134,13 +139,13 @@ logging:
     #   info                                       - Set default to INFO
     #   warning:main,db=debug:chaincode=info       - Override default WARNING in main,db,chaincode
     #   chaincode=info:main=debug:db=debug:warning - Same as above
-    peer:      debug
-    crypto:    info
+    peer:      warning
+    crypto:    warning
     status:    warning
     stop:      warning
     login:     warning
-    vm:        debug
-    chaincode: debug
+    vm:        warning
+    chaincode: warning
 
 
 ###############################################################################
@@ -403,11 +408,18 @@ chaincode:
     # whitelist, add "myscc: enable" to the list
     system:
         cscc: enable
-        lccc: enable
+        lscc: enable
         escc: enable
         vscc: enable
 
-    logLevel: debug
+    # Logging section for the chaincode container
+    logging:
+      # Default level for all loggers within the chaincode container
+      level:  info
+      # Override default level for the 'shim' module
+      shim:   warning
+      # Format for the chaincode container logs
+      format: '%{color}%{time:2006-01-02 15:04:05.000 MST} [%{module}] %{shortfunc} -> %{level:.4s} %{id:03x}%{color:reset} %{message}'
 
 ###############################################################################
 #
@@ -428,13 +440,21 @@ ledger:
        couchDBAddress: 127.0.0.1:5984
        username:
        password:
+       # Number of retries for CouchDB errors
+       maxRetries: 3
+       # Number of retries for CouchDB errors during peer startup
+       maxRetriesOnStartup: 10
+       # CouchDB request timeout (unit: duration, e.g. 20s)
+       requestTimeout: 35s
+       # Limit on the number of records to return per query
+       queryLimit: 10000
+       # Limit on the number of records per CouchDB bulk update batch
+       maxBatchUpdateSize: 500
 
-    # historyDatabase - options are true or false
+  history:
+    # enableHistoryDatabase - options are true or false
     # Indicates if the history of key updates should be stored in goleveldb
-    historyDatabase: true
-
-    # Limit on the number of records to return per query
-    queryLimit: 10000
+    enableHistoryDatabase: true
 
 
 ################################################################################

@@ -33,8 +33,6 @@ type Ledger interface {
 	GetBlocksIterator(startBlockNumber uint64) (ResultsIterator, error)
 	// Close closes the ledger
 	Close()
-	// Commit adds a new block
-	Commit(block *common.Block) error
 }
 
 // ResultsIterator - an iterator for query result set
@@ -48,13 +46,6 @@ type ResultsIterator interface {
 
 // QueryResult - a general interface for supporting different types of query results. Actual types differ for different queries
 type QueryResult interface{}
-
-// BlockHolder holds block returned by the iterator in GetBlocksIterator.
-// The sole purpose of this holder is to avoid desrialization if block is desired in raw bytes form (e.g., for transfer)
-type BlockHolder interface {
-	GetBlock() *common.Block
-	GetBlockBytes() []byte
-}
 
 // PrunePolicy - a general interface for supporting different pruning policies
 type PrunePolicy interface{}

@@ -19,8 +19,8 @@ package validation
 import (
 	"testing"
 
-	"github.com/hyperledger/fabric/common/configtx"
-	configtxtest "github.com/hyperledger/fabric/common/configtx/test"
+	"github.com/hyperledger/fabric/common/tools/configtxgen/encoder"
+	genesisconfig "github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
 	"github.com/hyperledger/fabric/common/util"
 	cb "github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/peer"
@@ -29,9 +29,9 @@ import (
 
 func TestValidateConfigTx(t *testing.T) {
 	chainID := util.GetTestChainID()
-	chCrtEnv, err := configtx.MakeChainCreationTransaction(configtxtest.AcceptAllPolicyKey, chainID, signer, configtxtest.CompositeTemplate())
+	chCrtEnv, err := encoder.MakeChannelCreationTransaction(genesisconfig.SampleConsortiumName, chainID, signer, nil)
 	if err != nil {
-		t.Fatalf("MakeChainCreationTransaction failed, err %s", err)
+		t.Fatalf("MakeChannelCreationTransaction failed, err %s", err)
 		return
 	}
 

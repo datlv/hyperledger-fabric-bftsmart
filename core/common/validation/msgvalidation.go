@@ -21,23 +21,31 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/hyperledger/fabric/common/flogging"
 	mspmgmt "github.com/hyperledger/fabric/msp/mgmt"
 	"github.com/hyperledger/fabric/protos/common"
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protos/utils"
-	"github.com/op/go-logging"
 )
 
-var putilsLogger = logging.MustGetLogger("protoutils")
+var putilsLogger = flogging.MustGetLogger("protoutils")
 
 // validateChaincodeProposalMessage checks the validity of a Proposal message of type CHAINCODE
 func validateChaincodeProposalMessage(prop *pb.Proposal, hdr *common.Header) (*pb.ChaincodeHeaderExtension, error) {
+	if prop == nil || hdr == nil {
+		return nil, errors.New("Nil arguments")
+	}
+
 	putilsLogger.Debugf("validateChaincodeProposalMessage starts for proposal %p, header %p", prop, hdr)
 
 	// 4) based on the header type (assuming it's CHAINCODE), look at the extensions
 	chaincodeHdrExt, err := utils.GetChaincodeHeaderExtension(hdr)
 	if err != nil {
 		return nil, errors.New("Invalid header extension for type CHAINCODE")
+	}
+
+	if chaincodeHdrExt.ChaincodeId == nil {
+		return nil, errors.New("ChaincodeHeaderExtension.ChaincodeId is nil")
 	}
 
 	putilsLogger.Debugf("validateChaincodeProposalMessage info: header extension references chaincode %s", chaincodeHdrExt.ChaincodeId)
@@ -64,6 +72,10 @@ func validateChaincodeProposalMessage(prop *pb.Proposal, hdr *common.Header) (*p
 // this function returns Header and ChaincodeHeaderExtension messages since they
 // have been unmarshalled and validated
 func ValidateProposalMessage(signedProp *pb.SignedProposal) (*pb.Proposal, *common.Header, *pb.ChaincodeHeaderExtension, error) {
+	if signedProp == nil {
+		return nil, nil, nil, errors.New("Nil arguments")
+	}
+
 	putilsLogger.Debugf("ValidateProposalMessage starts for signed proposal %p", signedProp)
 
 	// extract the Proposal message from signedProp
@@ -286,8 +298,9 @@ func validateEndorserTransaction(data []byte, hdr *common.Header) error {
 
 	// TODO: validate ChaincodeHeaderExtension
 
-	if len(tx.Actions) == 0 {
-		return errors.New("At least one TransactionAction is required")
+	// hlf version 1 only supports a single action per transaction
+	if len(tx.Actions) != 1 {
+		return fmt.Errorf("Only one action per transaction is supported (tx contains %d)", len(tx.Actions))
 	}
 
 	putilsLogger.Debugf("validateEndorserTransaction info: there are %d actions", len(tx.Actions))

@@ -21,24 +21,28 @@ import (
 	"strings"
 
 	cb "github.com/hyperledger/fabric/protos/common"
+
+	"github.com/golang/protobuf/proto"
 )
 
 const (
-	RootGroupKey = "Channel"
-
 	GroupPrefix  = "[Groups] "
 	ValuePrefix  = "[Values] "
-	PolicyPrefix = "[Policy] " // The plurarility doesn't match, but, it makes the logs much easier being the same lenght as "Groups" and "Values"
+	PolicyPrefix = "[Policy] " // The plurarility doesn't match, but, it makes the logs much easier being the same length as "Groups" and "Values"
 
 	PathSeparator = "/"
+
+	// Hacky fix constants, used in recurseConfigMap
+	hackyFixOrdererCapabilities = "[Values] /Channel/Orderer/Capabilities"
+	hackyFixNewModPolicy        = "Admins"
 )
 
-// mapConfig is intended to be called outside this file
+// MapConfig is intended to be called outside this file
 // it takes a ConfigGroup and generates a map of fqPath to comparables (or error on invalid keys)
-func mapConfig(channelGroup *cb.ConfigGroup) (map[string]comparable, error) {
+func MapConfig(channelGroup *cb.ConfigGroup, rootGroupKey string) (map[string]comparable, error) {
 	result := make(map[string]comparable)
 	if channelGroup != nil {
-		err := recurseConfig(result, []string{RootGroupKey}, channelGroup)
+		err := recurseConfig(result, []string{rootGroupKey}, channelGroup)
 		if err != nil {
 			return nil, err
 		}
@@ -46,7 +50,7 @@ func mapConfig(channelGroup *cb.ConfigGroup) (map[string]comparable, error) {
 	return result, nil
 }
 
-// addToMap is used only internally by mapConfig
+// addToMap is used only internally by MapConfig
 func addToMap(cg comparable, result map[string]comparable) error {
 	var fqPath string
 
@@ -59,8 +63,7 @@ func addToMap(cg comparable, result map[string]comparable) error {
 		fqPath = PolicyPrefix
 	}
 
-	// TODO rename validateChainID to validateConfigID
-	if err := validateChainID(cg.key); err != nil {
+	if err := validateConfigID(cg.key); err != nil {
 		return fmt.Errorf("Illegal characters in key: %s", fqPath)
 	}
 
@@ -77,14 +80,16 @@ func addToMap(cg comparable, result map[string]comparable) error {
 	return nil
 }
 
-// recurseConfig is used only internally by mapConfig
+// recurseConfig is used only internally by MapConfig
 func recurseConfig(result map[string]comparable, path []string, group *cb.ConfigGroup) error {
 	if err := addToMap(comparable{key: path[len(path)-1], path: path[:len(path)-1], ConfigGroup: group}, result); err != nil {
 		return err
 	}
 
 	for key, group := range group.Groups {
-		nextPath := append(path, key)
+		nextPath := make([]string, len(path)+1)
+		copy(nextPath, path)
+		nextPath[len(nextPath)-1] = key
 		if err := recurseConfig(result, nextPath, group); err != nil {
 			return err
 		}
@@ -107,13 +112,13 @@ func recurseConfig(result map[string]comparable, path []string, group *cb.Config
 
 // configMapToConfig is intended to be called from outside this file
 // It takes a configMap and converts it back into a *cb.ConfigGroup structure
-func configMapToConfig(configMap map[string]comparable) (*cb.ConfigGroup, error) {
-	rootPath := PathSeparator + RootGroupKey
+func configMapToConfig(configMap map[string]comparable, rootGroupKey string) (*cb.ConfigGroup, error) {
+	rootPath := PathSeparator + rootGroupKey
 	return recurseConfigMap(rootPath, configMap)
 }
 
 // recurseConfigMap is used only internally by configMapToConfig
-// Note, this function mutates the cb.Config* entrieswithin configMap, so errors are generally fatal
+// Note, this function no longer mutates the cb.Config* entries within configMap
 func recurseConfigMap(path string, configMap map[string]comparable) (*cb.ConfigGroup, error) {
 	groupPath := GroupPrefix + path
 	group, ok := configMap[groupPath]
@@ -125,12 +130,15 @@ func recurseConfigMap(path string, configMap map[string]comparable) (*cb.ConfigG
 		return nil, fmt.Errorf("ConfigGroup not found at group path: %s", groupPath)
 	}
 
+	newConfigGroup := cb.NewConfigGroup()
+	proto.Merge(newConfigGroup, group.ConfigGroup)
+
 	for key, _ := range group.Groups {
 		updatedGroup, err := recurseConfigMap(path+PathSeparator+key, configMap)
 		if err != nil {
 			return nil, err
 		}
-		group.Groups[key] = updatedGroup
+		newConfigGroup.Groups[key] = updatedGroup
 	}
 
 	for key, _ := range group.Values {
@@ -142,7 +150,7 @@ func recurseConfigMap(path string, configMap map[string]comparable) (*cb.ConfigG
 		if value.ConfigValue == nil {
 			return nil, fmt.Errorf("ConfigValue not found at value path: %s", valuePath)
 		}
-		group.Values[key] = value.ConfigValue
+		newConfigGroup.Values[key] = proto.Clone(value.ConfigValue).(*cb.ConfigValue)
 	}
 
 	for key, _ := range group.Policies {
@@ -154,8 +162,39 @@ func recurseConfigMap(path string, configMap map[string]comparable) (*cb.ConfigG
 		if policy.ConfigPolicy == nil {
 			return nil, fmt.Errorf("ConfigPolicy not found at policy path: %s", policyPath)
 		}
-		group.Policies[key] = policy.ConfigPolicy
+		newConfigGroup.Policies[key] = proto.Clone(policy.ConfigPolicy).(*cb.ConfigPolicy)
+		logger.Debugf("Setting policy for key %s to %+v", key, group.Policies[key])
 	}
 
-	return group.ConfigGroup, nil
+	// This is a really very hacky fix to facilitate upgrading channels which were constructed
+	// using the channel generation from v1.0 with bugs FAB-5309, and FAB-6080.
+	// In summary, these channels were constructed with a bug which left mod_policy unset in some cases.
+	// If mod_policy is unset, it's impossible to modify the element, and current code disallows
+	// unset mod_policy values.  This hack 'fixes' existing config with empty mod_policy values.
+	// If the capabilities framework is on, it sets any unset mod_policy to 'Admins'.
+	// This code needs to sit here until validation of v1.0 chains is deprecated from the codebase.
+	if _, ok := configMap[hackyFixOrdererCapabilities]; ok {
+		// Hacky fix constants, used in recurseConfigMap
+		if newConfigGroup.ModPolicy == "" {
+			logger.Debugf("Performing upgrade of group %s empty mod_policy", groupPath)
+			newConfigGroup.ModPolicy = hackyFixNewModPolicy
+		}
+
+		for key, value := range newConfigGroup.Values {
+			if value.ModPolicy == "" {
+				logger.Debugf("Performing upgrade of value %s empty mod_policy", ValuePrefix+path+PathSeparator+key)
+				value.ModPolicy = hackyFixNewModPolicy
+			}
+		}
+
+		for key, policy := range newConfigGroup.Policies {
+			if policy.ModPolicy == "" {
+				logger.Debugf("Performing upgrade of policy %s empty mod_policy", PolicyPrefix+path+PathSeparator+key)
+
+				policy.ModPolicy = hackyFixNewModPolicy
+			}
+		}
+	}
+
+	return newConfigGroup, nil
 }

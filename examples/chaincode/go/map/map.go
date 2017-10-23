@@ -19,6 +19,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"time"
 
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	pb "github.com/hyperledger/fabric/protos/peer"
@@ -43,7 +45,7 @@ func (t *SimpleChaincode) Init(stub shim.ChaincodeStubInterface) pb.Response {
 }
 
 // Invoke has two functions
-// put - takes two arguements, a key and value, and stores them in the state
+// put - takes two arguments, a key and value, and stores them in the state
 // remove - takes one argument, a key, and removes if from the state
 func (t *SimpleChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 	function, args := stub.GetFunctionAndParameters()
@@ -55,11 +57,23 @@ func (t *SimpleChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 		key := args[0]
 		value := args[1]
 
-		err := stub.PutState(key, []byte(value))
-		if err != nil {
+		if err := stub.PutState(key, []byte(value)); err != nil {
 			fmt.Printf("Error putting state %s", err)
 			return shim.Error(fmt.Sprintf("put operation failed. Error updating state: %s", err))
 		}
+
+		indexName := "compositeKeyTest"
+		compositeKeyTestIndex, err := stub.CreateCompositeKey(indexName, []string{key})
+		if err != nil {
+			return shim.Error(err.Error())
+		}
+
+		valueByte := []byte{0x00}
+		if err := stub.PutState(compositeKeyTestIndex, valueByte); err != nil {
+			fmt.Printf("Error putting state with compositeKey %s", err)
+			return shim.Error(fmt.Sprintf("put operation failed. Error updating state with compositeKey: %s", err))
+		}
+
 		return shim.Success(nil)
 
 	case "remove":
@@ -92,6 +106,12 @@ func (t *SimpleChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 		startKey := args[0]
 		endKey := args[1]
 
+		//sleep needed to test peer's timeout behavior when using iterators
+		stime := 0
+		if len(args) > 2 {
+			stime, _ = strconv.Atoi(args[2])
+		}
+
 		keysIter, err := stub.GetStateByRange(startKey, endKey)
 		if err != nil {
 			return shim.Error(fmt.Sprintf("keys operation failed. Error accessing state: %s", err))
@@ -100,6 +120,11 @@ func (t *SimpleChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 
 		var keys []string
 		for keysIter.HasNext() {
+			//if sleeptime is specied, take a nap
+			if stime > 0 {
+				time.Sleep(time.Duration(stime) * time.Millisecond)
+			}
+
 			response, iterErr := keysIter.Next()
 			if iterErr != nil {
 				return shim.Error(fmt.Sprintf("keys operation failed. Error accessing state: %s", err))
@@ -154,7 +179,7 @@ func (t *SimpleChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 			if iterErr != nil {
 				return shim.Error(fmt.Sprintf("query operation failed. Error accessing state: %s", err))
 			}
-			keys = append(keys, response.TxID)
+			keys = append(keys, response.TxId)
 		}
 
 		for key, txID := range keys {

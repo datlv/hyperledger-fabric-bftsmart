@@ -21,8 +21,9 @@ def getGRPCChannel(ipAddress, port, root_certificates, ssl_target_name_override)
     # creds = grpc.ssl_channel_credentials(root_certificates=root_certificates, private_key=private_key, certificate_chain=certificate_chain)
     creds = grpc.ssl_channel_credentials(root_certificates=root_certificates)
     channel = grpc.secure_channel("{0}:{1}".format(ipAddress, port), creds,
-                                  options=(('grpc.ssl_target_name_override', ssl_target_name_override,),('grpc.default_authority', ssl_target_name_override,),))
-    print("Returning GRPC for address: {0}".format(ipAddress))
+                                  options=(('grpc.ssl_target_name_override', ssl_target_name_override,),('grpc.default_authority', ssl_target_name_override,),('grpc.max_receive_message_length', 100*1024*1024)))
+
+    # print("Returning GRPC for address: {0}".format(ipAddress))
     return channel
 
 def toStringArray(items):

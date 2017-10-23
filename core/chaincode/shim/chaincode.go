@@ -19,12 +19,10 @@ limitations under the License.
 package shim
 
 import (
-	"bytes"
-	"encoding/gob"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 	"strings"
 	"unicode/utf8"
@@ -35,10 +33,11 @@ import (
 	"github.com/hyperledger/fabric/common/flogging"
 	commonledger "github.com/hyperledger/fabric/common/ledger"
 	"github.com/hyperledger/fabric/core/comm"
-	"github.com/hyperledger/fabric/core/ledger"
+	"github.com/hyperledger/fabric/protos/ledger/queryresult"
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protos/utils"
 	"github.com/op/go-logging"
+	"github.com/pkg/errors"
 	"github.com/spf13/viper"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
@@ -48,9 +47,14 @@ import (
 var chaincodeLogger = logging.MustGetLogger("shim")
 var logOutput = os.Stderr
 
+var key string
+var cert string
+
 const (
-	minUnicodeRuneValue = 0            //U+0000
-	maxUnicodeRuneValue = utf8.MaxRune //U+10FFFF - maximum (and unallocated) code point
+	minUnicodeRuneValue   = 0            //U+0000
+	maxUnicodeRuneValue   = utf8.MaxRune //U+10FFFF - maximum (and unallocated) code point
+	compositeKeyNamespace = "\x00"
+	emptyKeySubstitute    = "\x01"
 )
 
 // ChaincodeStub is an object passed to chaincode for shim side handling of
@@ -67,24 +71,43 @@ type ChaincodeStub struct {
 	creator   []byte
 	transient map[string][]byte
 	binding   []byte
+
+	decorations map[string][]byte
 }
 
 // Peer address derived from command line or env var
 var peerAddress string
 
-// Start is the entry point for chaincodes bootstrap. It is not an API for
-// chaincodes.
-func Start(cc Chaincode) error {
-	// If Start() is called, we assume this is a standalone chaincode and set
-	// up formatted logging.
-	SetupChaincodeLogging()
+//this separates the chaincode stream interface establishment
+//so we can replace it with a mock peer stream
+type peerStreamGetter func(name string) (PeerChaincodeStream, error)
 
-	err := factory.InitFactories(&factory.DefaultOpts)
-	if err != nil {
-		return fmt.Errorf("Internal error, BCCSP could not be initialized with default options: %s", err)
-	}
+//UTs to setup mock peer stream getter
+var streamGetter peerStreamGetter
 
+//the non-mock user CC stream establishment func
+func userChaincodeStreamGetter(name string) (PeerChaincodeStream, error) {
 	flag.StringVar(&peerAddress, "peer.address", "", "peer address")
+	if comm.TLSEnabled() {
+		keyPath := viper.GetString("tls.client.key.path")
+		certPath := viper.GetString("tls.client.cert.path")
+
+		data, err1 := ioutil.ReadFile(keyPath)
+		if err1 != nil {
+			err1 = errors.Wrap(err1, fmt.Sprintf("error trying to read file content %s", keyPath))
+			chaincodeLogger.Errorf("%+v", err1)
+			return nil, err1
+		}
+		key = string(data)
+
+		data, err1 = ioutil.ReadFile(certPath)
+		if err1 != nil {
+			err1 = errors.Wrap(err1, fmt.Sprintf("error trying to read file content %s", certPath))
+			chaincodeLogger.Errorf("%+v", err1)
+			return nil, err1
+		}
+		cert = string(data)
+	}
 
 	flag.Parse()
 
@@ -93,8 +116,9 @@ func Start(cc Chaincode) error {
 	// Establish connection with validating peer
 	clientConn, err := newPeerClientConnection()
 	if err != nil {
-		chaincodeLogger.Errorf("Error trying to connect to local peer: %s", err)
-		return fmt.Errorf("Error trying to connect to local peer: %s", err)
+		err = errors.Wrap(err, "error trying to connect to local peer")
+		chaincodeLogger.Errorf("%+v", err)
+		return nil, err
 	}
 
 	chaincodeLogger.Debugf("os.Args returns: %s", os.Args)
@@ -104,13 +128,38 @@ func Start(cc Chaincode) error {
 	// Establish stream with validating peer
 	stream, err := chaincodeSupportClient.Register(context.Background())
 	if err != nil {
-		return fmt.Errorf("Error chatting with leader at address=%s:  %s", getPeerAddress(), err)
+		return nil, errors.WithMessage(err, fmt.Sprintf("error chatting with leader at address=%s", getPeerAddress()))
 	}
+
+	return stream, nil
+}
+
+// chaincodes.
+func Start(cc Chaincode) error {
+	// If Start() is called, we assume this is a standalone chaincode and set
+	// up formatted logging.
+	SetupChaincodeLogging()
 
 	chaincodename := viper.GetString("chaincode.id.name")
 	if chaincodename == "" {
-		return fmt.Errorf("Error chaincode id not provided")
+		return errors.New("error chaincode id not provided")
 	}
+
+	err := factory.InitFactories(factory.GetDefaultOpts())
+	if err != nil {
+		return errors.WithMessage(err, "internal error, BCCSP could not be initialized with default options")
+	}
+
+	//mock stream not set up ... get real stream
+	if streamGetter == nil {
+		streamGetter = userChaincodeStreamGetter
+	}
+
+	stream, err := streamGetter(chaincodename)
+	if err != nil {
+		return err
+	}
+
 	err = chatWithPeer(chaincodename, stream, cc)
 
 	return err
@@ -133,23 +182,42 @@ func SetupChaincodeLogging() {
 	viper.SetEnvKeyReplacer(replacer)
 
 	// setup system-wide logging backend
-	logFormat := flogging.SetFormat(viper.GetString("chaincode.logFormat"))
+	logFormat := flogging.SetFormat(viper.GetString("chaincode.logging.format"))
 	flogging.InitBackend(logFormat, logOutput)
 
-	chaincodeLogLevelString := viper.GetString("chaincode.logLevel")
+	// set default log level for all modules
+	chaincodeLogLevelString := viper.GetString("chaincode.logging.level")
 	if chaincodeLogLevelString == "" {
-		shimLogLevelDefault := logging.Level(shimLoggingLevel)
-		chaincodeLogger.Infof("Chaincode log level not provided; defaulting to: %s", shimLogLevelDefault)
-		SetLoggingLevel(shimLoggingLevel)
+		chaincodeLogger.Infof("Chaincode log level not provided; defaulting to: %s", flogging.DefaultLevel())
+		flogging.InitFromSpec(flogging.DefaultLevel())
 	} else {
-		chaincodeLogLevel, err := LogLevel(chaincodeLogLevelString)
+		_, err := LogLevel(chaincodeLogLevelString)
 		if err == nil {
-			SetLoggingLevel(chaincodeLogLevel)
+			flogging.InitFromSpec(chaincodeLogLevelString)
 		} else {
-			chaincodeLogger.Warningf("Error: %s for chaincode log level: %s", err, chaincodeLogLevelString)
+			chaincodeLogger.Warningf("Error: '%s' for chaincode log level: %s; defaulting to %s", err, chaincodeLogLevelString, flogging.DefaultLevel())
+			flogging.InitFromSpec(flogging.DefaultLevel())
 		}
 	}
 
+	// override the log level for the shim logging module - note: if this value is
+	// blank or an invalid log level, then the above call to
+	// `flogging.InitFromSpec` already set the default log level so no action
+	// is required here.
+	shimLogLevelString := viper.GetString("chaincode.logging.shim")
+	if shimLogLevelString != "" {
+		shimLogLevel, err := LogLevel(shimLogLevelString)
+		if err == nil {
+			SetLoggingLevel(shimLogLevel)
+		} else {
+			chaincodeLogger.Warningf("Error: %s for shim log level: %s", err, shimLogLevelString)
+		}
+	}
+
+	//now that logging is setup, print build level. This will help making sure
+	//chaincode is matched with peer.
+	buildLevel := viper.GetString("chaincode.buildlevel")
+	chaincodeLogger.Infof("Chaincode (build level: %s) starting up ...", buildLevel)
 }
 
 // StartInProc is an entry point for system chaincodes bootstrap. It is not an
@@ -166,10 +234,11 @@ func StartInProc(env []string, args []string, cc Chaincode, recv <-chan *pb.Chai
 		}
 	}
 	if chaincodename == "" {
-		return fmt.Errorf("Error chaincode id not provided")
+		return errors.New("error chaincode id not provided")
 	}
-	chaincodeLogger.Debugf("starting chat with peer using name=%s", chaincodename)
+
 	stream := newInProcStream(recv, send)
+	chaincodeLogger.Debugf("starting chat with peer using name=%s", chaincodename)
 	err := chatWithPeer(chaincodename, stream, cc)
 	return err
 }
@@ -189,9 +258,9 @@ func getPeerAddress() string {
 func newPeerClientConnection() (*grpc.ClientConn, error) {
 	var peerAddress = getPeerAddress()
 	if comm.TLSEnabled() {
-		return comm.NewClientConnectionWithAddress(peerAddress, true, true, comm.InitTLSForPeer())
+		return comm.NewChaincodeClientConnectionWithAddress(peerAddress, true, true, comm.InitTLSForShim(key, cert))
 	}
-	return comm.NewClientConnectionWithAddress(peerAddress, true, false, nil)
+	return comm.NewChaincodeClientConnectionWithAddress(peerAddress, true, false, nil)
 }
 
 func chatWithPeer(chaincodename string, stream PeerChaincodeStream, cc Chaincode) error {
@@ -204,12 +273,12 @@ func chatWithPeer(chaincodename string, stream PeerChaincodeStream, cc Chaincode
 	chaincodeID := &pb.ChaincodeID{Name: chaincodename}
 	payload, err := proto.Marshal(chaincodeID)
 	if err != nil {
-		return fmt.Errorf("Error marshalling chaincodeID during chaincode registration: %s", err)
+		return errors.Wrap(err, "error marshalling chaincodeID during chaincode registration")
 	}
 	// Register on the stream
 	chaincodeLogger.Debugf("Registering.. sending %s", pb.ChaincodeMessage_REGISTER)
 	if err = handler.serialSend(&pb.ChaincodeMessage{Type: pb.ChaincodeMessage_REGISTER, Payload: payload}); err != nil {
-		return fmt.Errorf("Error sending chaincode REGISTER: %s", err)
+		return errors.WithMessage(err, "error sending chaincode REGISTER")
 	}
 	waitc := make(chan struct{})
 	errc := make(chan error)
@@ -238,18 +307,18 @@ func chatWithPeer(chaincodename string, stream PeerChaincodeStream, cc Chaincode
 					continue
 				}
 				//no, bail
-				err = fmt.Errorf("Error sending %s: %s", in.Type.String(), sendErr)
+				err = errors.Wrap(sendErr, fmt.Sprintf("error sending %s", in.Type.String()))
 				return
 			case in = <-msgAvail:
 				if err == io.EOF {
-					chaincodeLogger.Debugf("Received EOF, ending chaincode stream, %s", err)
+					chaincodeLogger.Debugf("Received EOF, ending chaincode stream: %+v", err)
 					return
 				} else if err != nil {
-					chaincodeLogger.Errorf("Received error from server: %s, ending chaincode stream", err)
+					chaincodeLogger.Errorf("Received error from server, ending chaincode stream: %+v", err)
 					return
 				} else if in == nil {
-					err = fmt.Errorf("Received nil message, ending chaincode stream")
-					chaincodeLogger.Debug("Received nil message, ending chaincode stream")
+					err = errors.New("received nil message, ending chaincode stream")
+					chaincodeLogger.Debug("%+v", err)
 					return
 				}
 				chaincodeLogger.Debugf("[%s]Received message %s from shim", shorttxid(in.Txid), in.Type.String())
@@ -265,7 +334,7 @@ func chatWithPeer(chaincodename string, stream PeerChaincodeStream, cc Chaincode
 			// Call FSM.handleMessage()
 			err = handler.handleMessage(in)
 			if err != nil {
-				err = fmt.Errorf("Error handling message: %s", err)
+				err = errors.WithMessage(err, "error handling message")
 				return
 			}
 
@@ -292,6 +361,7 @@ func (stub *ChaincodeStub) init(handler *Handler, txid string, input *pb.Chainco
 	stub.args = input.Args
 	stub.handler = handler
 	stub.signedProposal = signedProposal
+	stub.decorations = input.Decorations
 
 	// TODO: sanity check: verify that every call to init with a nil
 	// signedProposal is a legitimate one, meaning it is an internal call
@@ -301,18 +371,18 @@ func (stub *ChaincodeStub) init(handler *Handler, txid string, input *pb.Chainco
 
 		stub.proposal, err = utils.GetProposal(signedProposal.ProposalBytes)
 		if err != nil {
-			return fmt.Errorf("Failed extracting signedProposal from signed signedProposal. [%s]", err)
+			return errors.WithMessage(err, "failed extracting signedProposal from signed signedProposal")
 		}
 
 		// Extract creator, transient, binding...
 		stub.creator, stub.transient, err = utils.GetChaincodeProposalContext(stub.proposal)
 		if err != nil {
-			return fmt.Errorf("Failed extracting signedProposal fields. [%s]", err)
+			return errors.WithMessage(err, "failed extracting signedProposal fields")
 		}
 
 		stub.binding, err = utils.ComputeProposalBinding(stub.proposal)
 		if err != nil {
-			return fmt.Errorf("Failed computing binding from signedProposal. [%s]", err)
+			return errors.WithMessage(err, "failed computing binding from signedProposal")
 		}
 	}
 
@@ -324,14 +394,16 @@ func (stub *ChaincodeStub) GetTxID() string {
 	return stub.TxID
 }
 
+func (stub *ChaincodeStub) GetDecorations() map[string][]byte {
+	return stub.decorations
+}
+
 // --------- Security functions ----------
 //CHAINCODE SEC INTERFACE FUNCS TOBE IMPLEMENTED BY ANGELO
 
 // ------------- Call Chaincode functions ---------------
 
-// InvokeChaincode locally calls the specified chaincode `Invoke` using the
-// same transaction context; that is, chaincode calling chaincode doesn't
-// create a new transaction message.
+// InvokeChaincode documentation can be found in interfaces.go
 func (stub *ChaincodeStub) InvokeChaincode(chaincodeName string, args [][]byte, channel string) pb.Response {
 	// Internally we handle chaincode name as a composite name
 	if channel != "" {
@@ -342,23 +414,25 @@ func (stub *ChaincodeStub) InvokeChaincode(chaincodeName string, args [][]byte, 
 
 // --------- State functions ----------
 
-// GetState returns the byte array value specified by the `key`.
+// GetState documentation can be found in interfaces.go
 func (stub *ChaincodeStub) GetState(key string) ([]byte, error) {
 	return stub.handler.handleGetState(key, stub.TxID)
 }
 
-// PutState writes the specified `value` and `key` into the ledger.
+// PutState documentation can be found in interfaces.go
 func (stub *ChaincodeStub) PutState(key string, value []byte) error {
+	if key == "" {
+		return errors.New("key must not be an empty string")
+	}
 	return stub.handler.handlePutState(key, value, stub.TxID)
 }
 
-// DelState removes the specified `key` and its value from the ledger.
+// DelState documentation can be found in interfaces.go
 func (stub *ChaincodeStub) DelState(key string) error {
 	return stub.handler.handleDelState(key, stub.TxID)
 }
 
-// CommonIterator allows a chaincode to iterate over a set of
-// key/value pairs in the state.
+// CommonIterator documentation can be found in interfaces.go
 type CommonIterator struct {
 	handler    *Handler
 	uuid       string
@@ -366,14 +440,12 @@ type CommonIterator struct {
 	currentLoc int
 }
 
-//GeneralQueryIterator allows a chaincode to iterate the result
-//of range and execute query.
+// StateQueryIterator documentation can be found in interfaces.go
 type StateQueryIterator struct {
 	*CommonIterator
 }
 
-//GeneralQueryIterator allows a chaincode to iterate the result
-//of history query.
+// HistoryQueryIterator documentation can be found in interfaces.go
 type HistoryQueryIterator struct {
 	*CommonIterator
 }
@@ -385,12 +457,7 @@ const (
 	HISTORY_QUERY_RESULT
 )
 
-// GetStateByRange function can be invoked by a chaincode to query of a range
-// of keys in the state. Assuming the startKey and endKey are in lexical order,
-// an iterator will be returned that can be used to iterate over all keys
-// between the startKey and endKey, inclusive. The order in which keys are
-// returned by the iterator is random.
-func (stub *ChaincodeStub) GetStateByRange(startKey, endKey string) (StateQueryIteratorInterface, error) {
+func (stub *ChaincodeStub) handleGetStateByRange(startKey, endKey string) (StateQueryIteratorInterface, error) {
 	response, err := stub.handler.handleGetStateByRange(startKey, endKey, stub.TxID)
 	if err != nil {
 		return nil, err
@@ -398,11 +465,18 @@ func (stub *ChaincodeStub) GetStateByRange(startKey, endKey string) (StateQueryI
 	return &StateQueryIterator{CommonIterator: &CommonIterator{stub.handler, stub.TxID, response, 0}}, nil
 }
 
-// GetQueryResult function can be invoked by a chaincode to perform a
-// rich query against state database.  Only supported by state database implementations
-// that support rich query.  The query string is in the syntax of the underlying
-// state database. An iterator is returned which can be used to iterate (next) over
-// the query result set
+// GetStateByRange documentation can be found in interfaces.go
+func (stub *ChaincodeStub) GetStateByRange(startKey, endKey string) (StateQueryIteratorInterface, error) {
+	if startKey == "" {
+		startKey = emptyKeySubstitute
+	}
+	if err := validateSimpleKeys(startKey, endKey); err != nil {
+		return nil, err
+	}
+	return stub.handleGetStateByRange(startKey, endKey)
+}
+
+// GetQueryResult documentation can be found in interfaces.go
 func (stub *ChaincodeStub) GetQueryResult(query string) (StateQueryIteratorInterface, error) {
 	response, err := stub.handler.handleGetQueryResult(query, stub.TxID)
 	if err != nil {
@@ -411,8 +485,7 @@ func (stub *ChaincodeStub) GetQueryResult(query string) (StateQueryIteratorInter
 	return &StateQueryIterator{CommonIterator: &CommonIterator{stub.handler, stub.TxID, response, 0}}, nil
 }
 
-// GetHistoryForKey function can be invoked by a chaincode to return a history of
-// key values across time. GetHistoryForKey is intended to be used for read-only queries.
+// GetHistoryForKey documentation can be found in interfaces.go
 func (stub *ChaincodeStub) GetHistoryForKey(key string) (HistoryQueryIteratorInterface, error) {
 	response, err := stub.handler.handleGetHistoryForKey(key, stub.TxID)
 	if err != nil {
@@ -421,12 +494,12 @@ func (stub *ChaincodeStub) GetHistoryForKey(key string) (HistoryQueryIteratorInt
 	return &HistoryQueryIterator{CommonIterator: &CommonIterator{stub.handler, stub.TxID, response, 0}}, nil
 }
 
-//CreateCompositeKey combines the given attributes to form a composite key.
+//CreateCompositeKey documentation can be found in interfaces.go
 func (stub *ChaincodeStub) CreateCompositeKey(objectType string, attributes []string) (string, error) {
 	return createCompositeKey(objectType, attributes)
 }
 
-//SplitCompositeKey splits the key into attributes on which the composite key was formed.
+//SplitCompositeKey documentation can be found in interfaces.go
 func (stub *ChaincodeStub) SplitCompositeKey(compositeKey string) (string, []string, error) {
 	return splitCompositeKey(compositeKey)
 }
@@ -435,7 +508,7 @@ func createCompositeKey(objectType string, attributes []string) (string, error) 
 	if err := validateCompositeKeyAttribute(objectType); err != nil {
 		return "", err
 	}
-	ck := objectType + string(minUnicodeRuneValue)
+	ck := compositeKeyNamespace + objectType + string(minUnicodeRuneValue)
 	for _, att := range attributes {
 		if err := validateCompositeKeyAttribute(att); err != nil {
 			return "", err
@@ -446,9 +519,9 @@ func createCompositeKey(objectType string, attributes []string) (string, error) 
 }
 
 func splitCompositeKey(compositeKey string) (string, []string, error) {
-	componentIndex := 0
+	componentIndex := 1
 	components := []string{}
-	for i := 0; i < len(compositeKey); i++ {
+	for i := 1; i < len(compositeKey); i++ {
 		if compositeKey[i] == minUnicodeRuneValue {
 			components = append(components, compositeKey[componentIndex:i])
 			componentIndex = i + 1
@@ -459,12 +532,25 @@ func splitCompositeKey(compositeKey string) (string, []string, error) {
 
 func validateCompositeKeyAttribute(str string) error {
 	if !utf8.ValidString(str) {
-		return fmt.Errorf("Not a valid utf8 string: [%x]", str)
+		return errors.Errorf("not a valid utf8 string: [%x]", str)
 	}
 	for index, runeValue := range str {
 		if runeValue == minUnicodeRuneValue || runeValue == maxUnicodeRuneValue {
-			return fmt.Errorf(`Input contain unicode %#U starting at position [%d]. %#U and %#U are not allowed in the input attribute of a composite key`,
+			return errors.Errorf(`input contain unicode %#U starting at position [%d]. %#U and %#U are not allowed in the input attribute of a composite key`,
 				runeValue, index, minUnicodeRuneValue, maxUnicodeRuneValue)
+		}
+	}
+	return nil
+}
+
+//To ensure that simple keys do not go into composite key namespace,
+//we validate simplekey to check whether the key starts with 0x00 (which
+//is the namespace for compositeKey). This helps in avoding simple/composite
+//key collisions.
+func validateSimpleKeys(simpleKeys ...string) error {
+	for _, key := range simpleKeys {
+		if len(key) > 0 && key[0] == compositeKeyNamespace[0] {
+			return errors.Errorf(`first character of the key [%s] contains a null character which is not allowed`, key)
 		}
 	}
 	return nil
@@ -477,30 +563,30 @@ func validateCompositeKeyAttribute(str string) error {
 //a partial composite key. For a full composite key, an iter with empty response
 //would be returned.
 func (stub *ChaincodeStub) GetStateByPartialCompositeKey(objectType string, attributes []string) (StateQueryIteratorInterface, error) {
-	return getStateByPartialCompositeKey(stub, objectType, attributes)
-}
-
-func getStateByPartialCompositeKey(stub ChaincodeStubInterface, objectType string, attributes []string) (StateQueryIteratorInterface, error) {
-	partialCompositeKey, _ := stub.CreateCompositeKey(objectType, attributes)
-	keysIter, err := stub.GetStateByRange(partialCompositeKey, partialCompositeKey+string(maxUnicodeRuneValue))
-	if err != nil {
-		return nil, fmt.Errorf("Error fetching rows: %s", err)
+	if partialCompositeKey, err := stub.CreateCompositeKey(objectType, attributes); err == nil {
+		return stub.handleGetStateByRange(partialCompositeKey, partialCompositeKey+string(maxUnicodeRuneValue))
+	} else {
+		return nil, err
 	}
-	return keysIter, nil
 }
 
-func (iter *StateQueryIterator) Next() (*ledger.KV, error) {
-	result, err := next(iter.CommonIterator, STATE_QUERY_RESULT)
-	return result.(*ledger.KV), err
+func (iter *StateQueryIterator) Next() (*queryresult.KV, error) {
+	if result, err := iter.nextResult(STATE_QUERY_RESULT); err == nil {
+		return result.(*queryresult.KV), err
+	} else {
+		return nil, err
+	}
 }
 
-func (iter *HistoryQueryIterator) Next() (*ledger.KeyModification, error) {
-	result, err := next(iter.CommonIterator, HISTORY_QUERY_RESULT)
-	return result.(*ledger.KeyModification), err
+func (iter *HistoryQueryIterator) Next() (*queryresult.KeyModification, error) {
+	if result, err := iter.nextResult(HISTORY_QUERY_RESULT); err == nil {
+		return result.(*queryresult.KeyModification), err
+	} else {
+		return nil, err
+	}
 }
 
-// HasNext returns true if the range query iterator contains additional keys
-// and values.
+// HasNext documentation can be found in interfaces.go
 func (iter *CommonIterator) HasNext() bool {
 	if iter.currentLoc < len(iter.response.Results) || iter.response.HasMore {
 		return true
@@ -508,71 +594,84 @@ func (iter *CommonIterator) HasNext() bool {
 	return false
 }
 
-func getResultFromBytes(queryResultBytes *pb.QueryResultBytes, iter *CommonIterator,
+// getResultsFromBytes deserializes QueryResult and return either a KV struct
+// or KeyModification depending on the result type (i.e., state (range/execute)
+// query, history query). Note that commonledger.QueryResult is an empty golang
+// interface that can hold values of any type.
+func (iter *CommonIterator) getResultFromBytes(queryResultBytes *pb.QueryResultBytes,
 	rType resultType) (commonledger.QueryResult, error) {
 
-	decoder := gob.NewDecoder(bytes.NewBuffer(queryResultBytes.ResultBytes))
-
 	if rType == STATE_QUERY_RESULT {
-		var stateQueryResult ledger.KV
-		if err := decoder.Decode(&stateQueryResult); err != nil {
-			return nil, err
+		stateQueryResult := &queryresult.KV{}
+		if err := proto.Unmarshal(queryResultBytes.ResultBytes, stateQueryResult); err != nil {
+			return nil, errors.Wrap(err, "error unmarshaling result from bytes")
 		}
-		iter.currentLoc++
-		return &stateQueryResult, nil
+		return stateQueryResult, nil
 
 	} else if rType == HISTORY_QUERY_RESULT {
-		var historyQueryResult ledger.KeyModification
-		if err := decoder.Decode(&historyQueryResult); err != nil {
+		historyQueryResult := &queryresult.KeyModification{}
+		if err := proto.Unmarshal(queryResultBytes.ResultBytes, historyQueryResult); err != nil {
+			return nil, err
+		}
+		return historyQueryResult, nil
+	}
+	return nil, errors.New("wrong result type")
+}
+
+func (iter *CommonIterator) fetchNextQueryResult() error {
+	if response, err := iter.handler.handleQueryStateNext(iter.response.Id, iter.uuid); err == nil {
+		iter.currentLoc = 0
+		iter.response = response
+		return nil
+	} else {
+		return err
+	}
+}
+
+// nextResult returns the next QueryResult (i.e., either a KV struct or KeyModification)
+// from the state or history query iterator. Note that commonledger.QueryResult is an
+// empty golang interface that can hold values of any type.
+func (iter *CommonIterator) nextResult(rType resultType) (commonledger.QueryResult, error) {
+	if iter.currentLoc < len(iter.response.Results) {
+		// On valid access of an element from cached results
+		queryResult, err := iter.getResultFromBytes(iter.response.Results[iter.currentLoc], rType)
+		if err != nil {
+			chaincodeLogger.Errorf("Failed to decode query results: %+v", err)
 			return nil, err
 		}
 		iter.currentLoc++
-		return &historyQueryResult, nil
 
-	}
-	return nil, errors.New("Wrong result type")
-}
+		if iter.currentLoc == len(iter.response.Results) && iter.response.HasMore {
+			// On access of last item, pre-fetch to update HasMore flag
+			if err = iter.fetchNextQueryResult(); err != nil {
+				chaincodeLogger.Errorf("Failed to fetch next results: %+v", err)
+				return nil, err
+			}
+		}
 
-func fetchRemainingQueryResult(iter *CommonIterator) error {
-	response, err := iter.handler.handleQueryStateNext(iter.response.Id, iter.uuid)
-
-	if err != nil {
-		return err
-	}
-
-	iter.currentLoc = 0
-	iter.response = response
-	return nil
-}
-
-// Next returns the next key and value in the state or history query iterator.
-func next(iter *CommonIterator, rType resultType) (commonledger.QueryResult, error) {
-
-	if iter.currentLoc < len(iter.response.Results) {
-		return getResultFromBytes(iter.response.Results[iter.currentLoc], iter, rType)
+		return queryResult, err
 	} else if !iter.response.HasMore {
-		return nil, errors.New("No such key")
+		// On call to Next() without check of HasMore
+		return nil, errors.New("no such key")
 	}
-	if err := fetchRemainingQueryResult(iter); err != nil {
-		return nil, err
-	}
-	return getResultFromBytes(iter.response.Results[iter.currentLoc], iter, rType)
 
+	// should not fall through here
+	// case: no cached results but HasMore is true.
+	return nil, errors.New("invalid iterator state")
 }
 
-// Close closes the range query iterator. This should be called when done
-// reading from the iterator to free up resources.
+// Close documentation can be found in interfaces.go
 func (iter *CommonIterator) Close() error {
 	_, err := iter.handler.handleQueryStateClose(iter.response.Id, iter.uuid)
 	return err
 }
 
-// GetArgs returns the argument list
+// GetArgs documentation can be found in interfaces.go
 func (stub *ChaincodeStub) GetArgs() [][]byte {
 	return stub.args
 }
 
-// GetStringArgs returns the arguments as array of strings
+// GetStringArgs documentation can be found in interfaces.go
 func (stub *ChaincodeStub) GetStringArgs() []string {
 	args := stub.GetArgs()
 	strargs := make([]string, 0, len(args))
@@ -582,8 +681,7 @@ func (stub *ChaincodeStub) GetStringArgs() []string {
 	return strargs
 }
 
-// GetFunctionAndParameters returns the first arg as the function and the rest
-// as argument string array
+// GetFunctionAndParameters documentation can be found in interfaces.go
 func (stub *ChaincodeStub) GetFunctionAndParameters() (function string, params []string) {
 	allargs := stub.GetStringArgs()
 	function = ""
@@ -595,32 +693,27 @@ func (stub *ChaincodeStub) GetFunctionAndParameters() (function string, params [
 	return
 }
 
-// GetCreator returns SignatureHeader.Creator of the signedProposal
-// this Stub refers to.
+// GetCreator documentation can be found in interfaces.go
 func (stub *ChaincodeStub) GetCreator() ([]byte, error) {
 	return stub.creator, nil
 }
 
-// GetTransient returns the ChaincodeProposalPayload.transient field.
-// It is a map that contains data (e.g. cryptographic material)
-// that might be used to implement some form of application-level confidentiality. The contents
-// of this field, as prescribed by ChaincodeProposalPayload, are supposed to always
-// be omitted from the transaction and excluded from the ledger.
+// GetTransient documentation can be found in interfaces.go
 func (stub *ChaincodeStub) GetTransient() (map[string][]byte, error) {
 	return stub.transient, nil
 }
 
-// GetBinding returns the transaction binding
+// GetBinding documentation can be found in interfaces.go
 func (stub *ChaincodeStub) GetBinding() ([]byte, error) {
 	return stub.binding, nil
 }
 
-// GetSignedProposal return the signed signedProposal this stub refers to.
+// GetSignedProposal documentation can be found in interfaces.go
 func (stub *ChaincodeStub) GetSignedProposal() (*pb.SignedProposal, error) {
 	return stub.signedProposal, nil
 }
 
-// GetArgsSlice returns the arguments to the stub call as a byte array
+// GetArgsSlice documentation can be found in interfaces.go
 func (stub *ChaincodeStub) GetArgsSlice() ([]byte, error) {
 	args := stub.GetArgs()
 	res := []byte{}
@@ -630,9 +723,7 @@ func (stub *ChaincodeStub) GetArgsSlice() ([]byte, error) {
 	return res, nil
 }
 
-// GetTxTimestamp returns the timestamp when the transaction was created. This
-// is taken from the transaction ChannelHeader, so it will be the same across
-// all endorsers.
+// GetTxTimestamp documentation can be found in interfaces.go
 func (stub *ChaincodeStub) GetTxTimestamp() (*timestamp.Timestamp, error) {
 	hdr, err := utils.GetHeader(stub.proposal.Header)
 	if err != nil {
@@ -648,10 +739,10 @@ func (stub *ChaincodeStub) GetTxTimestamp() (*timestamp.Timestamp, error) {
 
 // ------------- ChaincodeEvent API ----------------------
 
-// SetEvent saves the event to be sent when a transaction is made part of a block
+// SetEvent documentation can be found in interfaces.go
 func (stub *ChaincodeStub) SetEvent(name string, payload []byte) error {
 	if name == "" {
-		return errors.New("Event name can not be nil string.")
+		return errors.New("event name can not be nil string")
 	}
 	stub.chaincodeEvent = &pb.ChaincodeEvent{EventName: name, Payload: payload}
 	return nil

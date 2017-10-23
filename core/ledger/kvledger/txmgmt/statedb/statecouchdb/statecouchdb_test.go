@@ -19,6 +19,7 @@ package statecouchdb
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/hyperledger/fabric/common/ledger/testutil"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
@@ -31,15 +32,27 @@ import (
 
 func TestMain(m *testing.M) {
 
-	//call a helper method to load the core.yaml, will be used to detect if CouchDB is enabled
-	ledgertestutil.SetupCoreYAMLConfig("./../../../../../../peer")
+	// Read the core.yaml file for default config.
+	ledgertestutil.SetupCoreYAMLConfig()
 	viper.Set("peer.fileSystemPath", "/tmp/fabric/ledgertests/kvledger/txmgmt/statedb/statecouchdb")
+
+	// Switch to CouchDB
 	viper.Set("ledger.state.stateDatabase", "CouchDB")
 
 	// both vagrant and CI have couchdb configured at host "couchdb"
 	viper.Set("ledger.state.couchDBConfig.couchDBAddress", "couchdb:5984")
+	// Replace with correct username/password such as
+	// admin/admin if user security is enabled on couchdb.
+	viper.Set("ledger.state.couchDBConfig.username", "")
+	viper.Set("ledger.state.couchDBConfig.password", "")
+	viper.Set("ledger.state.couchDBConfig.maxRetries", 3)
+	viper.Set("ledger.state.couchDBConfig.maxRetriesOnStartup", 10)
+	viper.Set("ledger.state.couchDBConfig.requestTimeout", time.Second*35)
 
+	//run the actual test
 	result := m.Run()
+
+	//revert to default goleveldb
 	viper.Set("ledger.state.stateDatabase", "goleveldb")
 	os.Exit(result)
 }
@@ -127,5 +140,34 @@ func TestQuery(t *testing.T) {
 		defer env.Cleanup("testquery")
 		commontests.TestQuery(t, env.DBProvider)
 
+	}
+}
+
+func TestGetStateMultipleKeys(t *testing.T) {
+	if ledgerconfig.IsCouchDBEnabled() == true {
+		env := NewTestVDBEnv(t)
+		env.Cleanup("testgetmultiplekeys")
+		defer env.Cleanup("testgetmultiplekeys")
+		commontests.TestGetStateMultipleKeys(t, env.DBProvider)
+	}
+}
+
+func TestGetVersion(t *testing.T) {
+	if ledgerconfig.IsCouchDBEnabled() == true {
+		env := NewTestVDBEnv(t)
+		env.Cleanup("testgetversion")
+		defer env.Cleanup("testgetversion")
+		commontests.TestGetVersion(t, env.DBProvider)
+	}
+}
+
+func TestSmallBatchSize(t *testing.T) {
+	if ledgerconfig.IsCouchDBEnabled() == true {
+		viper.Set("ledger.state.couchDBConfig.maxBatchUpdateSize", 2)
+		env := NewTestVDBEnv(t)
+		env.Cleanup("testsmallbatchsize")
+		defer env.Cleanup("testsmallbatchsize")
+		defer viper.Set("ledger.state.couchDBConfig.maxBatchUpdateSize", 1000)
+		commontests.TestSmallBatchSize(t, env.DBProvider)
 	}
 }

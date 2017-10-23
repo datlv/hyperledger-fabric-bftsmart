@@ -22,14 +22,15 @@ import (
 
 	"fmt"
 
+	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/core/ledger"
+	"github.com/hyperledger/fabric/core/ledger/customtx"
 	"github.com/hyperledger/fabric/core/ledger/kvledger"
 	"github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/utils"
-	logging "github.com/op/go-logging"
 )
 
-var logger = logging.MustGetLogger("ledgermgmt")
+var logger = flogging.MustGetLogger("ledgermgmt")
 
 // ErrLedgerAlreadyOpened is thrown by a CreateLedger call if a ledger with the given id is already opened
 var ErrLedgerAlreadyOpened = errors.New("Ledger already opened")
@@ -44,18 +45,19 @@ var initialized bool
 var once sync.Once
 
 // Initialize initializes ledgermgmt
-func Initialize() {
+func Initialize(customTxProcessors customtx.Processors) {
 	once.Do(func() {
-		initialize()
+		initialize(customTxProcessors)
 	})
 }
 
-func initialize() {
+func initialize(customTxProcessors customtx.Processors) {
 	logger.Info("Initializing ledger mgmt")
 	lock.Lock()
 	defer lock.Unlock()
 	initialized = true
 	openedLedgers = make(map[string]ledger.PeerLedger)
+	customtx.Initialize(customTxProcessors)
 	provider, err := kvledger.NewProvider()
 	if err != nil {
 		panic(fmt.Errorf("Error in instantiating ledger provider: %s", err))
@@ -64,28 +66,10 @@ func initialize() {
 	logger.Info("ledger mgmt initialized")
 }
 
-// CreateLedger creates a new ledger with the given id
-func CreateLedger(id string) (ledger.PeerLedger, error) {
-	logger.Infof("Creating ledger with id = %s", id)
-	lock.Lock()
-	defer lock.Unlock()
-	if !initialized {
-		return nil, ErrLedgerMgmtNotInitialized
-	}
-	l, err := ledgerProvider.Create(id)
-	if err != nil {
-		return nil, err
-	}
-	l = wrapLedger(id, l)
-	openedLedgers[id] = l
-	logger.Infof("Created ledger with id = %s", id)
-	return l, nil
-}
-
-// CreateWithGenesisBlock creates a new ledger with the given genesis block.
-// This function guarentees that the creation of ledger and committing the genesis block would an atomic action
+// CreateLedger creates a new ledger with the given genesis block.
+// This function guarantees that the creation of ledger and committing the genesis block would an atomic action
 // The chain id retrieved from the genesis block is treated as a ledger id
-func CreateWithGenesisBlock(genesisBlock *common.Block) (ledger.PeerLedger, error) {
+func CreateLedger(genesisBlock *common.Block) (ledger.PeerLedger, error) {
 	lock.Lock()
 	defer lock.Unlock()
 	if !initialized {
@@ -97,7 +81,7 @@ func CreateWithGenesisBlock(genesisBlock *common.Block) (ledger.PeerLedger, erro
 	}
 
 	logger.Infof("Creating ledger [%s] with genesis block", id)
-	l, err := ledgerProvider.CreateWithGenesisBlock(genesisBlock)
+	l, err := ledgerProvider.Create(genesisBlock)
 	if err != nil {
 		return nil, err
 	}

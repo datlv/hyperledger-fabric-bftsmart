@@ -17,6 +17,7 @@
 import time
 import datetime
 import Queue
+from concurrent.futures import ThreadPoolExecutor
 from orderer import ab_pb2, ab_pb2_grpc
 from common import common_pb2
 
@@ -54,6 +55,7 @@ class StreamHelper:
     def __init__(self):
         self.streamClosed = False
         self.sendQueue = Queue.Queue()
+        self.receiveQueue = Queue.Queue()
         self.receivedMessages = []
         self.replyGenerator = None
 
@@ -92,6 +94,19 @@ class StreamHelper:
             self.handleNetworkError(networkError)
         return msgsReceived
 
+    def _start_receive(self):
+        counter = 0
+        try:
+            for reply in self.replyGenerator:
+                counter += 1
+                #print("received reply: {0}, counter = {1}".format(reply, counter))
+                self.receiveQueue.put(reply)
+        except AbortionError as networkError:
+            self.handleNetworkError(networkError)
+        finally:
+            self.streamClosed = True
+        return
+
     def handleNetworkError(self, networkError):
         if networkError.code == StatusCode.OUT_OF_RANGE and networkError.details == "EOF":
             print("Error received and ignored: {0}".format(networkError))
@@ -100,10 +115,17 @@ class StreamHelper:
         else:
             raise Exception("Unexpected NetworkError: {0}".format(networkError))
 
+    def send(self, msg):
+        if msg:
+            if self.streamClosed:
+                raise Exception("Stream is closed.")
+        self.sendQueue.put(msg)
+
 
 class DeliverStreamHelper(StreamHelper):
 
-    def __init__(self, ordererStub, entity, directory, nodeAdminTuple, timeout = 110):
+    def __init__(self, ordererStub, entity, directory, nodeAdminTuple, timeout = 600):
+        pool = ThreadPoolExecutor(1)
         StreamHelper.__init__(self)
         self.nodeAdminTuple = nodeAdminTuple
         self.directory = directory
@@ -111,6 +133,7 @@ class DeliverStreamHelper(StreamHelper):
         # Set the UpdateMessage and start the stream
         sendGenerator = self.createSendGenerator(timeout)
         self.replyGenerator = ordererStub.Deliver(sendGenerator, timeout + 1)
+        pool.submit(self._start_receive)
 
     def createSeekInfo(self, chainID, start = 'Oldest', end = 'Newest',  behavior = 'FAIL_IF_NOT_READY'):
         seekInfo = ab_pb2.SeekInfo(
@@ -118,28 +141,31 @@ class DeliverStreamHelper(StreamHelper):
             stop = seekPosition(end),
             behavior = ab_pb2.SeekInfo.SeekBehavior.Value(behavior),
         )
-        print("SeekInfo = {0}".format(seekInfo))
-        print("")
         return seekInfo
 
     def seekToRange(self, chainID = TEST_CHAIN_ID, start = 'Oldest', end = 'Newest'):
         seekInfo = self.createSeekInfo(start = start, end = end, chainID = chainID)
         envelope = bootstrap_util.createEnvelopeForMsg(directory=self.directory, chainId=chainID, msg=seekInfo, typeAsString="DELIVER_SEEK_INFO", nodeAdminTuple=self.nodeAdminTuple)
-        self.sendQueue.put(envelope)
+        self.send(envelope)
 
-    def getBlocks(self):
+    def getBlocks(self, timeout=.5, max_wait_seconds=.5):
         blocks = []
+        error_reply = None
+        max_wait_time = datetime.datetime.now() + datetime.timedelta(seconds=max_wait_seconds)
         try:
-            while True:
-                reply = self.readMessage()
-                if reply.HasField("block"):
-                    blocks.append(reply.block)
-                    #print("received reply: {0}, len(blocks) = {1}".format(reply, len(blocks)))
-                else:
-                    if reply.status != common_pb2.SUCCESS:
-                        print("Got error: {0}".format(reply.status))
-                    print("Done receiving blocks")
-                    break
+            while datetime.datetime.now() < max_wait_time:
+                try:
+                    reply = self.receiveQueue.get(True, timeout)
+                    if reply.HasField("block"):
+                        blocks.append(reply.block)
+                        #print("received reply: {0}, len(blocks) = {1}".format(reply, len(blocks)))
+                    else:
+                        if reply.status != common_pb2.SUCCESS:
+                            print("Got error: {0}".format(reply.status))
+                            error_reply = reply
+                            break
+                except Queue.Empty:
+                    pass
         except Exception as e:
             print("getBlocks got error: {0}".format(e) )
         return blocks
@@ -161,9 +187,10 @@ class UserRegistration:
 
     def closeStreams(self):
         for compose_service, deliverStreamHelper in self.abDeliversStreamHelperDict.iteritems():
-            deliverStreamHelper.sendQueue.put(None)
+            deliverStreamHelper.send(None)
+        self.abDeliversStreamHelperDict.clear()
 
-    def connectToDeliverFunction(self, context, composeService, certAlias, nodeAdminTuple, timeout=1):
+    def connectToDeliverFunction(self, context, composeService, nodeAdminTuple, timeout=1):
         'Connect to the deliver function and drain messages to associated orderer queue'
         assert not composeService in self.abDeliversStreamHelperDict, "Already connected to deliver stream on {0}".format(composeService)
         streamHelper = DeliverStreamHelper(directory=self.directory,
@@ -177,9 +204,9 @@ class UserRegistration:
         assert composeService in self.abDeliversStreamHelperDict, "NOT connected to deliver stream on {0}".format(composeService)
         return self.abDeliversStreamHelperDict[composeService]
 
-    def broadcastMessages(self, context, numMsgsToBroadcast, composeService, chainID=TEST_CHAIN_ID, dataFunc=_defaultDataFunction):
+    def broadcastMessages(self, context, numMsgsToBroadcast, composeService, dataFunc=_defaultDataFunction):
         abStub = self.getABStubForComposeService(context, composeService)
-        replyGenerator = abStub.Broadcast(generateBroadcastMessages(chainID=chainID, numToGenerate = int(numMsgsToBroadcast), dataFunc=dataFunc), 2)
+        replyGenerator = abStub.Broadcast(generateBroadcastMessages(numToGenerate = int(numMsgsToBroadcast), dataFunc=dataFunc), 2)
         counter = 0
         try:
             for reply in replyGenerator:
@@ -200,7 +227,7 @@ class UserRegistration:
         # Get the IP address of the server that the user registered on
         root_certificates = self.directory.getTrustedRootsForOrdererNetworkAsPEM()
         ipAddress, port = bdd_test_util.getPortHostMapping(context.compose_containers, composeService, 7050)
-        print("ipAddress in getABStubForComposeService == {0}:{1}".format(ipAddress, port))
+        # print("ipAddress in getABStubForComposeService == {0}:{1}".format(ipAddress, port))
         channel = bdd_grpc_util.getGRPCChannel(ipAddress=ipAddress, port=port, root_certificates=root_certificates, ssl_target_name_override=composeService)
         newABStub = ab_pb2_grpc.AtomicBroadcastStub(channel)
         self.atomicBroadcastStubsDict[composeService] = newABStub
@@ -262,7 +289,7 @@ def createSeekInfo(chainID = TEST_CHAIN_ID, start = 'Oldest', end = 'Newest',  b
     )
 
 
-def generateBroadcastMessages(chainID = TEST_CHAIN_ID, numToGenerate = 3, timeToHoldOpen = 1, dataFunc =_defaultDataFunction):
+def generateBroadcastMessages(numToGenerate = 3, timeToHoldOpen = 1, dataFunc =_defaultDataFunction):
     messages = []
     for i in range(0, numToGenerate):
         messages.append(dataFunc(i))

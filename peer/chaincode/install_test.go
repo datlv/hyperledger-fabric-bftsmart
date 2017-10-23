@@ -31,9 +31,9 @@ import (
 
 func initInstallTest(fsPath string, t *testing.T) (*cobra.Command, *ChaincodeCmdFactory) {
 	viper.Set("peer.fileSystemPath", fsPath)
-	finitInstallTest(fsPath)
+	cleanupInstallTest(fsPath)
 
-	//if mkdir fails everthing will fail... but it should not
+	//if mkdir fails everything will fail... but it should not
 	if err := os.Mkdir(fsPath, 0755); err != nil {
 		t.Fatalf("could not create install env")
 	}
@@ -50,12 +50,12 @@ func initInstallTest(fsPath string, t *testing.T) (*cobra.Command, *ChaincodeCmd
 	}
 
 	cmd := installCmd(mockCF)
-	AddFlags(cmd)
+	addFlags(cmd)
 
 	return cmd, mockCF
 }
 
-func finitInstallTest(fsPath string) {
+func cleanupInstallTest(fsPath string) {
 	os.RemoveAll(fsPath)
 }
 
@@ -64,7 +64,7 @@ func TestBadVersion(t *testing.T) {
 	fsPath := "/tmp/installtest"
 
 	cmd, _ := initInstallTest(fsPath, t)
-	defer finitInstallTest(fsPath)
+	defer cleanupInstallTest(fsPath)
 
 	args := []string{"-n", "example02", "-p", "github.com/hyperledger/fabric/examples/chaincode/go/chaincode_example02"}
 	cmd.SetArgs(args)
@@ -79,7 +79,7 @@ func TestNonExistentCC(t *testing.T) {
 	fsPath := "/tmp/installtest"
 
 	cmd, _ := initInstallTest(fsPath, t)
-	defer finitInstallTest(fsPath)
+	defer cleanupInstallTest(fsPath)
 
 	args := []string{"-n", "badexample02", "-p", "github.com/hyperledger/fabric/examples/chaincode/go/bad_example02", "-v", "testversion"}
 	cmd.SetArgs(args)
@@ -107,7 +107,7 @@ func TestInstallFromPackage(t *testing.T) {
 	fsPath := "/tmp/installtest"
 
 	cmd, mockCF := initInstallTest(fsPath, t)
-	defer finitInstallTest(fsPath)
+	defer cleanupInstallTest(fsPath)
 
 	mockResponse := &pb.ProposalResponse{
 		Response:    &pb.Response{Status: 200},
@@ -140,7 +140,7 @@ func TestInstallFromBadPackage(t *testing.T) {
 	fsPath := "/tmp/installtest"
 
 	cmd, mockCF := initInstallTest(fsPath, t)
-	defer finitInstallTest(fsPath)
+	defer cleanupInstallTest(fsPath)
 
 	//this should not reach the endorser which will respond with success
 	mockResponse := &pb.ProposalResponse{
@@ -179,7 +179,7 @@ func installEx02() error {
 	}
 
 	cmd := installCmd(mockCF)
-	AddFlags(cmd)
+	addFlags(cmd)
 
 	args := []string{"-n", "example02", "-p", "github.com/hyperledger/fabric/examples/chaincode/go/chaincode_example02", "-v", "anotherversion"}
 	cmd.SetArgs(args)

@@ -1,23 +1,12 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package algo
 
 import (
-	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,10 +33,6 @@ import (
 
 */
 
-func init() {
-	rand.Seed(42)
-}
-
 const (
 	defDigestWaitTime   = time.Duration(1) * time.Second
 	defRequestWaitTime  = time.Duration(1) * time.Second
@@ -68,6 +53,10 @@ func SetRequestWaitTime(time time.Duration) {
 func SetResponseWaitTime(time time.Duration) {
 	viper.Set("peer.gossip.responseWaitTime", time)
 }
+
+// DigestFilter filters digests to be sent to a remote peer that
+// sent a hello or a request, based on its messages's context
+type DigestFilter func(context interface{}) func(digestItem string) bool
 
 // PullAdapter is needed by the PullEngine in order to
 // send messages to the remote PullEngine instances.
@@ -109,11 +98,12 @@ type PullEngine struct {
 	lock               sync.Mutex
 	outgoingNONCES     *util.Set
 	incomingNONCES     *util.Set
+	digFilter          DigestFilter
 }
 
-// NewPullEngine creates an instance of a PullEngine with a certain sleep time
-// between pull initiations
-func NewPullEngine(participant PullAdapter, sleepTime time.Duration) *PullEngine {
+// NewPullEngineWithFilter creates an instance of a PullEngine with a certain sleep time
+// between pull initiations, and uses the given filters when sending digests and responses
+func NewPullEngineWithFilter(participant PullAdapter, sleepTime time.Duration, df DigestFilter) *PullEngine {
 	engine := &PullEngine{
 		PullAdapter:        participant,
 		stopFlag:           int32(0),
@@ -125,6 +115,7 @@ func NewPullEngine(participant PullAdapter, sleepTime time.Duration) *PullEngine
 		acceptingResponses: int32(0),
 		incomingNONCES:     util.NewSet(),
 		outgoingNONCES:     util.NewSet(),
+		digFilter:          df,
 	}
 
 	go func() {
@@ -140,8 +131,19 @@ func NewPullEngine(participant PullAdapter, sleepTime time.Duration) *PullEngine
 	return engine
 }
 
+// NewPullEngine creates an instance of a PullEngine with a certain sleep time
+// between pull initiations
+func NewPullEngine(participant PullAdapter, sleepTime time.Duration) *PullEngine {
+	acceptAllFilter := func(_ interface{}) func(string) bool {
+		return func(_ string) bool {
+			return true
+		}
+	}
+	return NewPullEngineWithFilter(participant, sleepTime, acceptAllFilter)
+}
+
 func (engine *PullEngine) toDie() bool {
-	return (atomic.LoadInt32(&(engine.stopFlag)) == int32(1))
+	return atomic.LoadInt32(&(engine.stopFlag)) == int32(1)
 }
 
 func (engine *PullEngine) acceptResponses() {
@@ -197,7 +199,7 @@ func (engine *PullEngine) processIncomingDigests() {
 	requestMapping := make(map[string][]string)
 	for n, sources := range engine.item2owners {
 		// select a random source
-		source := sources[rand.Intn(len(sources))]
+		source := sources[util.RandomInt(len(sources))]
 		if _, exists := requestMapping[source]; !exists {
 			requestMapping[source] = make([]string, 0)
 		}
@@ -274,9 +276,17 @@ func (engine *PullEngine) OnHello(nonce uint64, context interface{}) {
 	})
 
 	a := engine.state.ToArray()
-	digest := make([]string, len(a))
-	for i, item := range a {
-		digest[i] = item.(string)
+	var digest []string
+	filter := engine.digFilter(context)
+	for _, item := range a {
+		dig := item.(string)
+		if !filter(dig) {
+			continue
+		}
+		digest = append(digest, dig)
+	}
+	if len(digest) == 0 {
+		return
 	}
 	engine.SendDigest(digest, nonce, context)
 }
@@ -287,15 +297,19 @@ func (engine *PullEngine) OnReq(items []string, nonce uint64, context interface{
 		return
 	}
 	engine.lock.Lock()
+	defer engine.lock.Unlock()
 
+	filter := engine.digFilter(context)
 	var items2Send []string
 	for _, item := range items {
-		if engine.state.Exists(item) {
+		if engine.state.Exists(item) && filter(item) {
 			items2Send = append(items2Send, item)
 		}
 	}
 
-	engine.lock.Unlock()
+	if len(items2Send) == 0 {
+		return
+	}
 
 	go engine.SendRes(items2Send, context, nonce)
 }
@@ -312,7 +326,7 @@ func (engine *PullEngine) OnRes(items []string, nonce uint64) {
 func (engine *PullEngine) newNONCE() uint64 {
 	n := uint64(0)
 	for {
-		n = uint64(rand.Int63())
+		n = util.RandomUInt64()
 		if !engine.outgoingNONCES.Exists(n) {
 			return n
 		}

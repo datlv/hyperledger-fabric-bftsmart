@@ -17,19 +17,13 @@ limitations under the License.
 package core
 
 import (
-	"os"
-	"runtime"
-
-	"github.com/op/go-logging"
-	"github.com/spf13/viper"
-	"golang.org/x/net/context"
-
 	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/hyperledger/fabric/common/flogging"
 	pb "github.com/hyperledger/fabric/protos/peer"
+	"golang.org/x/net/context"
 )
 
-var log = logging.MustGetLogger("server")
+var log = flogging.MustGetLogger("server")
 
 // NewAdminServer creates and returns a Admin service instance.
 func NewAdminServer() *ServerAdmin {
@@ -39,19 +33,6 @@ func NewAdminServer() *ServerAdmin {
 
 // ServerAdmin implementation of the Admin service for the Peer
 type ServerAdmin struct {
-}
-
-func worker(id int, die chan struct{}) {
-	for {
-		select {
-		case <-die:
-			log.Debugf("worker %d terminating", id)
-			return
-		default:
-			log.Debugf("%d is working...", id)
-			runtime.Gosched()
-		}
-	}
 }
 
 // GetStatus reports the status of the server
@@ -65,18 +46,6 @@ func (*ServerAdmin) GetStatus(context.Context, *empty.Empty) (*pb.ServerStatus, 
 func (*ServerAdmin) StartServer(context.Context, *empty.Empty) (*pb.ServerStatus, error) {
 	status := &pb.ServerStatus{Status: pb.ServerStatus_STARTED}
 	log.Debugf("returning status: %s", status)
-	return status, nil
-}
-
-// StopServer stops the server
-func (*ServerAdmin) StopServer(context.Context, *empty.Empty) (*pb.ServerStatus, error) {
-	status := &pb.ServerStatus{Status: pb.ServerStatus_STOPPED}
-	log.Debugf("returning status: %s", status)
-
-	pidFile := viper.GetString("peer.fileSystemPath") + "/peer.pid"
-	log.Debugf("Remove pid file  %s", pidFile)
-	os.Remove(pidFile)
-	defer os.Exit(0)
 	return status, nil
 }
 

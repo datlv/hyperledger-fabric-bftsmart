@@ -26,10 +26,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/op/go-logging"
+	"github.com/hyperledger/fabric/common/flogging"
 )
 
-var vmLogger = logging.MustGetLogger("container")
+var vmLogger = flogging.MustGetLogger("container")
 
 // These filetypes are excluded while creating the tar package sent to Docker
 // Generated .class and other temporary files can be excluded
@@ -90,6 +90,9 @@ func WriteFolderToTarPackage(tw *tar.Writer, srcPath string, excludeDir string, 
 		if err != nil {
 			return fmt.Errorf("Error writing file to package: %s", err)
 		}
+
+		vmLogger.Debugf("Writing file %s to tar", newPath)
+
 		return nil
 	}
 

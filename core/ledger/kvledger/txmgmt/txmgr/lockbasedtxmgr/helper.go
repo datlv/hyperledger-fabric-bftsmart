@@ -17,12 +17,18 @@ limitations under the License.
 package lockbasedtxmgr
 
 import (
+	"errors"
+	"fmt"
+
+	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/txmgr"
+
 	commonledger "github.com/hyperledger/fabric/common/ledger"
-	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/rwsetutil"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/version"
 	"github.com/hyperledger/fabric/core/ledger/ledgerconfig"
+	"github.com/hyperledger/fabric/core/ledger/util"
+	"github.com/hyperledger/fabric/protos/ledger/queryresult"
 	"github.com/hyperledger/fabric/protos/ledger/rwset/kvrwset"
 )
 
@@ -35,7 +41,9 @@ type queryHelper struct {
 }
 
 func (h *queryHelper) getState(ns string, key string) ([]byte, error) {
-	h.checkDone()
+	if err := h.checkDone(); err != nil {
+		return nil, err
+	}
 	versionedValue, err := h.txmgr.db.GetState(ns, key)
 	if err != nil {
 		return nil, err
@@ -48,7 +56,9 @@ func (h *queryHelper) getState(ns string, key string) ([]byte, error) {
 }
 
 func (h *queryHelper) getStateMultipleKeys(namespace string, keys []string) ([][]byte, error) {
-	h.checkDone()
+	if err := h.checkDone(); err != nil {
+		return nil, err
+	}
 	versionedValues, err := h.txmgr.db.GetStateMultipleKeys(namespace, keys)
 	if err != nil {
 		return nil, nil
@@ -65,7 +75,9 @@ func (h *queryHelper) getStateMultipleKeys(namespace string, keys []string) ([][
 }
 
 func (h *queryHelper) getStateRangeScanIterator(namespace string, startKey string, endKey string) (commonledger.ResultsIterator, error) {
-	h.checkDone()
+	if err := h.checkDone(); err != nil {
+		return nil, err
+	}
 	itr, err := newResultsItr(namespace, startKey, endKey, h.txmgr.db, h.rwsetBuilder,
 		ledgerconfig.IsQueryReadsHashingEnabled(), ledgerconfig.GetMaxDegreeQueryReadsHashing())
 	if err != nil {
@@ -76,6 +88,9 @@ func (h *queryHelper) getStateRangeScanIterator(namespace string, startKey strin
 }
 
 func (h *queryHelper) executeQuery(namespace, query string) (commonledger.ResultsIterator, error) {
+	if err := h.checkDone(); err != nil {
+		return nil, err
+	}
 	dbItr, err := h.txmgr.db.ExecuteQuery(namespace, query)
 	if err != nil {
 		return nil, err
@@ -83,38 +98,113 @@ func (h *queryHelper) executeQuery(namespace, query string) (commonledger.Result
 	return &queryResultsItr{DBItr: dbItr, RWSetBuilder: h.rwsetBuilder}, nil
 }
 
+func (h *queryHelper) getPrivateData(ns, coll, key string) ([]byte, error) {
+	if err := h.checkDone(); err != nil {
+		return nil, err
+	}
+
+	var err error
+	var hashVersion *version.Height
+	var versionedValue *statedb.VersionedValue
+
+	if versionedValue, err = h.txmgr.db.GetPrivateData(ns, coll, key); err != nil {
+		return nil, err
+	}
+
+	val, ver := decomposeVersionedValue(versionedValue)
+
+	keyHash := util.ComputeStringHash(key)
+	if hashVersion, err = h.txmgr.db.GetKeyHashVersion(ns, coll, keyHash); err != nil {
+		return nil, err
+	}
+	if !version.AreSame(hashVersion, ver) {
+		return nil, &txmgr.ErrPvtdataNotAvailable{Msg: fmt.Sprintf(
+			"Private data matching public hash version is not available. Public hash version = %#v, Private data version = %#v",
+			hashVersion, ver)}
+	}
+	if h.rwsetBuilder != nil {
+		h.rwsetBuilder.AddToHashedReadSet(ns, coll, key, ver)
+	}
+	return val, nil
+}
+
+func (h *queryHelper) getPrivateDataMultipleKeys(ns, coll string, keys []string) ([][]byte, error) {
+	if err := h.checkDone(); err != nil {
+		return nil, err
+	}
+	versionedValues, err := h.txmgr.db.GetPrivateDataMultipleKeys(ns, coll, keys)
+	if err != nil {
+		return nil, nil
+	}
+	values := make([][]byte, len(versionedValues))
+	for i, versionedValue := range versionedValues {
+		val, ver := decomposeVersionedValue(versionedValue)
+		if h.rwsetBuilder != nil {
+			h.rwsetBuilder.AddToHashedReadSet(ns, coll, keys[i], ver)
+		}
+		values[i] = val
+	}
+	return values, nil
+}
+
+func (h *queryHelper) getPrivateDataRangeScanIterator(namespace, collection, startKey, endKey string) (commonledger.ResultsIterator, error) {
+	if err := h.checkDone(); err != nil {
+		return nil, err
+	}
+	dbItr, err := h.txmgr.db.GetPrivateDataRangeScanIterator(namespace, collection, startKey, endKey)
+	if err != nil {
+		return nil, err
+	}
+	return &pvtdataResultsItr{namespace, collection, dbItr}, nil
+}
+
+func (h *queryHelper) executeQueryOnPrivateData(namespace, collection, query string) (commonledger.ResultsIterator, error) {
+	if err := h.checkDone(); err != nil {
+		return nil, err
+	}
+	dbItr, err := h.txmgr.db.ExecuteQueryOnPrivateData(namespace, collection, query)
+	if err != nil {
+		return nil, err
+	}
+	return &pvtdataResultsItr{namespace, collection, dbItr}, nil
+}
+
 func (h *queryHelper) done() {
 	if h.doneInvoked {
 		return
 	}
-	defer h.txmgr.commitRWLock.RUnlock()
-	h.doneInvoked = true
+
+	defer func() {
+		h.txmgr.commitRWLock.RUnlock()
+		h.doneInvoked = true
+		for _, itr := range h.itrs {
+			itr.Close()
+		}
+	}()
+
 	for _, itr := range h.itrs {
-		itr.Close()
 		if h.rwsetBuilder != nil {
 			results, hash, err := itr.rangeQueryResultsHelper.Done()
+			if err != nil {
+				h.err = err
+				return
+			}
 			if results != nil {
 				itr.rangeQueryInfo.SetRawReads(results)
 			}
 			if hash != nil {
 				itr.rangeQueryInfo.SetMerkelSummary(hash)
 			}
-			// TODO Change the method signature of done() to return error. However, this will have
-			// repercurssions in the chaincode package, so deferring to a separate changeset.
-			// For now, capture the first error that is encountered
-			// during final processing and return the error when the caller retrieves the simulation results.
-			if h.err == nil {
-				h.err = err
-			}
 			h.rwsetBuilder.AddToRangeQuerySet(itr.ns, itr.rangeQueryInfo)
 		}
 	}
 }
 
-func (h *queryHelper) checkDone() {
+func (h *queryHelper) checkDone() error {
 	if h.doneInvoked {
-		panic("This instance should not be used after calling Done()")
+		return errors.New("This instance should not be used after calling Done()")
 	}
+	return nil
 }
 
 // resultsItr implements interface ledger.ResultsIterator
@@ -156,7 +246,7 @@ func newResultsItr(ns string, startKey string, endKey string,
 // Before returning the next result, update the EndKey and ItrExhausted in rangeQueryInfo
 // If we set the EndKey in the constructor (as we do for the StartKey) to what is
 // supplied in the original query, we may be capturing the unnecessary longer range if the
-// caller decides to stop iterating at some intermidiate point. Alternatively, we could have
+// caller decides to stop iterating at some intermediate point. Alternatively, we could have
 // set the EndKey and ItrExhausted in the Close() function but it may not be desirable to change
 // transactional behaviour based on whether the Close() was invoked or not
 func (itr *resultsItr) Next() (commonledger.QueryResult, error) {
@@ -169,7 +259,7 @@ func (itr *resultsItr) Next() (commonledger.QueryResult, error) {
 		return nil, nil
 	}
 	versionedKV := queryResult.(*statedb.VersionedKV)
-	return &ledger.KV{Key: versionedKV.Key, Value: versionedKV.Value}, nil
+	return &queryresult.KV{Namespace: versionedKV.Namespace, Key: versionedKV.Key, Value: versionedKV.Value}, nil
 }
 
 // updateRangeQueryInfo updates two attributes of the rangeQueryInfo
@@ -222,7 +312,7 @@ func (itr *queryResultsItr) Next() (commonledger.QueryResult, error) {
 	if itr.RWSetBuilder != nil {
 		itr.RWSetBuilder.AddToReadSet(versionedQueryRecord.Namespace, versionedQueryRecord.Key, versionedQueryRecord.Version)
 	}
-	return &ledger.KV{Key: versionedQueryRecord.Key, Value: versionedQueryRecord.Value}, nil
+	return &queryresult.KV{Namespace: versionedQueryRecord.Namespace, Key: versionedQueryRecord.Key, Value: versionedQueryRecord.Value}, nil
 }
 
 // Close implements method in interface ledger.ResultsIterator
@@ -238,4 +328,33 @@ func decomposeVersionedValue(versionedValue *statedb.VersionedValue) ([]byte, *v
 		ver = versionedValue.Version
 	}
 	return value, ver
+}
+
+// pvtdataResultsItr iterates over results of a query on pvt data
+type pvtdataResultsItr struct {
+	ns    string
+	coll  string
+	dbItr statedb.ResultsIterator
+}
+
+// Next implements method in interface ledger.ResultsIterator
+func (itr *pvtdataResultsItr) Next() (commonledger.QueryResult, error) {
+	queryResult, err := itr.dbItr.Next()
+	if err != nil {
+		return nil, err
+	}
+	if queryResult == nil {
+		return nil, nil
+	}
+	versionedQueryRecord := queryResult.(*statedb.VersionedKV)
+	return &queryresult.KV{
+		Namespace: itr.ns,
+		Key:       versionedQueryRecord.Key,
+		Value:     versionedQueryRecord.Value,
+	}, nil
+}
+
+// Close implements method in interface ledger.ResultsIterator
+func (itr *pvtdataResultsItr) Close() {
+	itr.dbItr.Close()
 }

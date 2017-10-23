@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package main
@@ -20,115 +10,183 @@ import (
 	"flag"
 	"fmt"
 	"math"
+	"os"
 
-	"github.com/hyperledger/fabric/common/configtx/tool/provisional"
-	"github.com/hyperledger/fabric/common/crypto"    //JCS: import crypto
-	"github.com/hyperledger/fabric/common/localmsp"  //JCS: import localmsp
 	util "github.com/hyperledger/fabric/common/util" //JCS import utils
-	mspmgmt "github.com/hyperledger/fabric/msp/mgmt" //JCS: import mgmt
-	"github.com/hyperledger/fabric/orderer/localconfig"
+
+	"github.com/hyperledger/fabric/common/crypto"
+	"github.com/hyperledger/fabric/common/localmsp"
+	genesisconfig "github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
+	"github.com/hyperledger/fabric/common/tools/protolator"
+	mspmgmt "github.com/hyperledger/fabric/msp/mgmt"
+	"github.com/hyperledger/fabric/orderer/common/localconfig"
 	cb "github.com/hyperledger/fabric/protos/common"
 	ab "github.com/hyperledger/fabric/protos/orderer"
-	utils "github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/protos/utils"
+
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 )
 
 var (
+
 	blocksReceived uint64             = 0                               //JCS: block counter and checker
 	N              uint32             = 4                               //JCS: number of ordering nodes
 	F              uint32             = 1                               //JCS: number of faults
 	Q              float32            = ((float32(N) + float32(F)) / 2) //JCS: quorum size
-	signer         crypto.LocalSigner                                   //JCS: local signer
-	oldest         = &ab.SeekPosition{Type: &ab.SeekPosition_Oldest{Oldest: &ab.SeekOldest{}}}
-	newest         = &ab.SeekPosition{Type: &ab.SeekPosition_Newest{Newest: &ab.SeekNewest{}}}
-	maxStop        = &ab.SeekPosition{Type: &ab.SeekPosition_Specified{Specified: &ab.SeekSpecified{Number: math.MaxUint64}}}
+
+	oldest  = &ab.SeekPosition{Type: &ab.SeekPosition_Oldest{Oldest: &ab.SeekOldest{}}}
+	newest  = &ab.SeekPosition{Type: &ab.SeekPosition_Newest{Newest: &ab.SeekNewest{}}}
+	maxStop = &ab.SeekPosition{Type: &ab.SeekPosition_Specified{Specified: &ab.SeekSpecified{Number: math.MaxUint64}}}
 )
 
 type deliverClient struct {
-	client  ab.AtomicBroadcast_DeliverClient
-	chainID string
+	client    ab.AtomicBroadcast_DeliverClient
+	channelID string
+	signer    crypto.LocalSigner
+	quiet     bool
 }
 
-func printBytes(bytes []byte) {
-	fmt.Print("[")
-	for _, b := range bytes {
-		fmt.Printf("%d, ", int8(b))
-	}
-	fmt.Println("]")
+func newDeliverClient(client ab.AtomicBroadcast_DeliverClient, channelID string, signer crypto.LocalSigner, quiet bool) *deliverClient {
+	return &deliverClient{client: client, channelID: channelID, signer: signer, quiet: quiet}
 }
 
-func newDeliverClient(client ab.AtomicBroadcast_DeliverClient, chainID string) *deliverClient {
-	return &deliverClient{client: client, chainID: chainID}
-}
-
-func seekHelper(chainID string, start *ab.SeekPosition, stop *ab.SeekPosition) *cb.Envelope {
-
-	payloadSignatureHeader, err := signer.NewSignatureHeader() //JCS: sig header
+func (r *deliverClient) seekHelper(start *ab.SeekPosition, stop *ab.SeekPosition) *cb.Envelope {
+	env, err := utils.CreateSignedEnvelope(cb.HeaderType_DELIVER_SEEK_INFO, r.channelID, r.signer, &ab.SeekInfo{
+		Start:    start,
+		Stop:     stop,
+		Behavior: ab.SeekInfo_BLOCK_UNTIL_READY,
+	}, 0, 0)
 	if err != nil {
-		return nil
+		panic(err)
 	}
-
-	payload := &cb.Payload{ //JCS: create the payload
-		Header: &cb.Header{
-			ChannelHeader: utils.MarshalOrPanic(&cb.ChannelHeader{
-				ChannelId: chainID,
-			}),
-			SignatureHeader: utils.MarshalOrPanic(payloadSignatureHeader),
-		},
-
-		Data: utils.MarshalOrPanic(&ab.SeekInfo{
-			Start:    start,
-			Stop:     stop,
-			Behavior: ab.SeekInfo_BLOCK_UNTIL_READY,
-		}),
-	}
-	paylBytes := utils.MarshalOrPanic(payload)
-
-	//JCS: sign the payload
-	sig, err := signer.Sign(paylBytes)
-	if err != nil {
-		return nil
-	}
-
-	return &cb.Envelope{ //JCS: return the envelope
-		Payload:   paylBytes,
-		Signature: sig,
-	}
-
-	//JCS: original code, with unsigned envelopes
-	/*return &cb.Envelope{
-		Payload: utils.MarshalOrPanic(&cb.Payload{
-			Header: &cb.Header{
-				ChannelHeader: utils.MarshalOrPanic(&cb.ChannelHeader{
-					ChannelId: chainID,
-				}),
-				SignatureHeader: utils.MarshalOrPanic(&cb.SignatureHeader{}),
-			},
-
-			Data: utils.MarshalOrPanic(&ab.SeekInfo{
-				Start:    start,
-				Stop:     stop,
-				Behavior: ab.SeekInfo_BLOCK_UNTIL_READY,
-			}),
-		}),
-	}*/
+	return env
 }
 
 func (r *deliverClient) seekOldest() error {
-	return r.client.Send(seekHelper(r.chainID, oldest, maxStop))
+	return r.client.Send(r.seekHelper(oldest, maxStop))
 }
 
 func (r *deliverClient) seekNewest() error {
-	return r.client.Send(seekHelper(r.chainID, newest, maxStop))
+	return r.client.Send(r.seekHelper(newest, maxStop))
 }
 
 func (r *deliverClient) seekSingle(blockNumber uint64) error {
 	specific := &ab.SeekPosition{Type: &ab.SeekPosition_Specified{Specified: &ab.SeekSpecified{Number: blockNumber}}}
-	return r.client.Send(seekHelper(r.chainID, specific, specific))
+	return r.client.Send(r.seekHelper(specific, specific))
 }
 
-func validateSignatures(meta *cb.Metadata, block *cb.Block) {
+func (r *deliverClient) readUntilClose() {
+	for {
+		msg, err := r.client.Recv()
+		if err != nil {
+			fmt.Println("Error receiving:", err)
+			return
+		}
+
+		switch t := msg.Type.(type) {
+		case *ab.DeliverResponse_Status:
+			fmt.Println("Got status ", t)
+			return
+		case *ab.DeliverResponse_Block:
+			if !r.quiet {
+				fmt.Println("Received block: ")
+				err := protolator.DeepMarshalJSON(os.Stdout, t.Block)
+				if err != nil {
+					fmt.Println("  Error pretty printing block: %s", err)
+				}
+			} else {
+				fmt.Println("Received block: ", t.Block.Header.Number)
+			}
+
+			blocksReceived++
+			fmt.Printf("\n\n\nReceived block #%d: \n", t.Block.GetHeader().Number) //JCS changed to print only the number of the header
+			fmt.Printf("BlockHeader bytes #%d: ", t.Block.Header.Number)           // JCS: see what the bytes are and compare to proxy
+			printBytes(t.Block.Header.Bytes())
+			fmt.Printf("BlockData hash #%d: ", t.Block.Header.Number) // JCS: see what the bytes are and compare to proxy
+			printBytes(t.Block.Data.Hash())
+
+			if t.Block.Header.Number > 0 {
+
+				meta, _ := utils.UnmarshalMetadata(t.Block.Metadata.Metadata[cb.BlockMetadataIndex_SIGNATURES])
+
+				fmt.Printf("Block #%d contains %d block signatures\n", t.Block.Header.Number, len(meta.Signatures)) // JCS: see what the bytes are and compare to proxy
+
+				validateSignatures(meta, t.Block)
+
+				meta, _ = utils.UnmarshalMetadata(t.Block.Metadata.Metadata[cb.BlockMetadataIndex_LAST_CONFIG])
+
+				fmt.Printf("Block #%d contains %d lastconfig signatures\n", t.Block.Header.Number, len(meta.Signatures)) // JCS: see what the bytes are and compare to proxy
+
+				validateSignatures(meta, t.Block)
+
+				fmt.Printf("Blocks received: %d\n", blocksReceived)
+			}
+
+		}
+	}
+}
+
+func main() {
+	config := config.Load()
+
+	// Load local MSP
+	err := mspmgmt.LoadLocalMsp(config.General.LocalMSPDir, config.General.BCCSP, config.General.LocalMSPID)
+	if err != nil { // Handle errors reading the config file
+		fmt.Println("Failed to initialize local MSP:", err)
+		os.Exit(0)
+	}
+
+	signer := localmsp.NewSigner()
+
+	var channelID string
+	var serverAddr string
+	var seek int
+	var quiet bool
+
+	flag.StringVar(&serverAddr, "server", fmt.Sprintf("%s:%d", config.General.ListenAddress, config.General.ListenPort), "The RPC server to connect to.")
+	flag.StringVar(&channelID, "channelID", genesisconfig.TestChainID, "The channel ID to deliver from.")
+	flag.BoolVar(&quiet, "quiet", false, "Only print the block number, will not attempt to print its block contents.")
+	flag.IntVar(&seek, "seek", -2, "Specify the range of requested blocks."+
+		"Acceptable values:"+
+		"-2 (or -1) to start from oldest (or newest) and keep at it indefinitely."+
+		"N >= 0 to fetch block N only.")
+	flag.Parse()
+
+	if seek < -2 {
+		fmt.Println("Wrong seek value.")
+		flag.PrintDefaults()
+	}
+
+	conn, err := grpc.Dial(serverAddr, grpc.WithInsecure())
+	if err != nil {
+		fmt.Println("Error connecting:", err)
+		return
+	}
+	client, err := ab.NewAtomicBroadcastClient(conn).Deliver(context.TODO())
+	if err != nil {
+		fmt.Println("Error connecting:", err)
+		return
+	}
+
+	s := newDeliverClient(client, channelID, signer, quiet)
+	switch seek {
+	case -2:
+		err = s.seekOldest()
+	case -1:
+		err = s.seekNewest()
+	default:
+		err = s.seekSingle(uint64(seek))
+	}
+
+	if err != nil {
+		fmt.Println("Received error:", err)
+	}
+
+	s.readUntilClose()
+}
+
+func validateSignatures(meta *cb.Metadata, block *cb.Block) { //JCS: my function
 
 	if block.Header.Number == 0 {
 		fmt.Printf("Block #0 requires no signature validation!\n")
@@ -195,107 +253,10 @@ func validateSignatures(meta *cb.Metadata, block *cb.Block) {
 	}
 }
 
-func (r *deliverClient) readUntilClose() {
-
-	for {
-		msg, err := r.client.Recv()
-		if err != nil {
-			fmt.Println("Error receiving:", err)
-			return
-		}
-
-		switch t := msg.Type.(type) {
-		case *ab.DeliverResponse_Status:
-			fmt.Println("Got status ", t)
-			return
-		case *ab.DeliverResponse_Block:
-
-			if t.Block.GetHeader().Number != blocksReceived {
-				panic(fmt.Errorf("Expected block #%d, received #%d", blocksReceived, t.Block.GetHeader().Number))
-
-			}
-
-			blocksReceived++
-			fmt.Printf("\n\n\nReceived block #%d: \n", t.Block.GetHeader().Number) //JCS changed to print only the number of the header
-			fmt.Printf("BlockHeader bytes #%d: ", t.Block.Header.Number)           // JCS: see what the bytes are and compare to proxy
-			printBytes(t.Block.Header.Bytes())
-			fmt.Printf("BlockData hash #%d: ", t.Block.Header.Number) // JCS: see what the bytes are and compare to proxy
-			printBytes(t.Block.Data.Hash())
-
-			if t.Block.Header.Number > 0 {
-
-				meta, _ := utils.UnmarshalMetadata(t.Block.Metadata.Metadata[cb.BlockMetadataIndex_SIGNATURES])
-
-				fmt.Printf("Block #%d contains %d block signatures\n", t.Block.Header.Number, len(meta.Signatures)) // JCS: see what the bytes are and compare to proxy
-
-				validateSignatures(meta, t.Block)
-
-				meta, _ = utils.UnmarshalMetadata(t.Block.Metadata.Metadata[cb.BlockMetadataIndex_LAST_CONFIG])
-
-				fmt.Printf("Block #%d contains %d lastconfig signatures\n", t.Block.Header.Number, len(meta.Signatures)) // JCS: see what the bytes are and compare to proxy
-
-				validateSignatures(meta, t.Block)
-
-				fmt.Printf("Blocks received: %d\n", blocksReceived)
-			}
-		}
+func printBytes(bytes []byte) { //JCS: my function
+	fmt.Print("[")
+	for _, b := range bytes {
+		fmt.Printf("%d, ", int8(b))
 	}
+	fmt.Println("]")
 }
-
-func main() {
-	config := config.Load()
-
-	var chainID string
-	var serverAddr string
-	var seek int
-
-	//JCS: Load local MSP
-	err := mspmgmt.LoadLocalMsp(config.General.LocalMSPDir, config.General.BCCSP, config.General.LocalMSPID)
-	if err != nil { // Handle errors reading the config file
-		panic(err)
-	}
-
-	//JCS: create signer
-	signer = localmsp.NewSigner()
-
-	flag.StringVar(&serverAddr, "server", fmt.Sprintf("%s:%d", config.General.ListenAddress, config.General.ListenPort), "The RPC server to connect to.")
-	flag.StringVar(&chainID, "chainID", provisional.TestChainID, "The chain ID to deliver from.")
-	flag.IntVar(&seek, "seek", -2, "Specify the range of requested blocks."+
-		"Acceptable values:"+
-		"-2 (or -1) to start from oldest (or newest) and keep at it indefinitely."+
-		"N >= 0 to fetch block N only.")
-	flag.Parse()
-
-	if seek < -2 {
-		fmt.Println("Wrong seek value.")
-		flag.PrintDefaults()
-	}
-
-	conn, err := grpc.Dial(serverAddr, grpc.WithInsecure())
-	if err != nil {
-		fmt.Println("Error connecting:", err)
-		return
-	}
-	client, err := ab.NewAtomicBroadcastClient(conn).Deliver(context.TODO())
-	if err != nil {
-		fmt.Println("Error connecting:", err)
-		return
-	}
-
-	s := newDeliverClient(client, chainID)
-	switch seek {
-	case -2:
-		err = s.seekOldest()
-	case -1:
-		err = s.seekNewest()
-	default:
-		err = s.seekSingle(uint64(seek))
-	}
-
-	if err != nil {
-		fmt.Println("Received error:", err)
-	}
-
-	s.readUntilClose()
-}
-
