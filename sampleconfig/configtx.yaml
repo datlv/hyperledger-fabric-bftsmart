@@ -154,10 +154,10 @@ Profiles:
                 Organizations:
                     - *SampleOrg
 
-    # SampleSingleMSPSoloV1.1 mimics the SampleSingleMSPSolo definition but
+    # SampleSingleMSPSoloV1_1 mimics the SampleSingleMSPSolo definition but
     # additionally defines the v1.1 only capabilities which do not allow a
     # mixed v1.0.x v1.1.x network.
-    SampleSingleMSPSoloV1.1:
+    SampleSingleMSPSoloV1_1:
         Capabilities:
             <<: *GlobalCapabilities
         Orderer:
@@ -171,9 +171,9 @@ Profiles:
                 Organizations:
                     - *SampleOrg
 
-    # SampleSingleMSPKafkaV1.1 defines a configuration that differs from the
-    # SampleSingleMSPSoloV1.1 one only in that it uses the Kafka-based orderer.
-    SampleSingleMSPKafkaV1.1:
+    # SampleSingleMSPKafkaV1_1 defines a configuration that differs from the
+    # SampleSingleMSPSoloV1_1 one only in that it uses the Kafka-based orderer.
+    SampleSingleMSPKafkaV1_1:
         Capabilities:
             <<: *GlobalCapabilities
         Orderer:
@@ -190,9 +190,9 @@ Profiles:
 
 
     # JCS: I added this so that bftsmart can be initialized
-    # SampleSingleMSPBFTsmartV1.1 defines a configuration that differs from the
-    # SampleSingleMSPSoloV1.1 one only in that it uses the Kafka-based orderer.
-    SampleSingleMSPBFTsmartV1.1:
+    # SampleSingleMSPBFTsmartV1_1 defines a configuration that differs from the
+    # SampleSingleMSPSoloV1_1 one only in that it uses the Kafka-based orderer.
+    SampleSingleMSPBFTsmartV1_1:
         Capabilities:
             <<: *GlobalCapabilities
         Orderer:
@@ -229,10 +229,10 @@ Profiles:
             Organizations:
                 - *SampleOrg
 
-    # SampleSingleMSPChannelV1.1 defines a channel just as SampleSingleMSPChannel
+    # SampleSingleMSPChannelV1_1 defines a channel just as SampleSingleMSPChannel
     # However, it also defines the capabilities map which makes this channel
     # incompatible with v1.0.x peers.
-    SampleSingleMSPChannelV1.1:
+    SampleSingleMSPChannelV1_1:
         Consortium: SampleConsortium
         Application:
             Organizations:
@@ -362,7 +362,7 @@ Application: &ApplicationDefaults
 #
 #   SECTION: Capabilities
 #
-#   - This section defines the capabilities of fabric network. This is a new   
+#   - This section defines the capabilities of fabric network. This is a new
 #   concept as of v1.1.0 and should not be utilized in mixed networks with
 #   v1.0.x peers and orderers.  Capabilities define features which must be
 #   present in a fabric binary for that binary to safely participate in the
