@@ -9,7 +9,6 @@ package channelconfig
 import (
 	"time"
 
-	"github.com/hyperledger/fabric/common/capabilities"
 	configtxapi "github.com/hyperledger/fabric/common/configtx/api"
 	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/msp"
@@ -109,13 +108,17 @@ type ChannelCapabilities interface {
 
 	// MSPVersion specifies the version of the MSP this channel must understand, including the MSP types
 	// and MSP principal types.
-	MSPVersion() capabilities.MSPVersion
+	MSPVersion() msp.MSPVersion
 }
 
 // ApplicationCapabilities defines the capabilities for the application portion of a channel
 type ApplicationCapabilities interface {
 	// Supported returns an error if there are unknown capabilities in this channel which are required
 	Supported() error
+
+	// ForbidDuplicateTXIdInBlock specifies whether two transactions with the same TXId are permitted
+	// in the same block or whether we mark the second one as TxValidationCode_DUPLICATE_TXID
+	ForbidDuplicateTXIdInBlock() bool
 }
 
 // OrdererCapabilities defines the capabilities for the orderer portion of a channel
