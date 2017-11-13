@@ -355,7 +355,7 @@ func (chaincodeSupport *ChaincodeSupport) sendReady(context context.Context, ccc
 	}
 
 	//if initOrReady succeeded, our responsibility to delete the context
-	chrte.handler.deleteTxContext(cccid.TxID)
+	chrte.handler.deleteTxContext(cccid.ChainID, cccid.TxID)
 
 	return err
 }
@@ -693,7 +693,7 @@ func (chaincodeSupport *ChaincodeSupport) Launch(context context.Context, cccid 
 
 		//hopefully we are restarting from existing image and the deployed transaction exists
 		//this will also validate the ID from the LSCC
-		depPayload, err = GetCDSFromLSCC(context, cccid.TxID, cccid.SignedProposal, cccid.Proposal, cccid.ChainID, cID.Name)
+		depPayload, err = GetCDS(context, cccid.TxID, cccid.SignedProposal, cccid.Proposal, cccid.ChainID, cID.Name)
 		if err != nil {
 			return cID, cMsg, errors.WithMessage(err, fmt.Sprintf("could not get deployment transaction from LSCC for %s", canName))
 		}
@@ -784,13 +784,13 @@ func (chaincodeSupport *ChaincodeSupport) Register(stream pb.ChaincodeSupport_Re
 }
 
 // createCCMessage creates a transaction message.
-func createCCMessage(typ pb.ChaincodeMessage_Type, txid string, cMsg *pb.ChaincodeInput) (*pb.ChaincodeMessage, error) {
+func createCCMessage(typ pb.ChaincodeMessage_Type, cid string, txid string, cMsg *pb.ChaincodeInput) (*pb.ChaincodeMessage, error) {
 	payload, err := proto.Marshal(cMsg)
 	if err != nil {
 		fmt.Printf(err.Error())
 		return nil, err
 	}
-	return &pb.ChaincodeMessage{Type: typ, Payload: payload, Txid: txid}, nil
+	return &pb.ChaincodeMessage{Type: typ, Payload: payload, Txid: txid, ChannelId: cid}, nil
 }
 
 // Execute executes a transaction and waits for it to complete until a timeout value.
@@ -824,7 +824,7 @@ func (chaincodeSupport *ChaincodeSupport) Execute(ctxt context.Context, cccid *c
 	}
 
 	//our responsibility to delete transaction context if sendExecuteMessage succeeded
-	chrte.handler.deleteTxContext(msg.Txid)
+	chrte.handler.deleteTxContext(msg.ChannelId, msg.Txid)
 
 	return ccresp, err
 }
