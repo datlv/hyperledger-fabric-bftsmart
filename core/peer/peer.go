@@ -51,6 +51,7 @@ var credSupport = comm.GetCredentialSupport()
 type gossipSupport struct {
 	channelconfig.Application
 	configtx.Validator
+	channelconfig.Channel
 }
 
 type chainSupport struct {
@@ -272,6 +273,7 @@ func createChain(cid string, ledger ledger.PeerLedger, cb *common.Block) error {
 		gossipEventer.ProcessConfigUpdate(&gossipSupport{
 			Validator:   bundle.ChannelConfig().ConfigtxValidator(),
 			Application: ac,
+			Channel:     bundle.ChannelConfig().ChannelConfig(),
 		})
 		service.GetGossipService().SuspectPeers(func(identity api.PeerIdentityType) bool {
 			// TODO: this is a place-holder that would somehow make the MSP layer suspect
@@ -457,11 +459,11 @@ func GetCurrConfigBlock(cid string) *common.Block {
 func updateTrustedRoots(cm channelconfig.Resources) {
 	// this is triggered on per channel basis so first update the roots for the channel
 	peerLogger.Debugf("Updating trusted root authorities for channel %s", cm.ConfigtxValidator().ChainID())
-	var secureConfig comm.SecureServerConfig
+	var serverConfig comm.ServerConfig
 	var err error
 	// only run is TLS is enabled
-	secureConfig, err = GetSecureConfig()
-	if err == nil && secureConfig.UseTLS {
+	serverConfig, err = GetServerConfig()
+	if err == nil && serverConfig.SecOpts.UseTLS {
 		buildTrustedRootsForChain(cm)
 
 		// now iterate over all roots for all app and orderer chains
@@ -472,11 +474,11 @@ func updateTrustedRoots(cm channelconfig.Resources) {
 			trustedRoots = append(trustedRoots, roots...)
 		}
 		// also need to append statically configured root certs
-		if len(secureConfig.ClientRootCAs) > 0 {
-			trustedRoots = append(trustedRoots, secureConfig.ClientRootCAs...)
+		if len(serverConfig.SecOpts.ClientRootCAs) > 0 {
+			trustedRoots = append(trustedRoots, serverConfig.SecOpts.ClientRootCAs...)
 		}
-		if len(secureConfig.ServerRootCAs) > 0 {
-			trustedRoots = append(trustedRoots, secureConfig.ServerRootCAs...)
+		if len(serverConfig.SecOpts.ServerRootCAs) > 0 {
+			trustedRoots = append(trustedRoots, serverConfig.SecOpts.ServerRootCAs...)
 		}
 
 		server := GetPeerServer()
@@ -627,9 +629,11 @@ func GetLocalIP() string {
 // NewPeerClientConnectionWithAddress Returns a new grpc.ClientConn to the configured local PEER.
 func NewPeerClientConnectionWithAddress(peerAddress string) (*grpc.ClientConn, error) {
 	if comm.TLSEnabled() {
-		return comm.NewClientConnectionWithAddress(peerAddress, true, true, comm.InitTLSForPeer())
+		return comm.NewClientConnectionWithAddress(peerAddress, true, true,
+			comm.InitTLSForPeer(), nil)
 	}
-	return comm.NewClientConnectionWithAddress(peerAddress, true, false, nil)
+	return comm.NewClientConnectionWithAddress(peerAddress, true, false,
+		nil, nil)
 }
 
 // GetChannelsInfo returns an array with information about all channels for
@@ -665,10 +669,10 @@ func (c *channelPolicyManagerGetter) Manager(channelID string) (policies.Manager
 // CreatePeerServer creates an instance of comm.GRPCServer
 // This server is used for peer communications
 func CreatePeerServer(listenAddress string,
-	secureConfig comm.SecureServerConfig) (comm.GRPCServer, error) {
+	serverConfig comm.ServerConfig) (comm.GRPCServer, error) {
 
 	var err error
-	peerServer, err = comm.NewGRPCServer(listenAddress, secureConfig)
+	peerServer, err = comm.NewGRPCServer(listenAddress, serverConfig)
 	if err != nil {
 		peerLogger.Errorf("Failed to create peer server (%s)", err)
 		return nil, err

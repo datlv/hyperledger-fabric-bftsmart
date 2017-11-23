@@ -20,6 +20,7 @@ import (
 	"github.com/hyperledger/fabric/gossip/util"
 	"github.com/hyperledger/fabric/protos/orderer"
 	"github.com/op/go-logging"
+	"github.com/spf13/viper"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 )
@@ -54,6 +55,9 @@ type DeliverService interface {
 	// StopDeliverForChannel dynamically stops delivery of new blocks from ordering service
 	// to channel peers.
 	StopDeliverForChannel(chainID string) error
+
+	// UpdateEndpoints
+	UpdateEndpoints(chainID string, endpoints []string) error
 
 	// Stop terminates delivery service and closes the connection
 	Stop()
@@ -101,6 +105,17 @@ func NewDeliverService(conf *Config) (DeliverService, error) {
 		return nil, err
 	}
 	return ds, nil
+}
+
+func (d *deliverServiceImpl) UpdateEndpoints(chainID string, endpoints []string) error {
+	// Use chainID to obtain blocks provider and pass endpoints
+	// for update
+	if bp, ok := d.blockProviders[chainID]; ok {
+		// We have found specified channel so we can safely update it
+		bp.UpdateOrderingEndpoints(endpoints)
+		return nil
+	}
+	return errors.New(fmt.Sprintf("Channel with %s id was not found", chainID))
 }
 
 func (d *deliverServiceImpl) validateConfiguration() error {
@@ -212,7 +227,16 @@ func DefaultConnectionFactory(channelID string) func(endpoint string) (*grpc.Cli
 		dialOpts = append(dialOpts, grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(comm.MaxRecvMsgSize()),
 			grpc.MaxCallSendMsgSize(comm.MaxSendMsgSize())))
 		// set the keepalive options
-		dialOpts = append(dialOpts, comm.ClientKeepaliveOptions()...)
+		kaOpts := comm.DefaultKeepaliveOptions()
+		if viper.IsSet("peer.keepalive.deliveryClient.interval") {
+			kaOpts.ClientInterval = viper.GetDuration(
+				"peer.keepalive.deliveryClient.interval")
+		}
+		if viper.IsSet("peer.keepalive.deliveryClient.timeout") {
+			kaOpts.ClientTimeout = viper.GetDuration(
+				"peer.keepalive.deliveryClient.timeout")
+		}
+		dialOpts = append(dialOpts, comm.ClientKeepaliveOptions(kaOpts)...)
 
 		if comm.TLSEnabled() {
 			creds, err := comm.GetCredentialSupport().GetDeliverServiceCredentials(channelID)

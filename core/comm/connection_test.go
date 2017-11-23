@@ -53,9 +53,11 @@ func TestConnection_Correct(t *testing.T) {
 	var tmpConn *grpc.ClientConn
 	var err error
 	if TLSEnabled() {
-		tmpConn, err = NewClientConnectionWithAddress(peerAddress, true, true, InitTLSForPeer())
+		tmpConn, err = NewClientConnectionWithAddress(peerAddress, true, true,
+			InitTLSForPeer(), nil)
 	}
-	tmpConn, err = NewClientConnectionWithAddress(peerAddress, true, false, nil)
+	tmpConn, err = NewClientConnectionWithAddress(peerAddress, true, false,
+		nil, nil)
 	if err != nil {
 		t.Fatalf("error connection to server at host:port = %s\n", peerAddress)
 	}
@@ -88,9 +90,11 @@ func TestConnection_WrongAddress(t *testing.T) {
 	var tmpConn *grpc.ClientConn
 	var err error
 	if TLSEnabled() {
-		tmpConn, err = NewClientConnectionWithAddress(peerAddress, true, true, InitTLSForPeer())
+		tmpConn, err = NewClientConnectionWithAddress(peerAddress, true, true,
+			InitTLSForPeer(), nil)
 	}
-	tmpConn, err = NewClientConnectionWithAddress(peerAddress, true, false, nil)
+	tmpConn, err = NewClientConnectionWithAddress(peerAddress, true, false,
+		nil, nil)
 	if err == nil {
 		fmt.Printf("error connection to server -  at host:port = %s\n", peerAddress)
 		t.Error("error connection to server - connection should fail")
@@ -258,10 +262,12 @@ func newServer(org string, port int) *srv {
 	if err != nil {
 		panic(fmt.Errorf("Failed listening on port %d: %v", port, err))
 	}
-	gSrv, err := NewGRPCServerFromListener(l, SecureServerConfig{
-		ServerCertificate: certs["server.crt"],
-		ServerKey:         certs["server.key"],
-		UseTLS:            true,
+	gSrv, err := NewGRPCServerFromListener(l, ServerConfig{
+		SecOpts: &SecureOptions{
+			ServerCertificate: certs["server.crt"],
+			ServerKey:         certs["server.key"],
+			UseTLS:            true,
+		},
 	})
 	if err != nil {
 		panic(fmt.Errorf("Failed starting gRPC server: %v", err))

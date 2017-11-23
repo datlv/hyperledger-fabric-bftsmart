@@ -17,6 +17,7 @@ func TestConfig(t *testing.T) {
 	// check the defaults
 	assert.EqualValues(t, maxRecvMsgSize, MaxRecvMsgSize())
 	assert.EqualValues(t, maxSendMsgSize, MaxSendMsgSize())
+	assert.EqualValues(t, keepaliveOptions, DefaultKeepaliveOptions())
 	assert.EqualValues(t, false, TLSEnabled())
 	assert.EqualValues(t, true, configurationCached)
 
@@ -26,22 +27,6 @@ func TestConfig(t *testing.T) {
 	SetMaxSendMsgSize(size)
 	assert.EqualValues(t, size, MaxRecvMsgSize())
 	assert.EqualValues(t, size, MaxSendMsgSize())
-
-	// set keepalive options
-	timeout := 1000
-	ka := KeepaliveOptions{
-		ClientKeepaliveTime:    timeout,
-		ClientKeepaliveTimeout: timeout + 1,
-		ServerKeepaliveTime:    timeout + 2,
-		ServerKeepaliveTimeout: timeout + 3,
-	}
-	SetKeepaliveOptions(ka)
-	assert.EqualValues(t, timeout, keepaliveOptions.ClientKeepaliveTime)
-	assert.EqualValues(t, timeout+1, keepaliveOptions.ClientKeepaliveTimeout)
-	assert.EqualValues(t, timeout+2, keepaliveOptions.ServerKeepaliveTime)
-	assert.EqualValues(t, timeout+3, keepaliveOptions.ServerKeepaliveTimeout)
-	assert.EqualValues(t, 2, len(ServerKeepaliveOptions()))
-	assert.Equal(t, 1, len(ClientKeepaliveOptions()))
 
 	// reset cache
 	configurationCached = false

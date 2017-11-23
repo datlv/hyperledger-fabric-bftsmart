@@ -75,20 +75,34 @@ func TestInitializeProfilingService(t *testing.T) {
 	}
 }
 
-func TestInitializeSecureServerConfig(t *testing.T) {
-	initializeSecureServerConfig(
-		&config.TopLevel{
-			General: config.General{
-				TLS: config.TLS{
-					Enabled:           true,
-					ClientAuthEnabled: true,
-					Certificate:       "main.go",
-					PrivateKey:        "main.go",
-					RootCAs:           []string{"main.go"},
-					ClientRootCAs:     []string{"main.go"},
-				},
+func TestInitializeServerConfig(t *testing.T) {
+	conf := &config.TopLevel{
+		General: config.General{
+			TLS: config.TLS{
+				Enabled:           true,
+				ClientAuthEnabled: true,
+				Certificate:       "main.go",
+				PrivateKey:        "main.go",
+				RootCAs:           []string{"main.go"},
+				ClientRootCAs:     []string{"main.go"},
 			},
-		})
+		},
+	}
+	sc := initializeServerConfig(conf)
+	defaultOpts := comm.DefaultKeepaliveOptions()
+	assert.Equal(t, defaultOpts.ServerMinInterval, sc.KaOpts.ServerMinInterval)
+	assert.Equal(t, time.Duration(0), sc.KaOpts.ServerInterval)
+	assert.Equal(t, time.Duration(0), sc.KaOpts.ServerTimeout)
+	testDuration := 10 * time.Second
+	conf.General.Keepalive = config.Keepalive{
+		ServerMinInterval: testDuration,
+		ServerInterval:    testDuration,
+		ServerTimeout:     testDuration,
+	}
+	sc = initializeServerConfig(conf)
+	assert.Equal(t, testDuration, sc.KaOpts.ServerMinInterval)
+	assert.Equal(t, testDuration, sc.KaOpts.ServerInterval)
+	assert.Equal(t, testDuration, sc.KaOpts.ServerTimeout)
 
 	goodFile := "main.go"
 	badFile := "does_not_exist"
@@ -113,7 +127,7 @@ func TestInitializeSecureServerConfig(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Panics(t, func() {
-				initializeSecureServerConfig(
+				initializeServerConfig(
 					&config.TopLevel{
 						General: config.General{
 							TLS: config.TLS{
@@ -247,7 +261,7 @@ func TestInitializeGrpcServer(t *testing.T) {
 		},
 	}
 	assert.NotPanics(t, func() {
-		grpcServer := initializeGrpcServer(conf, initializeSecureServerConfig(conf))
+		grpcServer := initializeGrpcServer(conf, initializeServerConfig(conf))
 		grpcServer.Listener().Close()
 	})
 }
@@ -271,7 +285,7 @@ func TestUpdateTrustedRoots(t *testing.T) {
 			},
 		},
 	}
-	grpcServer := initializeGrpcServer(conf, initializeSecureServerConfig(conf))
+	grpcServer := initializeGrpcServer(conf, initializeServerConfig(conf))
 	caSupport := &comm.CASupport{
 		AppRootCAsByChain:     make(map[string][][]byte),
 		OrdererRootCAsByChain: make(map[string][][]byte),
@@ -302,7 +316,7 @@ func TestUpdateTrustedRoots(t *testing.T) {
 			},
 		},
 	}
-	grpcServer = initializeGrpcServer(conf, initializeSecureServerConfig(conf))
+	grpcServer = initializeGrpcServer(conf, initializeServerConfig(conf))
 	caSupport = &comm.CASupport{
 		AppRootCAsByChain:     make(map[string][][]byte),
 		OrdererRootCAsByChain: make(map[string][][]byte),

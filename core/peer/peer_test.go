@@ -35,6 +35,10 @@ import (
 type mockDeliveryClient struct {
 }
 
+func (ds *mockDeliveryClient) UpdateEndpoints(chainID string, endpoints []string) error {
+	return nil
+}
+
 // StartDeliverForChannel dynamically starts delivery of new blocks from ordering service
 // to channel peers.
 func (ds *mockDeliveryClient) StartDeliverForChannel(chainID string, ledgerInfo blocksprovider.LedgerInfo, f func()) error {
@@ -61,13 +65,13 @@ func (*mockDeliveryClientFactory) Service(g service.GossipService, endpoints []s
 
 func TestCreatePeerServer(t *testing.T) {
 
-	server, err := CreatePeerServer(":4050", comm.SecureServerConfig{})
+	server, err := CreatePeerServer(":4050", comm.ServerConfig{})
 	assert.NoError(t, err, "CreatePeerServer returned unexpected error")
 	assert.Equal(t, "[::]:4050", server.Address(),
 		"CreatePeerServer returned the wrong address")
 	server.Stop()
 
-	_, err = CreatePeerServer("", comm.SecureServerConfig{})
+	_, err = CreatePeerServer("", comm.ServerConfig{})
 	assert.Error(t, err, "expected CreatePeerServer to return error with missing address")
 
 }

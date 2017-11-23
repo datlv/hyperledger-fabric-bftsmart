@@ -133,24 +133,24 @@ func serve(args []string) error {
 
 	listenAddr := viper.GetString("peer.listenAddress")
 
-	secureConfig, err := peer.GetSecureConfig()
+	serverConfig, err := peer.GetServerConfig()
 	if err != nil {
 		logger.Fatalf("Error loading secure config for peer (%s)", err)
 	}
-	peerServer, err := peer.CreatePeerServer(listenAddr, secureConfig)
+	peerServer, err := peer.CreatePeerServer(listenAddr, serverConfig)
 	if err != nil {
 		logger.Fatalf("Failed to create peer server (%s)", err)
 	}
 
-	if secureConfig.UseTLS {
+	if serverConfig.SecOpts.UseTLS {
 		logger.Info("Starting peer with TLS enabled")
 		// set up credential support
 		cs := comm.GetCredentialSupport()
-		cs.ServerRootCAs = secureConfig.ServerRootCAs
+		cs.ServerRootCAs = serverConfig.SecOpts.ServerRootCAs
 	}
 
 	//TODO - do we need different SSL material for events ?
-	ehubGrpcServer, err := createEventHubServer(secureConfig)
+	ehubGrpcServer, err := createEventHubServer(serverConfig)
 	if err != nil {
 		grpclog.Fatalf("Failed to create ehub server: %v", err)
 	}
@@ -176,7 +176,7 @@ func serve(args []string) error {
 		return service.GetGossipService().DistributePrivateData(channel, txID, privateData)
 	}
 
-	serverEndorser := endorser.NewEndorserServer(privDataDist)
+	serverEndorser := endorser.NewEndorserServer(privDataDist, &endorser.SupportImpl{})
 	libConf := library.Config{}
 	if err = viperutil.EnhancedExactUnmarshalKey("peer.handlers", &libConf); err != nil {
 		return errors.WithMessage(err, "could not load YAML config")
@@ -207,7 +207,14 @@ func serve(args []string) error {
 		dialOpts = append(dialOpts, grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(comm.MaxRecvMsgSize()),
 			grpc.MaxCallSendMsgSize(comm.MaxSendMsgSize())))
 		// set the keepalive options
-		dialOpts = append(dialOpts, comm.ClientKeepaliveOptions()...)
+		kaOpts := comm.DefaultKeepaliveOptions()
+		if viper.IsSet("peer.keepalive.client.interval") {
+			kaOpts.ClientInterval = viper.GetDuration("peer.keepalive.client.interval")
+		}
+		if viper.IsSet("peer.keepalive.client.timeout") {
+			kaOpts.ClientTimeout = viper.GetDuration("peer.keepalive.client.timeout")
+		}
+		dialOpts = append(dialOpts, comm.ClientKeepaliveOptions(kaOpts)...)
 
 		if comm.TLSEnabled() {
 			comm.GetCredentialSupport().ClientCert = peerServer.ServerCertificate()
@@ -309,17 +316,25 @@ func createChaincodeServer(caCert []byte, peerHostname string) (comm.GRPCServer,
 	var srv comm.GRPCServer
 	var ccEpFunc ccEndpointFunc
 
-	config, err := peer.GetSecureConfig()
+	config, err := peer.GetServerConfig()
 	if err != nil {
 		panic(err)
 	}
 
-	if config.UseTLS {
-		config.RequireClientCert = true
-		config.ClientRootCAs = append(config.ClientRootCAs, caCert)
+	if config.SecOpts.UseTLS {
+		config.SecOpts.RequireClientCert = true
+		config.SecOpts.ClientRootCAs = append(config.SecOpts.ClientRootCAs, caCert)
 	}
 
-	srv, err = comm.NewChaincodeGRPCServer(cclistenAddress, config)
+	// Chaincode keepalive options - static for now
+	chaincodeKeepaliveOptions := &comm.KeepaliveOptions{
+		ServerInterval:    time.Duration(2) * time.Hour,    // 2 hours - gRPC default
+		ServerTimeout:     time.Duration(20) * time.Second, // 20 sec - gRPC default
+		ServerMinInterval: time.Duration(1) * time.Minute,  // match ClientInterval
+	}
+	config.KaOpts = chaincodeKeepaliveOptions
+
+	srv, err = comm.NewGRPCServer(cclistenAddress, config)
 	if err != nil {
 		panic(err)
 	}
@@ -372,7 +387,7 @@ func registerChaincodeSupport(grpcServer comm.GRPCServer, ccEpFunc ccEndpointFun
 	pb.RegisterChaincodeSupportServer(grpcServer.Server(), ccSrv)
 }
 
-func createEventHubServer(secureConfig comm.SecureServerConfig) (comm.GRPCServer, error) {
+func createEventHubServer(serverConfig comm.ServerConfig) (comm.GRPCServer, error) {
 	var lis net.Listener
 	var err error
 	lis, err = net.Listen("tcp", viper.GetString("peer.events.address"))
@@ -380,7 +395,13 @@ func createEventHubServer(secureConfig comm.SecureServerConfig) (comm.GRPCServer
 		return nil, fmt.Errorf("failed to listen: %v", err)
 	}
 
-	grpcServer, err := comm.NewGRPCServerFromListener(lis, secureConfig)
+	// set the keepalive options
+	serverConfig.KaOpts = comm.DefaultKeepaliveOptions()
+	if viper.IsSet("peer.events.keepalive.minInterval") {
+		serverConfig.KaOpts.ServerMinInterval = viper.GetDuration("peer.events.keepalive.minInterval")
+	}
+
+	grpcServer, err := comm.NewGRPCServerFromListener(lis, serverConfig)
 	if err != nil {
 		logger.Errorf("Failed to return new GRPC server: %s", err)
 		return nil, err
