@@ -32,29 +32,33 @@ import (
 	"github.com/hyperledger/fabric/protos/utils"
 )
 
-var logger = logging.MustGetLogger("orderer/solo")
+var logger = logging.MustGetLogger("orderer/bftsmart")
 var poolsize uint = 0
 var poolindex uint = 0
 var recvport uint = 0
 var sendport uint = 0
-
+var sendProxy net.Conn //JCS: my code, to send data to proxy
+var sendPool []net.Conn
+var mutex []*sync.Mutex
+var batchTimeout time.Duration
 
 //measurements
 var interval = int64(10000)
 var envelopeMeasurementStartTime = int64(-1)
 var countEnvelopes = int64(0)
 
-type consenter struct{}
+type consenter struct {
+	createSystemChannel bool
+}
 
 type chain struct {
-	support      consensus.ConsenterSupport
-	batchTimeout time.Duration
-	sendChan     chan *cb.Block
-	exitChan     chan struct{}
-	sendProxy    net.Conn //JCS: my code, to send data to proxy
-	recvProxy    net.Conn //JCS: my code, to receive data to proxy
-	sendPool     []net.Conn
-	mutex        []*sync.Mutex
+	recvProxy       net.Conn //JCS: my code, to receive data to proxy
+	isSystemChannel bool
+
+	support         consensus.ConsenterSupport
+	sendChanRegular chan *cb.Block
+	sendChanConfig  chan *cb.Block
+	exitChan        chan struct{}
 }
 
 // New creates a new consenter for the solo consensus scheme.
@@ -65,102 +69,125 @@ func New(size uint, send uint, recv uint) consensus.Consenter {
 	poolsize = size
 	recvport = recv
 	sendport = send
-	return &consenter{}
-}
-
-func (solo *consenter) HandleChain(support consensus.ConsenterSupport, metadata *cb.Metadata) (consensus.Chain, error) {
-	return newChain(support), nil
-}
-
-func newChain(support consensus.ConsenterSupport) *chain {
-	return &chain{
-		batchTimeout: support.SharedConfig().BatchTimeout(),
-		support:      support,
-		sendChan:     make(chan *cb.Block),
-		exitChan:     make(chan struct{}),
-		sendPool:     make([]net.Conn, poolsize),
-		mutex:        make([]*sync.Mutex, poolsize),
+	return &consenter{
+		createSystemChannel: true,
 	}
+}
+
+func (bftsmart *consenter) HandleChain(support consensus.ConsenterSupport, metadata *cb.Metadata) (consensus.Chain, error) {
+	isSysChan := bftsmart.createSystemChannel
+	bftsmart.createSystemChannel = false
+	return newChain(isSysChan, support), nil
+}
+
+func newChain(isSysChan bool, support consensus.ConsenterSupport) *chain {
+
+	return &chain{
+		support:         support,
+		isSystemChannel: isSysChan,
+
+		sendChanRegular: make(chan *cb.Block),
+		sendChanConfig:  make(chan *cb.Block),
+		exitChan:        make(chan struct{}),
+	}
+
 }
 
 func (ch *chain) Start() {
 
-	//JCS: my code, to create a connections to the java proxy
+	logger.Infof("Starting new bftsmart chain with ID '%s'\n", ch.support.ChainID())
 
-	//addr := fmt.Sprintf("localhost:%d", sendport)
-	//conn, err := net.Dial("tcp", addr)
-	conn, err := net.Dial("unix", "/tmp/bft.sock")
+	if ch.isSystemChannel {
 
-	if err != nil {
-		logger.Debugf("Could not connect to proxy!")
-		return
-	} else {
-		logger.Debugf("Connected to proxy!")
+		//addr := fmt.Sprintf("localhost:%d", sendport)
+		//conn, err := net.Dial("tcp", addr)
+		conn, err := net.Dial("unix", "/tmp/bft.sock")
+
+		if err != nil {
+			logger.Info("[SEND] Error while connecting to proxy:", err)
+			return
+		}
+
+		sendProxy = conn
+
+		sendPool = make([]net.Conn, poolsize)
+		mutex = make([]*sync.Mutex, poolsize)
+
+		//create connection pool
+		for i := uint(0); i < poolsize; i++ {
+			//addr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("localhost:%d", sendport))
+			//conn, err := net.DialTCP("tcp", nil, addr)
+			conn, err := net.Dial("unix", "/tmp/bft.sock")
+
+			if err != nil {
+				panic(fmt.Sprintf("Could not create connection %v: %d\n", i, err))
+				//return
+			} else {
+				logger.Info("Created connection: %v\n", i)
+				//conn.SetNoDelay(true)
+				sendPool[i] = conn
+				mutex[i] = &sync.Mutex{}
+			}
+		}
+
+		batchTimeout = ch.support.SharedConfig().BatchTimeout()
+
+		//JCS: Sending pool size
+		/*_, err = ch.sendUint32(uint32(poolsize))
+
+		if err != nil {
+			logger.Debugf("Error while sending pool size:", err)
+			return
+		}*/
+
+		//JCS: Sending batch configuration
+		_, err = sendUint32(ch.support.SharedConfig().BatchSize().PreferredMaxBytes, sendProxy)
+
+		if err != nil {
+			logger.Info("Error while sending PreferredMaxBytes:", err)
+			return
+		}
+
+		_, err = sendUint32(ch.support.SharedConfig().BatchSize().MaxMessageCount, sendProxy)
+
+		if err != nil {
+			logger.Info("Error while sending MaxMessageCount:", err)
+			return
+		}
+		_, err = sendUint64(uint64(time.Duration.Nanoseconds(batchTimeout)), sendProxy)
+
+		if err != nil {
+			logger.Info("Error while sending BatchTimeout:", err)
+			return
+		}
+
 	}
 
-	ch.sendProxy = conn
-
 	addr := fmt.Sprintf("localhost:%d", recvport)
-	conn, err = net.Dial("tcp", addr)
+	conn, err := net.Dial("tcp", addr)
 
 	if err != nil {
-		logger.Debugf("Could not connect to proxy!")
+		logger.Info("[RECV] Error while connecting to proxy:", err)
 		return
-	} else {
-		logger.Debugf("Connected to proxy!")
 	}
 
 	ch.recvProxy = conn
 
-	//JCS: Sending pool size
-	_, err = ch.sendUint32(uint32(poolsize))
+	_, err = sendString(ch.support.ChainID(), sendProxy)
 
 	if err != nil {
-		logger.Debugf("Error while sending pool size:", err)
-		return
-	}
-
-	//JCS: Sending batch configuration
-	_, err = ch.sendUint32(ch.support.SharedConfig().BatchSize().PreferredMaxBytes)
-
-	if err != nil {
-		logger.Debugf("Error while sending PreferredMaxBytes:", err)
-		return
-	}
-
-	_, err = ch.sendUint32(ch.support.SharedConfig().BatchSize().MaxMessageCount)
-
-	if err != nil {
-		logger.Debugf("Error while sending MaxMessageCount:", err)
-		return
-	}
-	_, err = ch.sendUint64(uint64(time.Duration.Nanoseconds(ch.batchTimeout)))
-
-	if err != nil {
-		logger.Debugf("Error while sending BatchTimeout:", err)
+		logger.Info("Error while sending chain ID:", err)
 		return
 	}
 
 	lastBlock := ch.support.GetLastBlock()
 	header := lastBlock.Header
 
-	ch.sendHeaderToBFTProxy(header)
+	_, err = sendHeaderToBFTProxy(header)
 
-	//create connection pool
-	for i := uint(0); i < poolsize; i++ {
-		//addr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("localhost:%d", sendport))
-		//conn, err := net.DialTCP("tcp", nil, addr)
-		conn, err := net.Dial("unix", "/tmp/bft.sock")
-
-		if err != nil {
-			panic(fmt.Sprintf("Could not create connection %v: %d\n", i, err))
-			//return
-		} else {
-			logger.Debugf("Created connection: %v\n", i)
-			//conn.SetNoDelay(true)
-			ch.sendPool[i] = conn
-			ch.mutex[i] = &sync.Mutex{}
-		}
+	if err != nil {
+		logger.Info("Error while sending chain ID:", err)
+		return
 	}
 
 	//JCS: starting loops
@@ -179,19 +206,8 @@ func (ch *chain) Halt() {
 	}
 }
 
-// Configure accepts configuration update messages for ordering (JCS: for the moment, this orderer doe not support this feature)
-func (ch *chain) Configure(config *cb.Envelope, configSeq uint64) error {
-	//select {
-	//case ch.sendChan <- &message{
-	//	configSeq: configSeq,
-	//	configMsg: config,
-	//}:
-	//	return nil
-	//case <-ch.exitChan:
-	//	return fmt.Errorf("Exiting")
-	//}
-
-	return nil;
+func (ch *chain) WaitReady() error {
+	return nil
 }
 
 // Errored only closes on exit
@@ -199,7 +215,7 @@ func (ch *chain) Errored() <-chan struct{} {
 	return ch.exitChan
 }
 
-func (ch *chain) sendLength(length int, conn net.Conn) (int, error) {
+func sendLength(length int, conn net.Conn) (int, error) {
 
 	var buf [8]byte
 
@@ -208,60 +224,104 @@ func (ch *chain) sendLength(length int, conn net.Conn) (int, error) {
 	return conn.Write(buf[:])
 }
 
-func (ch *chain) sendUint64(length uint64) (int, error) {
+func sendUint64(length uint64, conn net.Conn) (int, error) {
 
 	var buf [8]byte
 
 	binary.BigEndian.PutUint64(buf[:], uint64(length))
 
-	return ch.sendProxy.Write(buf[:])
+	return conn.Write(buf[:])
 }
 
-func (ch *chain) sendUint32(length uint32) (int, error) {
+func sendUint32(length uint32, conn net.Conn) (int, error) {
 
 	var buf [4]byte
 
 	binary.BigEndian.PutUint32(buf[:], uint32(length))
 
-	return ch.sendProxy.Write(buf[:])
+	return conn.Write(buf[:])
 }
 
-func (ch *chain) sendEnvToBFTProxy(env *cb.Envelope, index uint) (int, error) {
+func sendBoolean(boolean bool, conn net.Conn) (int, error) {
 
-	ch.mutex[index].Lock()
-	bytes, err := utils.Marshal(env)
+	var buf [1]byte
 
-	if err != nil {
-		return -1, err
+	if boolean {
+		buf[0] = 1
+	} else {
+		buf[0] = 0
 	}
 
-	status, err := ch.sendLength(len(bytes), ch.sendPool[index])
+	status, err := sendLength(1, conn)
 
 	if err != nil {
 		return status, err
 	}
 
-	i, err := ch.sendPool[index].Write(bytes)
+	return conn.Write(buf[:])
 
-	ch.mutex[index].Unlock()
-
-	return i, err
 }
 
-func (ch *chain) sendHeaderToBFTProxy(header *cb.BlockHeader) (int, error) {
+func sendString(str string, conn net.Conn) (int, error) {
+
+	status, err := sendLength(len(str), conn)
+
+	if err != nil {
+		return status, err
+	}
+
+	return conn.Write([]byte(str))
+
+}
+
+func sendBytes(bytes []byte, conn net.Conn) (int, error) {
+
+	status, err := sendLength(len(bytes), conn)
+
+	if err != nil {
+		return status, err
+	}
+
+	return conn.Write(bytes)
+
+}
+
+func sendEnvToBFTProxy(isConfig bool, chainID string, env *cb.Envelope, index uint) (int, error) {
+
+	mutex[index].Lock()
+
+	//send channel id
+	status, err := sendString(chainID, sendPool[index])
+
+	//send isConfig
+	status, err = sendBoolean(isConfig, sendPool[index])
+
+	//send envelope
+	bytes, err := utils.Marshal(env)
+	if err != nil {
+		return -1, err
+	}
+	status, err = sendBytes(bytes, sendPool[index])
+
+	mutex[index].Unlock()
+
+	return status, err
+}
+
+func sendHeaderToBFTProxy(header *cb.BlockHeader) (int, error) {
 	bytes, err := utils.Marshal(header)
 
 	if err != nil {
 		return -1, err
 	}
 
-	status, err := ch.sendLength(len(bytes), ch.sendProxy)
+	status, err := sendLength(len(bytes), sendProxy)
 
 	if err != nil {
 		return status, err
 	}
 
-	return ch.sendProxy.Write(bytes)
+	return sendProxy.Write(bytes)
 }
 
 func (ch *chain) recvLength() (int64, error) {
@@ -316,19 +376,28 @@ func (ch *chain) recvEnvFromBFTProxy() (*cb.Envelope, error) {
 }
 
 // Order accepts a message and returns true on acceptance, or false on shutdown
-func (ch *chain) Order(env *cb.Envelope, _ uint64) error {
+func (ch *chain) Order(env *cb.Envelope, configSeq uint64) error {
 
-	////JCS: new code that contacts the java proxy
+	//perform usual msg processing
+	seq := ch.support.Sequence()
 
-	poolindex = (poolindex + 1) % poolsize
-
-	_, err := ch.sendEnvToBFTProxy(env, poolindex)
-
-	if err != nil {
-		
-		return err
+	if configSeq < seq {
+		_, err := ch.support.ProcessNormalMsg(env)
+		if err != nil {
+			logger.Warningf("Discarding bad normal message: %s", err)
+			return nil
+		}
 	}
 
+	//if everything ok, proceed
+	poolindex = (poolindex + 1) % poolsize
+
+	_, err := sendEnvToBFTProxy(false, ch.support.ChainID(), env, poolindex)
+
+	if err != nil {
+
+		return err
+	}
 
 	if envelopeMeasurementStartTime == -1 {
 		envelopeMeasurementStartTime = time.Now().UnixNano()
@@ -354,6 +423,41 @@ func (ch *chain) Order(env *cb.Envelope, _ uint64) error {
 	//return true
 }
 
+// Configure accepts configuration update messages for ordering (JCS: for the moment, this orderer doe not support this feature)
+func (ch *chain) Configure(config *cb.Envelope, configSeq uint64) error {
+
+	//perform usual config processing
+	seq := ch.support.Sequence()
+	msg := config
+	if configSeq < seq {
+		configMsg, _, err := ch.support.ProcessConfigMsg(config)
+		if err != nil {
+			logger.Warningf("Discarding bad config message: %s", err)
+			return nil
+		}
+		msg = configMsg
+	}
+
+	//if everything ok, proceed
+	poolindex = (poolindex + 1) % poolsize
+
+	_, err := sendEnvToBFTProxy(true, ch.support.ChainID(), msg, poolindex)
+
+	if err != nil {
+
+		return err
+	}
+
+	select {
+
+	case <-ch.exitChan:
+		return fmt.Errorf("Exiting")
+	default: //JCS: avoid blocking
+		return nil
+	}
+
+}
+
 func (ch *chain) connLoop() {
 
 	for {
@@ -371,7 +475,21 @@ func (ch *chain) connLoop() {
 			continue
 		}
 
-		ch.sendChan <- block
+		//JCS receive block type
+		bytes, err = ch.recvBytes()
+		if err != nil {
+			logger.Debugf("[recv] Error while receiving block type from BFT proxy: %v\n", err)
+			continue
+		}
+
+		if bytes[0] == 1 {
+
+			logger.Infof("[recv] Received config block! \n")
+			ch.sendChanConfig <- block
+		} else {
+
+			ch.sendChanRegular <- block
+		}
 
 	}
 }
@@ -384,14 +502,20 @@ func (ch *chain) appendToChain() {
 		select {
 
 		//JCS: I want the orderer to wait for reception from the java proxy
-		case block := <-ch.sendChan:
-
+		case block := <-ch.sendChanRegular:
 
 			err := ch.support.AppendBlock(block)
 			if err != nil {
-				logger.Panicf("Could not append block: %s", err)
+				logger.Panicf("Could not append regular block: %s", err)
 			}
 
+		case block := <-ch.sendChanConfig:
+
+			ch.support.ProcessConfigBlock(block)
+			err := ch.support.AppendBlock(block)
+			if err != nil {
+				logger.Panicf("Could not append configuration block: %s", err)
+			}
 
 		case <-ch.exitChan:
 			logger.Debugf("Exiting...")
@@ -399,4 +523,3 @@ func (ch *chain) appendToChain() {
 		}
 	}
 }
-

@@ -72,7 +72,7 @@ type argsImpl struct {
 
 func init() {
 	conf = config.Load()
-	genConf = genesisconfig.Load(genesisconfig.SampleInsecureSoloProfile)
+	genConf = genesisconfig.Load(genesisconfig.SampleSingleMSPBFTsmartProfile) //JCS: changed to bftmart profile
 
 	// Load local MSP
 	err := mspmgmt.LoadLocalMsp(conf.General.LocalMSPDir, conf.General.BCCSP, conf.General.LocalMSPID)

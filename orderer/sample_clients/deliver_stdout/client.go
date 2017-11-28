@@ -29,11 +29,10 @@ import (
 )
 
 var (
-
-	blocksReceived uint64             = 0                               //JCS: block counter and checker
-	N              uint32             = 4                               //JCS: number of ordering nodes
-	F              uint32             = 1                               //JCS: number of faults
-	Q              float32            = ((float32(N) + float32(F)) / 2) //JCS: quorum size
+	blocksReceived uint64  = 0                               //JCS: block counter and checker
+	N              uint32  = 4                               //JCS: number of ordering nodes
+	F              uint32  = 1                               //JCS: number of faults
+	Q              float32 = ((float32(N) + float32(F)) / 2) //JCS: quorum size
 
 	oldest  = &ab.SeekPosition{Type: &ab.SeekPosition_Oldest{Oldest: &ab.SeekOldest{}}}
 	newest  = &ab.SeekPosition{Type: &ab.SeekPosition_Newest{Newest: &ab.SeekNewest{}}}
@@ -248,7 +247,7 @@ func validateSignatures(meta *cb.Metadata, block *cb.Block) { //JCS: my function
 		}
 	default:
 		{
-			panic(fmt.Errorf("Block #%d does NOT contain enough valid signatures!\n", block.Header.Number))
+			fmt.Printf("Block #%d does NOT contain enough valid signatures!\n", block.Header.Number)
 		}
 	}
 }
