@@ -26,7 +26,7 @@ Prerequisites
 -  `Git client <https://git-scm.com/downloads>`__
 -  `Go <https://golang.org/>`__ - 1.9 or later (for v1.0.X releases, use
    Go 1.7.X)
--  For macOS,
+-  (macOS)
    `Xcode <https://itunes.apple.com/us/app/xcode/id497799835?mt=12>`__
    must be installed
 -  `Docker <https://www.docker.com/products/overview>`__ - 17.06.2-ce or later
@@ -39,6 +39,13 @@ Prerequisites
 ::
 
     brew install gnu-tar --with-default-names
+
+-  (macOS) `Libtool <https://www.gnu.org/software/libtool/>`__. You can use
+   Homebrew to install it as follows:
+
+::
+
+    brew install libtool
 
 -  (only if using Vagrant) - `Vagrant <https://www.vagrantup.com/>`__ -
    1.9 or later
@@ -55,11 +62,10 @@ Prerequisites
 ::
 
     pip install --upgrade pip
-    pip install behave nose
-    pip install -I flask==0.10.1 python-dateutil==2.2 pytz==2014.3 pyyaml==3.10 couchdb==1.0 flask-cors==2.0.1 requests==2.4.3 pyOpenSSL==16.2.0 pysha3==1.0b1 grpcio==1.0.4
 
     #PIP packages required for some behave tests
-    pip install urllib3 ndg-httpsclient pyasn1 ecdsa python-slugify grpcio-tools jinja2 b3j0f.aop six
+    pip install -r devenv/bddtests-requirements.txt
+
 
 Steps
 ~~~~~
