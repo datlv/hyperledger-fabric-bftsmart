@@ -13,16 +13,7 @@ import (
 )
 
 func newChainRequest(consensusType, creationPolicy, newChannelId string) *cb.Envelope {
-
-	//JCS: added application organizations to avoid the config transaction from being rejected
-	orgs := genConf.Application.Organizations
-
-	var orgNames []string
-	for _, org := range orgs {
-		orgNames = append(orgNames, org.Name)
-	}
-
-	env, err := encoder.MakeChannelCreationTransaction(newChannelId, genesisconfig.SampleConsortiumName, signer, nil, orgNames...)
+	env, err := encoder.MakeChannelCreationTransaction(newChannelId, genesisconfig.SampleConsortiumName, signer, nil)
 	if err != nil {
 		panic(err)
 	}
