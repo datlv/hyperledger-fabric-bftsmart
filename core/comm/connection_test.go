@@ -8,6 +8,7 @@ package comm
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -17,11 +18,10 @@ import (
 	"time"
 
 	testpb "github.com/hyperledger/fabric/core/comm/testdata/grpc"
-	"github.com/hyperledger/fabric/core/testutil"
-	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 const (
@@ -46,42 +46,92 @@ VQQLDAtIeXBlcmxlZGdlcjESMBAGA1UEAwwJbG9jYWxob3N0MFkwEwYHKoZIzj0C
 -----END CERTIFICATE-----
 `
 
-func TestConnection_Correct(t *testing.T) {
-	testutil.SetupTestConfig()
-	viper.Set("ledger.blockchain.deploy-system-chaincode", "false")
-	peerAddress := GetPeerTestingAddress("7051")
-	var tmpConn *grpc.ClientConn
-	var err error
-	if TLSEnabled() {
-		tmpConn, err = NewClientConnectionWithAddress(peerAddress, true, true,
-			InitTLSForPeer(), nil)
-	}
-	tmpConn, err = NewClientConnectionWithAddress(peerAddress, true, false,
-		nil, nil)
-	if err != nil {
-		t.Fatalf("error connection to server at host:port = %s\n", peerAddress)
+func TestClientConnections(t *testing.T) {
+	t.Parallel()
+
+	//use Org1 test crypto material
+	fileBase := "Org1"
+	certPEMBlock, _ := ioutil.ReadFile(filepath.Join("testdata", "certs", fileBase+"-server1-cert.pem"))
+	keyPEMBlock, _ := ioutil.ReadFile(filepath.Join("testdata", "certs", fileBase+"-server1-key.pem"))
+	caPEMBlock, _ := ioutil.ReadFile(filepath.Join("testdata", "certs", fileBase+"-cert.pem"))
+	certPool := x509.NewCertPool()
+	certPool.AppendCertsFromPEM(caPEMBlock)
+
+	var tests = []struct {
+		name       string
+		sc         ServerConfig
+		creds      credentials.TransportCredentials
+		clientPort int
+		fail       bool
+		serverPort int
+	}{
+		{
+			name: "ValidConnection",
+			sc: ServerConfig{
+				SecOpts: &SecureOptions{
+					UseTLS: false}},
+			serverPort: 8050,
+		},
+		{
+			name: "InvalidConnection",
+			sc: ServerConfig{
+				SecOpts: &SecureOptions{
+					UseTLS: false}},
+			clientPort: 20040,
+			fail:       true,
+			serverPort: 8051,
+		},
+		{
+			name: "ValidConnectionTLS",
+			sc: ServerConfig{
+				SecOpts: &SecureOptions{
+					UseTLS:            true,
+					ServerCertificate: certPEMBlock,
+					ServerKey:         keyPEMBlock}},
+			creds:      credentials.NewClientTLSFromCert(certPool, ""),
+			serverPort: 8052,
+		},
+		{
+			name: "InvalidConnectionTLS",
+			sc: ServerConfig{
+				SecOpts: &SecureOptions{
+					UseTLS:            true,
+					ServerCertificate: certPEMBlock,
+					ServerKey:         keyPEMBlock}},
+			creds:      credentials.NewClientTLSFromCert(nil, ""),
+			fail:       true,
+			serverPort: 8053,
+		},
 	}
 
-	tmpConn.Close()
-}
-
-func TestConnection_WrongAddress(t *testing.T) {
-	testutil.SetupTestConfig()
-	viper.Set("ledger.blockchain.deploy-system-chaincode", "false")
-	//some random port
-	peerAddress := GetPeerTestingAddress("10287")
-	var tmpConn *grpc.ClientConn
-	var err error
-	if TLSEnabled() {
-		tmpConn, err = NewClientConnectionWithAddress(peerAddress, true, true,
-			InitTLSForPeer(), nil)
-	}
-	tmpConn, err = NewClientConnectionWithAddress(peerAddress, true, false,
-		nil, nil)
-	if err == nil {
-		fmt.Printf("error connection to server -  at host:port = %s\n", peerAddress)
-		t.Error("error connection to server - connection should fail")
-		tmpConn.Close()
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			t.Logf("Running test %s ...", test.name)
+			serverAddress := fmt.Sprintf("localhost:%d", test.serverPort)
+			clientAddress := serverAddress
+			if test.clientPort > 0 {
+				clientAddress = fmt.Sprintf("localhost:%d", test.clientPort)
+			}
+			srv, err := NewGRPCServer(serverAddress, test.sc)
+			//check for error
+			if err != nil {
+				t.Fatalf("Error [%s] creating test server for address [%s]",
+					err, serverAddress)
+			}
+			//start the server
+			go srv.Start()
+			defer srv.Stop()
+			testConn, err := NewClientConnectionWithAddress(clientAddress,
+				true, test.sc.SecOpts.UseTLS, test.creds, nil)
+			if test.fail {
+				assert.Error(t, err)
+			} else {
+				testConn.Close()
+				assert.NoError(t, err)
+			}
+		})
 	}
 }
 
@@ -148,7 +198,10 @@ func TestCredentialSupport(t *testing.T) {
 	}
 
 	cs := GetCredentialSupport()
-	cs.ClientCert = tls.Certificate{}
+	cert := tls.Certificate{Certificate: [][]byte{}}
+	cs.SetClientCertificate(cert)
+	assert.Equal(t, cert, cs.clientCert)
+
 	cs.AppRootCAsByChain["channel1"] = [][]byte{rootCAs[0]}
 	cs.AppRootCAsByChain["channel2"] = [][]byte{rootCAs[1]}
 	cs.AppRootCAsByChain["channel3"] = [][]byte{rootCAs[2]}

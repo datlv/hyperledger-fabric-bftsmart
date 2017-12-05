@@ -142,6 +142,13 @@ func serve(args []string) error {
 		// set up credential support
 		cs := comm.GetCredentialSupport()
 		cs.ServerRootCAs = serverConfig.SecOpts.ServerRootCAs
+
+		// set the cert to use if client auth is requested by remote endpoints
+		clientCert, err := peer.GetClientCertificate()
+		if err != nil {
+			logger.Fatalf("Failed to set TLS client certficate (%s)", err)
+		}
+		comm.GetCredentialSupport().SetClientCertificate(clientCert)
 	}
 
 	//TODO - do we need different SSL material for events ?
@@ -158,7 +165,7 @@ func serve(args []string) error {
 	if err != nil {
 		logger.Panic("Failed creating authentication layer:", err)
 	}
-	ccSrv, ccEndpoint, err := createChaincodeServer(ca.CertBytes(), peerHost)
+	ccSrv, ccEndpoint, err := createChaincodeServer(ca, peerHost)
 	if err != nil {
 		logger.Panicf("Failed to create chaincode server: %s", err)
 	}
@@ -215,7 +222,6 @@ func serve(args []string) error {
 		dialOpts = append(dialOpts, comm.ClientKeepaliveOptions(kaOpts)...)
 
 		if comm.TLSEnabled() {
-			comm.GetCredentialSupport().ClientCert = peerServer.ServerCertificate()
 			dialOpts = append(dialOpts, grpc.WithTransportCredentials(comm.GetCredentialSupport().GetPeerCredentials()))
 		} else {
 			dialOpts = append(dialOpts, grpc.WithInsecure())
@@ -303,7 +309,7 @@ func serve(args []string) error {
 }
 
 //create a CC listener using peer.chaincodeListenAddress (and if that's not set use peer.peerAddress)
-func createChaincodeServer(caCert []byte, peerHostname string) (srv comm.GRPCServer, ccEndpoint string, err error) {
+func createChaincodeServer(ca accesscontrol.CA, peerHostname string) (srv comm.GRPCServer, ccEndpoint string, err error) {
 	// before potentially setting chaincodeListenAddress, compute chaincode endpoint at first
 	ccEndpoint, err = computeChaincodeEndpoint(peerHostname)
 	if err != nil {
@@ -316,6 +322,11 @@ func createChaincodeServer(caCert []byte, peerHostname string) (srv comm.GRPCSer
 			logger.Errorf("Error computing chaincode endpoint: %s", err)
 			return nil, "", err
 		}
+	}
+
+	host, _, err := net.SplitHostPort(ccEndpoint)
+	if err != nil {
+		logger.Panic("Chaincode service host", ccEndpoint, "isn't a valid hostname:", err)
 	}
 
 	cclistenAddress := viper.GetString(chaincodeListenAddrKey)
@@ -331,9 +342,26 @@ func createChaincodeServer(caCert []byte, peerHostname string) (srv comm.GRPCSer
 		return nil, "", err
 	}
 
+	// Override TLS configuration if TLS is applicable
 	if config.SecOpts.UseTLS {
-		config.SecOpts.RequireClientCert = true
-		config.SecOpts.ClientRootCAs = append(config.SecOpts.ClientRootCAs, caCert)
+		// Create a self-signed TLS certificate with a SAN that matches the computed chaincode endpoint
+		certKeyPair, err := ca.NewServerCertKeyPair(host)
+		if err != nil {
+			logger.Panicf("Failed generating TLS certificate for chaincode service: +%v", err)
+		}
+		config.SecOpts = &comm.SecureOptions{
+			UseTLS: true,
+			// Require chaincode shim to authenticate itself
+			RequireClientCert: true,
+			// Trust only client certificates signed by ourselves
+			ClientRootCAs: [][]byte{ca.CertBytes()},
+			// Use our own self-signed TLS certificate and key
+			ServerCertificate: certKeyPair.Cert,
+			ServerKey:         certKeyPair.Key,
+			// No point in specifying server root CAs since this TLS config is only used for
+			// a gRPC server and not a client
+			ServerRootCAs: nil,
+		}
 	}
 
 	// Chaincode keepalive options - static for now

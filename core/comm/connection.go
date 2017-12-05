@@ -44,7 +44,7 @@ type CASupport struct {
 // CredentialSupport type manages credentials used for gRPC client connections
 type CredentialSupport struct {
 	*CASupport
-	ClientCert tls.Certificate
+	clientCert tls.Certificate
 }
 
 // GetCredentialSupport returns the singleton CredentialSupport instance
@@ -109,6 +109,12 @@ func (cas *CASupport) GetClientRootCAs() (appRootCAs, ordererRootCAs [][]byte) {
 	return appRootCAs, ordererRootCAs
 }
 
+// SetClientCertificate sets the tls.Certificate to use for gRPC client
+// connections
+func (cs *CredentialSupport) SetClientCertificate(cert tls.Certificate) {
+	cs.clientCert = cert
+}
+
 // GetDeliverServiceCredentials returns GRPC transport credentials for given channel to be used by GRPC
 // clients which communicate with ordering service endpoints.
 // If the channel isn't found, error is returned.
@@ -118,7 +124,7 @@ func (cs *CredentialSupport) GetDeliverServiceCredentials(channelID string) (cre
 
 	var creds credentials.TransportCredentials
 	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cs.ClientCert},
+		Certificates: []tls.Certificate{cs.clientCert},
 	}
 	certPool := x509.NewCertPool()
 
@@ -151,7 +157,7 @@ func (cs *CredentialSupport) GetDeliverServiceCredentials(channelID string) (cre
 func (cs *CredentialSupport) GetPeerCredentials() credentials.TransportCredentials {
 	var creds credentials.TransportCredentials
 	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cs.ClientCert},
+		Certificates: []tls.Certificate{cs.clientCert},
 	}
 	certPool := x509.NewCertPool()
 	// loop through the server root CAs
@@ -232,9 +238,6 @@ func InitTLSForPeer() credentials.TransportCredentials {
 
 func InitTLSForShim(key, certStr string) credentials.TransportCredentials {
 	var sn string
-	if viper.GetString("peer.tls.serverhostoverride") != "" {
-		sn = viper.GetString("peer.tls.serverhostoverride")
-	}
 	priv, err := base64.StdEncoding.DecodeString(key)
 	if err != nil {
 		commLogger.Panicf("failed decoding private key from base64, string: %s, error: %v", key, err)
