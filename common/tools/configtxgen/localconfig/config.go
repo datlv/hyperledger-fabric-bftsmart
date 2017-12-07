@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/common/viperutil"
 	logging "github.com/op/go-logging"
 
@@ -52,6 +53,8 @@ const (
 	SampleInsecureSoloProfile = "SampleInsecureSolo"
 	// SampleDevModeSoloProfile references the sample profile which requires only basic membership for admin privileges and uses solo for ordering.
 	SampleDevModeSoloProfile = "SampleDevModeSolo"
+	// SampleDevModeSoloProfileV11 references the sample profile which requires only basic membership for admin privileges and uses solo for ordering, but has v1.1 capabilities enabled
+	SampleDevModeSoloV11Profile = "SampleDevModeSoloV1_1"
 	// SampleSingleMSPSoloProfile references the sample profile which includes only the sample MSP and uses solo for ordering.
 	SampleSingleMSPSoloProfile = "SampleSingleMSPSolo"
 	// SampleSingleMSPSoloV11Profile references the sample profile which includes only the sample MSP with v1.1 capabilities defined and uses solo for ordering.
@@ -61,6 +64,8 @@ const (
 	SampleInsecureKafkaProfile = "SampleInsecureKafka"
 	// SampleDevModeKafkaProfile references the sample profile which requires only basic membership for admin privileges and uses Kafka for ordering.
 	SampleDevModeKafkaProfile = "SampleDevModeKafka"
+	// SampleDevModeKafkaProfileV11 references the sample profile which requires only basic membership for admin privileges and uses Kafka for ordering, but has v1.1 capabilities enabled.
+	SampleDevModeKafkaV11Profile = "SampleDevModeKafkaV1_1"
 	// SampleSingleMSPKafkaProfile references the sample profile which includes only the sample MSP and uses Kafka for ordering.
 	SampleSingleMSPKafkaProfile = "SampleSingleMSPKafka"
 	// SampleSingleMSPKafkaV11Profile references the sample profile which includes only the sample MSP with v1.1 capabilities defined and uses Kafka for ordering.
@@ -99,6 +104,7 @@ type TopLevel struct {
 	Application   *Application               `yaml:"Application"`
 	Orderer       *Orderer                   `yaml:"Orderer"`
 	Capabilities  map[string]map[string]bool `yaml:"Capabilities"`
+	Resources     *Resources                 `yaml:"Resources"`
 }
 
 // Profile encodes orderer/application configuration combinations for the configtxgen tool.
@@ -119,6 +125,12 @@ type Consortium struct {
 type Application struct {
 	Organizations []*Organization `yaml:"Organizations"`
 	Capabilities  map[string]bool `yaml:"Capabilities"`
+	Resources     *Resources      `yaml:"Resources"`
+}
+
+// Resouces encodes the application-level resources configuration needed to seed the resource tree
+type Resources struct {
+	DefaultModPolicy string
 }
 
 // Organization encodes the organization-level configuration needed in config transactions.
@@ -287,6 +299,9 @@ func (p *Profile) completeInitialization(configDir string) {
 		for _, org := range p.Application.Organizations {
 			org.completeInitialization(configDir)
 		}
+		if p.Application.Resources != nil {
+			p.Application.Resources.completeInitialization()
+		}
 	}
 
 	if p.Consortiums != nil {
@@ -300,6 +315,17 @@ func (p *Profile) completeInitialization(configDir string) {
 	// Some profiles will not define orderer parameters
 	if p.Orderer != nil {
 		p.Orderer.completeInitialization()
+	}
+}
+
+func (r *Resources) completeInitialization() {
+	for {
+		switch {
+		case r.DefaultModPolicy == "":
+			r.DefaultModPolicy = policies.ChannelApplicationAdmins
+		default:
+			return
+		}
 	}
 }
 

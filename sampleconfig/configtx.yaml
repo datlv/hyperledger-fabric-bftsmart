@@ -70,6 +70,23 @@ Profiles:
                     - <<: *SampleOrg
                       AdminPrincipal: Role.MEMBER
 
+    # SampleDevModeSoloV1.1 mimics the SampleDevModeKafka definition
+    # but additionally defines the v1.1 only capabilities which do
+    # not allow a mixed v1.0.x v1.1.x network
+    SampleDevModeSoloV1_1:
+        Orderer:
+            <<: *OrdererDefaults
+            Organizations:
+                - <<: *SampleOrg
+                  AdminPrincipal: Role.MEMBER
+            Capabilities:
+                <<: *OrdererCapabilities
+        Consortiums:
+            SampleConsortium:
+                Organizations:
+                    - <<: *SampleOrg
+                      AdminPrincipal: Role.MEMBER
+
     # SampleDevModeKafka defines a configuration that differs from the
     # SampleDevModeSolo one only in that it uses the Kafka-based orderer.
     SampleDevModeKafka:
@@ -99,7 +116,7 @@ Profiles:
     # SampleSingleMSPKafkaV1.1 mimics the SampleDevModeKafka definition
     # but additionally defines the v1.1 only capabilities which do
     # not allow a mixed v1.0.x v1.1.x network
-    SampleDevModeKafkaV1.1:
+    SampleDevModeKafkaV1_1:
         Orderer:
             <<: *OrdererDefaults
             OrdererType: kafka
@@ -291,7 +308,7 @@ Orderer: &OrdererDefaults
 
     # Orderer Type: The orderer implementation to start.
     # Available types are "solo" and "kafka".
-    OrdererType: bftsmart
+    OrdererType: solo
 
     Addresses:
         - 127.0.0.1:7050
@@ -410,3 +427,16 @@ Capabilities:
         # modification of which would cause imcompatibilities.  Users should
         # leave this flag set to true.
         V1_1: true
+
+################################################################################
+#
+#   SECTION: Resources
+#
+#   - This section defines the peer resources for a fabric network.  These
+#   resources include chaincode definitions, as well as policies for how those
+#   resources can be modified.  Note, this section is only applicable if the V1_1
+#   application capability is enabled.
+#
+################################################################################
+#Resources:
+#    DefaultModPolicy: /Channel/Application/Admins

@@ -19,19 +19,19 @@ package deliver
 import (
 	"io"
 
-	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric/common/ledger/blockledger"
 	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/common/util"
-	"github.com/hyperledger/fabric/orderer/common/ledger"
-	"github.com/hyperledger/fabric/orderer/common/msgprocessor"
 	cb "github.com/hyperledger/fabric/protos/common"
 	ab "github.com/hyperledger/fabric/protos/orderer"
 	"github.com/hyperledger/fabric/protos/utils"
+
+	"github.com/golang/protobuf/proto"
 	"github.com/op/go-logging"
 )
 
-const pkgLogID = "orderer/common/deliver"
+const pkgLogID = "common/deliver"
 
 var logger *logging.Logger
 
@@ -58,20 +58,22 @@ type Support interface {
 	PolicyManager() policies.Manager
 
 	// Reader returns the chain Reader for the chain
-	Reader() ledger.Reader
+	Reader() blockledger.Reader
 
 	// Errored returns a channel which closes when the backing consenter has errored
 	Errored() <-chan struct{}
 }
 
 type deliverServer struct {
-	sm SupportManager
+	sm         SupportManager
+	policyName string
 }
 
 // NewHandlerImpl creates an implementation of the Handler interface
-func NewHandlerImpl(sm SupportManager) Handler {
+func NewHandlerImpl(sm SupportManager, policyName string) Handler {
 	return &deliverServer{
-		sm: sm,
+		sm:         sm,
+		policyName: policyName,
 	}
 }
 
@@ -137,7 +139,7 @@ func (ds *deliverServer) deliverBlocks(srv ab.AtomicBroadcast_DeliverServer, env
 
 	lastConfigSequence := chain.Sequence()
 
-	sf := msgprocessor.NewSigFilter(policies.ChannelReaders, chain)
+	sf := NewSigFilter(ds.policyName, chain)
 	if err := sf.Apply(envelope); err != nil {
 		logger.Warningf("[channel: %s] Received unauthorized deliver request from %s: %s", chdr.ChannelId, addr, err)
 		return sendStatusReply(srv, cb.Status_FORBIDDEN)
@@ -173,20 +175,20 @@ func (ds *deliverServer) deliverBlocks(srv ab.AtomicBroadcast_DeliverServer, env
 	}
 
 	for {
-		if seekInfo.Behavior == ab.SeekInfo_BLOCK_UNTIL_READY {
-			select {
-			case <-erroredChan:
-				logger.Warningf("[channel: %s] Aborting deliver for request because of consenter error", chdr.ChannelId, addr)
-				return sendStatusReply(srv, cb.Status_SERVICE_UNAVAILABLE)
-			case <-cursor.ReadyChan():
-			}
-		} else {
-			select {
-			case <-cursor.ReadyChan():
-			default:
+		if seekInfo.Behavior == ab.SeekInfo_FAIL_IF_NOT_READY {
+			if number > chain.Reader().Height()-1 {
 				return sendStatusReply(srv, cb.Status_NOT_FOUND)
 			}
 		}
+
+		block, status := nextBlock(cursor, erroredChan)
+		if status != cb.Status_SUCCESS {
+			cursor.Close()
+			logger.Errorf("[channel: %s] Error reading from channel, cause was: %v", chdr.ChannelId, status)
+			return sendStatusReply(srv, status)
+		}
+		// increment block number to support FAIL_IF_NOT_READY deliver behavior
+		number++
 
 		currentConfigSequence := chain.Sequence()
 		if currentConfigSequence > lastConfigSequence {
@@ -195,12 +197,6 @@ func (ds *deliverServer) deliverBlocks(srv ab.AtomicBroadcast_DeliverServer, env
 				logger.Warningf("[channel: %s] Client authorization revoked for deliver request from %s: %s", chdr.ChannelId, addr, err)
 				return sendStatusReply(srv, cb.Status_FORBIDDEN)
 			}
-		}
-
-		block, status := cursor.Next()
-		if status != cb.Status_SUCCESS {
-			logger.Errorf("[channel: %s] Error reading from channel, cause was: %v", chdr.ChannelId, status)
-			return sendStatusReply(srv, status)
 		}
 
 		logger.Debugf("[channel: %s] Delivering block for (%p) for %s", chdr.ChannelId, seekInfo, addr)
@@ -224,6 +220,22 @@ func (ds *deliverServer) deliverBlocks(srv ab.AtomicBroadcast_DeliverServer, env
 
 	return nil
 
+}
+
+func nextBlock(cursor blockledger.Iterator, cancel <-chan struct{}) (block *cb.Block, status cb.Status) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		block, status = cursor.Next()
+	}()
+
+	select {
+	case <-done:
+		return
+	case <-cancel:
+		logger.Warningf("Aborting deliver for request because of background error")
+		return nil, cb.Status_SERVICE_UNAVAILABLE
+	}
 }
 
 func sendStatusReply(srv ab.AtomicBroadcast_DeliverServer, status cb.Status) error {

@@ -23,11 +23,11 @@ import (
 	"time"
 
 	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric/common/ledger/blockledger"
+	ramledger "github.com/hyperledger/fabric/common/ledger/blockledger/ram"
 	mockpolicies "github.com/hyperledger/fabric/common/mocks/policies"
 	"github.com/hyperledger/fabric/common/policies"
 	genesisconfig "github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
-	"github.com/hyperledger/fabric/orderer/common/ledger"
-	ramledger "github.com/hyperledger/fabric/orderer/common/ledger/ram"
 	cb "github.com/hyperledger/fabric/protos/common"
 	ab "github.com/hyperledger/fabric/protos/orderer"
 	"github.com/hyperledger/fabric/protos/utils"
@@ -40,6 +40,8 @@ import (
 var genesisBlock = cb.NewBlock(0, nil)
 
 var systemChainID = "systemChain"
+
+var policyName = policies.ChannelReaders
 
 const ledgerSize = 10
 
@@ -120,7 +122,7 @@ func (mm *mockSupportManager) GetChain(chainID string) (Support, bool) {
 }
 
 type mockSupport struct {
-	ledger        ledger.ReadWriter
+	ledger        blockledger.ReadWriter
 	policyManager *mockpolicies.Manager
 	erroredChan   chan struct{}
 	configSeq     uint64
@@ -138,11 +140,11 @@ func (mcs *mockSupport) PolicyManager() policies.Manager {
 	return mcs.policyManager
 }
 
-func (mcs *mockSupport) Reader() ledger.Reader {
+func (mcs *mockSupport) Reader() blockledger.Reader {
 	return mcs.ledger
 }
 
-func NewRAMLedger() ledger.ReadWriter {
+func NewRAMLedger() blockledger.ReadWriter {
 	rlf := ramledger.New(ledgerSize + 1)
 	rl, _ := rlf.GetOrCreate(genesisconfig.TestChainID)
 	rl.Append(genesisBlock)
@@ -153,10 +155,10 @@ func initializeDeliverHandler() Handler {
 	mm := newMockMultichainManager()
 	for i := 1; i < ledgerSize; i++ {
 		l := mm.chains[systemChainID].ledger
-		l.Append(ledger.CreateNextBlock(l, []*cb.Envelope{{Payload: []byte(fmt.Sprintf("%d", i))}}))
+		l.Append(blockledger.CreateNextBlock(l, []*cb.Envelope{{Payload: []byte(fmt.Sprintf("%d", i))}}))
 	}
 
-	return NewHandlerImpl(mm)
+	return NewHandlerImpl(mm, policyName)
 }
 
 func newMockMultichainManager() *mockSupportManager {
@@ -282,13 +284,13 @@ func TestUnauthorizedSeek(t *testing.T) {
 	mm := newMockMultichainManager()
 	for i := 1; i < ledgerSize; i++ {
 		l := mm.chains[systemChainID].ledger
-		l.Append(ledger.CreateNextBlock(l, []*cb.Envelope{{Payload: []byte(fmt.Sprintf("%d", i))}}))
+		l.Append(blockledger.CreateNextBlock(l, []*cb.Envelope{{Payload: []byte(fmt.Sprintf("%d", i))}}))
 	}
 	mm.chains[systemChainID].policyManager.Policy.Err = fmt.Errorf("Fail to evaluate policy")
 
 	m := newMockD()
 	defer close(m.recvChan)
-	ds := NewHandlerImpl(mm)
+	ds := NewHandlerImpl(mm, policyName)
 
 	go ds.Handle(m)
 
@@ -308,12 +310,12 @@ func TestRevokedAuthorizationSeek(t *testing.T) {
 	mm := newMockMultichainManager()
 	for i := 1; i < ledgerSize; i++ {
 		l := mm.chains[systemChainID].ledger
-		l.Append(ledger.CreateNextBlock(l, []*cb.Envelope{{Payload: []byte(fmt.Sprintf("%d", i))}}))
+		l.Append(blockledger.CreateNextBlock(l, []*cb.Envelope{{Payload: []byte(fmt.Sprintf("%d", i))}}))
 	}
 
 	m := newMockD()
 	defer close(m.recvChan)
-	ds := NewHandlerImpl(mm)
+	ds := NewHandlerImpl(mm, policyName)
 
 	go ds.Handle(m)
 
@@ -329,7 +331,7 @@ func TestRevokedAuthorizationSeek(t *testing.T) {
 	mm.chains[systemChainID].policyManager.Policy.Err = fmt.Errorf("Fail to evaluate policy")
 	mm.chains[systemChainID].configSeq++
 	l := mm.chains[systemChainID].ledger
-	l.Append(ledger.CreateNextBlock(l, []*cb.Envelope{{Payload: []byte(fmt.Sprintf("%d", ledgerSize+1))}}))
+	l.Append(blockledger.CreateNextBlock(l, []*cb.Envelope{{Payload: []byte(fmt.Sprintf("%d", ledgerSize+1))}}))
 
 	select {
 	case deliverReply := <-m.sendChan:
@@ -391,12 +393,12 @@ func TestBlockingSeek(t *testing.T) {
 	mm := newMockMultichainManager()
 	for i := 1; i < ledgerSize; i++ {
 		l := mm.chains[systemChainID].ledger
-		l.Append(ledger.CreateNextBlock(l, []*cb.Envelope{{Payload: []byte(fmt.Sprintf("%d", i))}}))
+		l.Append(blockledger.CreateNextBlock(l, []*cb.Envelope{{Payload: []byte(fmt.Sprintf("%d", i))}}))
 	}
 
 	m := newMockD()
 	defer close(m.recvChan)
-	ds := NewHandlerImpl(mm)
+	ds := NewHandlerImpl(mm, policyName)
 
 	go ds.Handle(m)
 
@@ -418,7 +420,7 @@ func TestBlockingSeek(t *testing.T) {
 	}
 
 	l := mm.chains[systemChainID].ledger
-	l.Append(ledger.CreateNextBlock(l, []*cb.Envelope{{Payload: []byte(fmt.Sprintf("%d", ledgerSize+1))}}))
+	l.Append(blockledger.CreateNextBlock(l, []*cb.Envelope{{Payload: []byte(fmt.Sprintf("%d", ledgerSize+1))}}))
 
 	select {
 	case deliverReply := <-m.sendChan:
@@ -445,12 +447,12 @@ func TestErroredSeek(t *testing.T) {
 	l := ms.ledger
 	close(ms.erroredChan)
 	for i := 1; i < ledgerSize; i++ {
-		l.Append(ledger.CreateNextBlock(l, []*cb.Envelope{{Payload: []byte(fmt.Sprintf("%d", i))}}))
+		l.Append(blockledger.CreateNextBlock(l, []*cb.Envelope{{Payload: []byte(fmt.Sprintf("%d", i))}}))
 	}
 
 	m := newMockD()
 	defer close(m.recvChan)
-	ds := NewHandlerImpl(mm)
+	ds := NewHandlerImpl(mm, policyName)
 
 	go ds.Handle(m)
 
@@ -469,12 +471,12 @@ func TestErroredBlockingSeek(t *testing.T) {
 	ms := mm.chains[systemChainID]
 	l := ms.ledger
 	for i := 1; i < ledgerSize; i++ {
-		l.Append(ledger.CreateNextBlock(l, []*cb.Envelope{{Payload: []byte(fmt.Sprintf("%d", i))}}))
+		l.Append(blockledger.CreateNextBlock(l, []*cb.Envelope{{Payload: []byte(fmt.Sprintf("%d", i))}}))
 	}
 
 	m := newMockD()
 	defer close(m.recvChan)
-	ds := NewHandlerImpl(mm)
+	ds := NewHandlerImpl(mm, policyName)
 
 	go ds.Handle(m)
 
@@ -499,7 +501,7 @@ func TestErroredBlockingSeek(t *testing.T) {
 
 func TestSGracefulShutdown(t *testing.T) {
 	m := newMockD()
-	ds := NewHandlerImpl(nil)
+	ds := NewHandlerImpl(nil, policyName)
 
 	close(m.recvChan)
 	assert.NoError(t, ds.Handle(m), "Expected no error for hangup")
@@ -527,7 +529,7 @@ func TestReversedSeqSeek(t *testing.T) {
 }
 
 func TestBadStreamRecv(t *testing.T) {
-	bh := NewHandlerImpl(nil)
+	bh := NewHandlerImpl(nil, policyName)
 	assert.Error(t, bh.Handle(&erroneousRecvMockD{}), "Should catch unexpected stream error")
 }
 
@@ -616,7 +618,7 @@ func TestChainNotFound(t *testing.T) {
 	m := newMockD()
 	defer close(m.recvChan)
 
-	ds := NewHandlerImpl(mm)
+	ds := NewHandlerImpl(mm, policyName)
 	go ds.Handle(m)
 
 	m.recvChan <- makeSeek(systemChainID, &ab.SeekInfo{Start: seekNewest, Stop: seekNewest, Behavior: ab.SeekInfo_BLOCK_UNTIL_READY})

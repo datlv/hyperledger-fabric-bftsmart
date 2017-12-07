@@ -25,8 +25,8 @@ import (
 
 	"github.com/hyperledger/fabric/common/flogging"
 	cl "github.com/hyperledger/fabric/common/ledger"
+	"github.com/hyperledger/fabric/common/ledger/blockledger"
 	genesisconfig "github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
-	"github.com/hyperledger/fabric/orderer/common/ledger"
 	cb "github.com/hyperledger/fabric/protos/common"
 	ab "github.com/hyperledger/fabric/protos/orderer"
 	"github.com/hyperledger/fabric/protos/peer"
@@ -43,10 +43,10 @@ func init() {
 type testEnv struct {
 	t        *testing.T
 	location string
-	flf      ledger.Factory
+	flf      blockledger.Factory
 }
 
-func initialize(t *testing.T) (*testEnv, *fileLedger) {
+func initialize(t *testing.T) (*testEnv, *FileLedger) {
 	name, err := ioutil.TempDir("", "hyperledger_fabric")
 	assert.NoError(t, err, "Error creating temp dir: %s", err)
 
@@ -55,7 +55,7 @@ func initialize(t *testing.T) (*testEnv, *fileLedger) {
 	assert.NoError(t, err, "Error GetOrCreate chain")
 
 	fl.Append(genesisBlock)
-	return &testEnv{location: name, t: t, flf: flf}, fl.(*fileLedger)
+	return &testEnv{location: name, t: t, flf: flf}, fl.(*FileLedger)
 }
 
 func (tev *testEnv) tearDown() {
@@ -139,7 +139,7 @@ func TestInitialization(t *testing.T) {
 
 	assert.Equal(t, uint64(1), fl.Height(), "Block height should be 1")
 
-	block := ledger.GetBlock(fl, 0)
+	block := blockledger.GetBlock(fl, 0)
 	assert.NotNil(t, block, "Error retrieving genesis block")
 	assert.Equal(t, genesisBlock.Header.Hash(), block.Header.Hash(), "Block hashes did no match")
 }
@@ -149,19 +149,16 @@ func TestReinitialization(t *testing.T) {
 	defer tev.tearDown()
 
 	// create a block to add to the ledger
-	b1 := ledger.CreateNextBlock(ledger1, []*cb.Envelope{{Payload: []byte("My Data")}})
+	b1 := blockledger.CreateNextBlock(ledger1, []*cb.Envelope{{Payload: []byte("My Data")}})
 
 	// add the block to the ledger
 	ledger1.Append(b1)
 
 	fl, err := tev.flf.GetOrCreate(genesisconfig.TestChainID)
-	ledger1, ok := fl.(*fileLedger)
+	ledger1, ok := fl.(*FileLedger)
 	assert.NoError(t, err, "Expected to sucessfully get test chain")
 	assert.Equal(t, 1, len(tev.flf.ChainIDs()), "Exptected not new chain to be created")
 	assert.True(t, ok, "Exptected type assertion to succeed")
-
-	// shutdown the ledger
-	ledger1.blockStore.Shutdown()
 
 	// shut down the ledger provider
 	tev.shutDown()
@@ -177,10 +174,10 @@ func TestReinitialization(t *testing.T) {
 	ledger2, err := provider2.GetOrCreate(chains[0])
 	assert.NoError(t, err, "Unexpected error: %s", err)
 
-	fl = ledger2.(*fileLedger)
+	fl = ledger2.(*FileLedger)
 	assert.Equal(t, uint64(2), fl.Height(), "Block height should be 2. Got %v", fl.Height())
 
-	block := ledger.GetBlock(fl, 1)
+	block := blockledger.GetBlock(fl, 1)
 	assert.NotNil(t, block, "Error retrieving block 1")
 	assert.Equal(t, b1.Header.Hash(), block.Header.Hash(), "Block hashes did no match")
 }
@@ -190,10 +187,10 @@ func TestAddition(t *testing.T) {
 	defer tev.tearDown()
 	info, _ := fl.blockStore.GetBlockchainInfo()
 	prevHash := info.CurrentBlockHash
-	fl.Append(ledger.CreateNextBlock(fl, []*cb.Envelope{{Payload: []byte("My Data")}}))
+	fl.Append(blockledger.CreateNextBlock(fl, []*cb.Envelope{{Payload: []byte("My Data")}}))
 	assert.Equal(t, uint64(2), fl.Height(), "Block height should be 2")
 
-	block := ledger.GetBlock(fl, 1)
+	block := blockledger.GetBlock(fl, 1)
 	assert.NotNil(t, block, "Error retrieving genesis block")
 	assert.Equal(t, prevHash, block.Header.PreviousHash, "Block hashes did no match")
 }
@@ -201,28 +198,14 @@ func TestAddition(t *testing.T) {
 func TestRetrieval(t *testing.T) {
 	tev, fl := initialize(t)
 	defer tev.tearDown()
-	fl.Append(ledger.CreateNextBlock(fl, []*cb.Envelope{{Payload: []byte("My Data")}}))
+	fl.Append(blockledger.CreateNextBlock(fl, []*cb.Envelope{{Payload: []byte("My Data")}}))
 	it, num := fl.Iterator(&ab.SeekPosition{Type: &ab.SeekPosition_Oldest{}})
 	defer it.Close()
 	assert.Zero(t, num, "Expected genesis block iterator, but got %d", num)
 
-	signal := it.ReadyChan()
-	select {
-	case <-signal:
-	default:
-		t.Fatalf("Should be ready for block read")
-	}
-
 	block, status := it.Next()
 	assert.Equal(t, cb.Status_SUCCESS, status, "Expected to successfully read the genesis block")
 	assert.Zero(t, block.Header.Number, "Expected to successfully retrieve the genesis block")
-
-	signal = it.ReadyChan()
-	select {
-	case <-signal:
-	default:
-		t.Fatalf("Should still be ready for block read")
-	}
 
 	block, status = it.Next()
 	assert.Equal(t, cb.Status_SUCCESS, status, "Expected to successfully read the second block")
@@ -243,19 +226,7 @@ func TestBlockedRetrieval(t *testing.T) {
 	}
 	assert.Equal(t, uint64(1), num, "Expected block iterator at 1, but got %d", num)
 
-	signal := it.ReadyChan()
-	select {
-	case <-signal:
-		t.Fatalf("Should not be ready for block read")
-	default:
-	}
-
-	fl.Append(ledger.CreateNextBlock(fl, []*cb.Envelope{{Payload: []byte("My Data")}}))
-	select {
-	case <-signal:
-	default:
-		t.Fatalf("Should now be ready for block read")
-	}
+	fl.Append(blockledger.CreateNextBlock(fl, []*cb.Envelope{{Payload: []byte("My Data")}}))
 
 	block, status := it.Next()
 	assert.Equal(t, cb.Status_SUCCESS, status, "Expected to successfully read the second block")
@@ -265,17 +236,11 @@ func TestBlockedRetrieval(t *testing.T) {
 		block.Header.Number,
 		"Expected to successfully retrieve the second block but got block number %d", block.Header.Number)
 
-	go func() {
-		fl.Append(ledger.CreateNextBlock(fl, []*cb.Envelope{{Payload: []byte("My Data")}}))
-	}()
-	select {
-	case <-it.ReadyChan():
-		t.Fatalf("Should not be ready for block read")
-	default:
-		block, status = it.Next()
-		assert.Equal(t, cb.Status_SUCCESS, status, "Expected to successfully read the third block")
-		assert.Equal(t, uint64(2), block.Header.Number, "Expected to successfully retrieve the third block")
-	}
+	fl.Append(blockledger.CreateNextBlock(fl, []*cb.Envelope{{Payload: []byte("My Data")}}))
+
+	block, status = it.Next()
+	assert.Equal(t, cb.Status_SUCCESS, status, "Expected to successfully read the third block")
+	assert.Equal(t, uint64(2), block.Header.Number, "Expected to successfully retrieve the third block")
 }
 
 func TestBlockstoreError(t *testing.T) {
@@ -283,7 +248,7 @@ func TestBlockstoreError(t *testing.T) {
 	// is properly handled. We don't bother creating fully
 	// legit ledgers here (without genesis block).
 	{
-		fl := &fileLedger{
+		fl := &FileLedger{
 			blockStore: &mockBlockStore{
 				blockchainInfo:         nil,
 				getBlockchainInfoError: fmt.Errorf("Error getting blockchain info"),
@@ -304,7 +269,7 @@ func TestBlockstoreError(t *testing.T) {
 	}
 
 	{
-		fl := &fileLedger{
+		fl := &FileLedger{
 			blockStore: &mockBlockStore{
 				blockchainInfo:             &cb.BlockchainInfo{Height: uint64(1)},
 				getBlockchainInfoError:     nil,
@@ -316,7 +281,7 @@ func TestBlockstoreError(t *testing.T) {
 		defer it.Close()
 		assert.IsType(
 			t,
-			&ledger.NotFoundErrorIterator{},
+			&blockledger.NotFoundErrorIterator{},
 			it,
 			"Expected Not Found Error if seek number is greater than ledger height")
 	}
@@ -325,7 +290,7 @@ func TestBlockstoreError(t *testing.T) {
 		resultsIterator := &mockBlockStoreIterator{}
 		resultsIterator.On("Next").Return(nil, errors.New("a mocked error"))
 		resultsIterator.On("Close").Return()
-		fl := &fileLedger{
+		fl := &FileLedger{
 			blockStore: &mockBlockStore{
 				blockchainInfo:             &cb.BlockchainInfo{Height: uint64(1)},
 				getBlockchainInfoError:     nil,
