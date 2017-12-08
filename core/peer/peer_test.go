@@ -159,6 +159,13 @@ func TestCreateChainFromBlock(t *testing.T) {
 		t.Fatalf("failed to get correct block")
 	}
 
+	cfgSupport := configSupport{}
+	chCfg := cfgSupport.GetChannelConfig(testChainID)
+	assert.NotNil(t, chCfg, "failed to get channel config")
+
+	resCfg := cfgSupport.GetResourceConfig(testChainID)
+	assert.NotNil(t, resCfg, "failed to get resource config")
+
 	// Bad block
 	block = GetCurrConfigBlock("BogusBlock")
 	if block != nil {
@@ -205,4 +212,19 @@ func TestNewPeerClientConnection(t *testing.T) {
 func TestGetLocalIP(t *testing.T) {
 	ip := GetLocalIP()
 	t.Log(ip)
+}
+
+func TestDeliverSupportManager(t *testing.T) {
+	// reset chains for testing
+	MockInitialize()
+
+	manager := &DeliverSupportManager{}
+	chainSupport, ok := manager.GetChain("fake")
+	assert.Nil(t, chainSupport, "chain support should be nil")
+	assert.False(t, ok, "Should not find fake channel")
+
+	MockCreateChain("testchain")
+	chainSupport, ok = manager.GetChain("testchain")
+	assert.NotNil(t, chainSupport, "chain support should not be nil")
+	assert.True(t, ok, "Should find testchain channel")
 }

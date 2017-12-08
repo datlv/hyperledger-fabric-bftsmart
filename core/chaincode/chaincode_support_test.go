@@ -636,10 +636,6 @@ func cc2cc(t *testing.T, chainID, chainID2, ccname string, ccSide *mockpeer.Mock
 	mockAclProvider.On("CheckACL", aclmgmt.LSCC_GETCCDATA, chainID, sprop).Return(nil)
 	mockAclProvider.On("CheckACL", aclmgmt.PROPOSE, chainID, sprop).Return(nil)
 
-	if _, _, err := ccprovider.GetChaincodeProvider().GetCCValidationInfoFromLSCC(ctxt, "getccdata", sprop, prop, chainID, calledCC); err != nil {
-		t.Fatalf("Could not get chaincode data from lscc for %s: %s", calledCC, err)
-	}
-
 	sysCCVers := util.GetSysCCVersion()
 	//call a callable system CC, a regular cc, a regular but different cc on a different chain, a regular but same cc on a different chain,  and an uncallable system cc and expect an error inthe last one
 	respSet := &mockpeer.MockResponseSet{errorFunc, nil, []*mockpeer.MockResponse{
@@ -934,7 +930,7 @@ func TestLaunchAndWaitLaunchError(t *testing.T) {
 func TestGetTxContextFromHandler(t *testing.T) {
 	h := Handler{txCtxs: map[string]*transactionContext{}}
 
-	chnl := "TEST"
+	chnl := "test"
 	txid := "1"
 	// test getTxContext for TEST channel, tx=1, msgType=IVNOKE_CHAINCODE and empty payload - empty payload => expect to return empty txContext
 	txContext, _ := h.getTxContextForMessage(chnl, "1", pb.ChaincodeMessage_INVOKE_CHAINCODE.String(), []byte(""), "[%s]No ledger context for %s. Sending %s", 12345, "TestCC", pb.ChaincodeMessage_ERROR)

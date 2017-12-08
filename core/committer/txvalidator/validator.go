@@ -9,28 +9,26 @@ package txvalidator
 import (
 	"fmt"
 
-	"golang.org/x/net/context"
-
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/common/cauthdsl"
+	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/configtx"
 	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric/common/resourcesconfig"
 	coreUtil "github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
 	"github.com/hyperledger/fabric/core/common/sysccprovider"
 	"github.com/hyperledger/fabric/core/common/validation"
 	"github.com/hyperledger/fabric/core/ledger"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/rwsetutil"
 	ledgerUtil "github.com/hyperledger/fabric/core/ledger/util"
 	"github.com/hyperledger/fabric/msp"
-
 	"github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protos/utils"
 	"github.com/op/go-logging"
-
-	"github.com/hyperledger/fabric/common/cauthdsl"
-	"github.com/hyperledger/fabric/common/channelconfig"
-	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/rwsetutil"
+	"golang.org/x/net/context"
 )
 
 // Support provides all of the needed to evaluate the VSCC
@@ -56,6 +54,10 @@ type Support interface {
 
 	// Capabilities defines the capabilities for the application portion of this channel
 	Capabilities() channelconfig.ApplicationCapabilities
+
+	// ChaincodeByName returns the definition (and whether they exist)
+	// for a chaincode in a specific channel
+	ChaincodeByName(chainname, ccname string) (resourcesconfig.ChaincodeDefinition, bool)
 }
 
 //Validator interface which defines API to validate block transactions
@@ -332,7 +334,7 @@ func validateTx(req *blockValidationRequest, results chan<- *blockValidationResu
 		var txsChaincodeName *sysccprovider.ChaincodeInstance
 		var txsUpgradedChaincode *sysccprovider.ChaincodeInstance
 
-		if payload, txResult = validation.ValidateTransaction(env); txResult != peer.TxValidationCode_VALID {
+		if payload, txResult = validation.ValidateTransaction(env, v.support.Capabilities()); txResult != peer.TxValidationCode_VALID {
 			logger.Errorf("Invalid transaction with index %d", tIdx)
 			results <- &blockValidationResult{
 				tIdx:           tIdx,
@@ -438,6 +440,16 @@ func validateTx(req *blockValidationRequest, results chan<- *blockValidationResu
 				return
 			}
 			logger.Debugf("config transaction received for chain %s", channel)
+		} else if common.HeaderType(chdr.Type) == common.HeaderType_PEER_RESOURCE_UPDATE {
+			// FIXME: in the context of FAB-7341, we should introduce validation
+			//        for this kind of transaction here. For now we just ignore this
+			//        type of transaction and delegate its validation to other components
+
+			results <- &blockValidationResult{
+				tIdx: tIdx,
+				err:  nil,
+			}
+			return
 		} else {
 			logger.Warningf("Unknown transaction type [%s] in block number [%d] transaction index [%d]",
 				common.HeaderType(chdr.Type), block.Header.Number, tIdx)
@@ -612,17 +624,16 @@ func (v *vsccValidatorImpl) GetInfoForValidate(txid, chID, ccID string) (*sysccp
 		// system CC, we need to ask the CC to give us the name
 		// of VSCC and of the policy that should be used
 
-		// obtain name of the VSCC and the policy from LSCC
-		cd, err := v.getCDataForCC(ccID)
+		// obtain name of the VSCC and the policy
+		cd, err := v.getCDataForCC(chID, ccID)
 		if err != nil {
 			msg := fmt.Sprintf("Unable to get chaincode data from ledger for txid %s, due to %s", txid, err)
 			logger.Errorf(msg)
 			return nil, nil, nil, err
 		}
-		cc.ChaincodeName = cd.Name
-		cc.ChaincodeVersion = cd.Version
-		vscc.ChaincodeName = cd.Vscc
-		policy = cd.Policy
+		cc.ChaincodeName = cd.CCName()
+		cc.ChaincodeVersion = cd.CCVersion()
+		vscc.ChaincodeName, policy = cd.Validation()
 	} else {
 		// when we are validating a system CC, we use the default
 		// VSCC and a default policy that requires one signature
@@ -713,6 +724,15 @@ func (v *vsccValidatorImpl) VSCCValidateTx(payload *common.Payload, envBytes []b
 		err := fmt.Errorf("invalid chaincode version")
 		logger.Errorf("%s", err)
 		return err, peer.TxValidationCode_INVALID_OTHER_REASON
+	}
+
+	// if we are using the config-tree-based cc lifecycle approach
+	// there's no legitimate reason why a transaction would write to
+	// lscc so we're going to block it
+	if v.support.Capabilities().LifecycleViaConfig() && writesToLSCC {
+		err := fmt.Errorf("lifecycle via config forbids writes to the lscc namespace")
+		logger.Errorf("%s", err)
+		return err, peer.TxValidationCode_ILLEGAL_WRITESET
 	}
 
 	// we've gathered all the info required to proceed to validation;
@@ -843,7 +863,16 @@ func (v *vsccValidatorImpl) VSCCValidateTxForCC(envBytes []byte, txid, chid, vsc
 	return nil
 }
 
-func (v *vsccValidatorImpl) getCDataForCC(ccid string) (*ccprovider.ChaincodeData, error) {
+func (v *vsccValidatorImpl) getCDataForCC(chid, ccid string) (resourcesconfig.ChaincodeDefinition, error) {
+	if v.support.Capabilities().LifecycleViaConfig() {
+		cd, exists := v.support.ChaincodeByName(chid, ccid)
+		if !exists {
+			return nil, &VSCCInfoLookupFailureError{fmt.Sprintf("Could not retrieve state for chaincode %s on channel %s", ccid, chid)}
+		}
+
+		return cd, nil
+	}
+
 	l := v.support.Ledger()
 	if l == nil {
 		return nil, fmt.Errorf("nil ledger instance")

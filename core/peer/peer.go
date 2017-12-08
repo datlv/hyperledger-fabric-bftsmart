@@ -12,7 +12,10 @@ import (
 	"runtime"
 	"sync"
 
+	"github.com/hyperledger/fabric/core/ledger/customtx"
+
 	"github.com/hyperledger/fabric/common/channelconfig"
+	cc "github.com/hyperledger/fabric/common/config"
 	"github.com/hyperledger/fabric/common/configtx"
 	configtxtest "github.com/hyperledger/fabric/common/configtx/test"
 	"github.com/hyperledger/fabric/common/deliver"
@@ -48,6 +51,12 @@ import (
 var peerLogger = flogging.MustGetLogger("peer")
 
 var peerServer comm.GRPCServer
+
+var configTxProcessor = newConfigTxProcessor()
+var ConfigTxProcessors = customtx.Processors{
+	common.HeaderType_CONFIG:               configTxProcessor,
+	common.HeaderType_PEER_RESOURCE_UPDATE: configTxProcessor,
+}
 
 // singleton instance to manage credentials for the peer across channel config changes
 var credSupport = comm.GetCredentialSupport()
@@ -163,7 +172,7 @@ var chains = struct {
 
 //MockInitialize resets chains for test env
 func MockInitialize() {
-	ledgermgmt.InitializeTestEnv()
+	ledgermgmt.InitializeTestEnvWithCustomProcessors(ConfigTxProcessors)
 	chains.list = nil
 	chains.list = make(map[string]*chain)
 	chainInitializer = func(string) { return }
@@ -195,7 +204,7 @@ func Initialize(init func(string)) {
 
 	var cb *common.Block
 	var ledger ledger.PeerLedger
-	ledgermgmt.Initialize(nil)
+	ledgermgmt.Initialize(ConfigTxProcessors)
 	ledgerIds, err := ledgermgmt.GetLedgerIDs()
 	if err != nil {
 		panic(fmt.Errorf("Error in initializing ledgermgmt: %s", err))
@@ -263,13 +272,12 @@ func getCurrConfigBlockFromLedger(ledger ledger.PeerLedger) (*common.Block, erro
 
 // createChain creates a new chain object and insert it into the chains
 func createChain(cid string, ledger ledger.PeerLedger, cb *common.Block) error {
-
-	envelopeConfig, err := utils.ExtractEnvelope(cb, 0)
+	chanConf, err := retrievePersistedChannelConfig(ledger)
 	if err != nil {
 		return err
 	}
 
-	bundle, err := channelconfig.NewBundleFromEnvelope(envelopeConfig)
+	bundle, err := channelconfig.NewBundle(cid, chanConf)
 	if err != nil {
 		return err
 	}
@@ -328,11 +336,13 @@ func createChain(cid string, ledger ledger.PeerLedger, cb *common.Block) error {
 		cs.Resources = bundle.ChannelConfig()
 	}
 
-	// TODO, actually use the seed data from the genesis block to bootstrap the resources config
-	rBundle, err := resourcesconfig.NewBundle(cid, &common.Config{ChannelGroup: &common.ConfigGroup{}}, bundle)
-	if err != nil {
-		return err
+	resConf := &common.Config{ChannelGroup: &common.ConfigGroup{}}
+	if ac != nil && ac.Capabilities().LifecycleViaConfig() {
+		if resConf, err = retrievePersistedResourceConfig(ledger); err != nil {
+			return err
+		}
 	}
+	rBundle, err := resourcesconfig.NewBundle(cid, resConf, bundle)
 
 	cs.bundleSource = resourcesconfig.NewBundleSource(
 		rBundle,
@@ -345,7 +355,8 @@ func createChain(cid string, ledger ledger.PeerLedger, cb *common.Block) error {
 	vcs := struct {
 		*chainSupport
 		*semaphore.Weighted
-	}{cs, validationWorkersSemaphore}
+		Support
+	}{cs, validationWorkersSemaphore, GetSupport()}
 	validator := txvalidator.NewTxValidator(vcs)
 	c := committer.NewLedgerCommitterReactive(ledger, func(block *common.Block) error {
 		chainID, err := utils.GetChainIDFromBlock(block)
@@ -435,6 +446,17 @@ func GetLedger(cid string) ledger.PeerLedger {
 	defer chains.RUnlock()
 	if c, ok := chains.list[cid]; ok {
 		return c.cs.ledger
+	}
+	return nil
+}
+
+// GetResourcesConfig returns the resources configuration of the chain with channel ID. Note that this
+// call returns nil if chain cid has not been created.
+func GetResourcesConfig(cid string) resourcesconfig.Resources {
+	chains.RLock()
+	defer chains.RUnlock()
+	if c, ok := chains.list[cid]; ok {
+		return c.cs.bundleSource.StableBundle()
 	}
 	return nil
 }
@@ -712,6 +734,9 @@ type DeliverSupportManager struct {
 
 func (dsm DeliverSupportManager) GetChain(chainID string) (deliver.Support, bool) {
 	channel, ok := chains.list[chainID]
+	if !ok {
+		return nil, ok
+	}
 	return channel.cs, ok
 }
 
@@ -727,4 +752,42 @@ func (flbs fileLedgerBlockStore) AddBlock(*common.Block) error {
 
 func (flbs fileLedgerBlockStore) RetrieveBlocks(startBlockNumber uint64) (commonledger.ResultsIterator, error) {
 	return flbs.GetBlocksIterator(startBlockNumber)
+}
+
+// NewResourceConfigSupport returns
+func NewConfigSupport() cc.Manager {
+	return &configSupport{}
+}
+
+type configSupport struct {
+}
+
+// GetChannelConfig returns an instance of a object that represents
+// current channel configuration tree of the specified channel. The
+// ConfigProto method of the returned object can be used to get the
+// proto representing the channel configuration.
+func (*configSupport) GetChannelConfig(channel string) cc.Config {
+	chains.RLock()
+	defer chains.RUnlock()
+	chain := chains.list[channel]
+	if chain == nil {
+		peerLogger.Error("GetChannelConfig: channel", channel, "not found in the list of channels associated with this peer")
+		return nil
+	}
+	return chain.cs.bundleSource.ChannelConfig().ConfigtxValidator()
+}
+
+// GetResourceConfig returns an instance of a object that represents
+// current resource configuration tree of the specified channel. The
+// ConfigProto method of the returned object can be used to get the
+// proto representing the resource configuration.
+func (*configSupport) GetResourceConfig(channel string) cc.Config {
+	chains.RLock()
+	defer chains.RUnlock()
+	chain := chains.list[channel]
+	if chain == nil {
+		peerLogger.Error("GetResourceConfig: channel", channel, "not found in the list of channels associated with this peer")
+		return nil
+	}
+	return chain.cs.bundleSource.ConfigtxValidator()
 }
