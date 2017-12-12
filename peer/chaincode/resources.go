@@ -9,14 +9,19 @@ package chaincode
 import (
 	"bytes"
 	"fmt"
+	"io/ioutil"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/common/cauthdsl"
 	"github.com/hyperledger/fabric/common/resourcesconfig"
+	update2 "github.com/hyperledger/fabric/common/tools/configtxlator/update"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	"github.com/hyperledger/fabric/core/scc/lscc"
+	"github.com/hyperledger/fabric/msp"
 	"github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protos/utils"
@@ -30,6 +35,8 @@ const (
 	v1 = iota
 	v11
 )
+
+const defaultEndorsementPolicy = "/Channel/Application/Writers"
 
 // SignatureSupport creates signature headers, signs messages,
 // and also serializes its identity to bytes
@@ -178,6 +185,7 @@ func fetchResourceConfig(ec peer.EndorserClient, ss SignatureSupport, channel st
 func ccGroup(ccName string, version string, validation string, endorsement string, hash []byte, modpolicies map[string]string, policy *common.SignaturePolicyEnvelope) *common.ConfigGroup {
 	logger.Infof("creating ccGroup using %s and %s", validation, endorsement)
 	var vsccArg []byte
+	appendConfigPolicy := true
 	if validation == "" {
 		validation = "vscc"
 	}
@@ -185,25 +193,23 @@ func ccGroup(ccName string, version string, validation string, endorsement strin
 		endorsement = "escc"
 	}
 	if validation == "static-endorsement-policy" {
-		vsccArg = utils.MarshalOrPanic(&peer.VSCCArgs{
-			EndorsementPolicyRef: fmt.Sprintf("/Resources/Chaincodes/%s/Endorsement", ccName),
-		})
+		if policy == nil {
+			appendConfigPolicy = false
+			logger.Info("Policy not specified, defaulting to", defaultEndorsementPolicy)
+			vsccArg = utils.MarshalOrPanic(&peer.VSCCArgs{
+				EndorsementPolicyRef: defaultEndorsementPolicy,
+			})
+		} else {
+			vsccArg = utils.MarshalOrPanic(&peer.VSCCArgs{
+				EndorsementPolicyRef: fmt.Sprintf("/Resources/Chaincodes/%s/Endorsement", ccName),
+			})
+		}
 	}
 	if validation == "vscc" {
 		logger.Infof("Setting VSCC arg to simple policy, using %s and %s", validation, endorsement)
 		vsccArg = utils.MarshalOrPanic(policy)
 	}
-	return &common.ConfigGroup{
-		Policies: map[string]*common.ConfigPolicy{
-			// TODO: make a constant in some other package
-			"Endorsement": {
-				ModPolicy: modpolicies["[Policy] Endorsement"],
-				Policy: &common.Policy{
-					Type:  int32(common.Policy_SIGNATURE),
-					Value: utils.MarshalOrPanic(policy),
-				},
-			},
-		},
+	cfgGrp := &common.ConfigGroup{
 		ModPolicy: modpolicies["Base"],
 		Values: map[string]*common.ConfigValue{
 			// TODO: make a constant in some other package
@@ -231,6 +237,19 @@ func ccGroup(ccName string, version string, validation string, endorsement strin
 			},
 		},
 	}
+	if appendConfigPolicy {
+		cfgGrp.Policies = map[string]*common.ConfigPolicy{
+			// TODO: make a constant in some other package
+			"Endorsement": {
+				ModPolicy: modpolicies["[Policy] Endorsement"],
+				Policy: &common.Policy{
+					Type:  int32(common.Policy_SIGNATURE),
+					Value: utils.MarshalOrPanic(policy),
+				},
+			},
+		}
+	}
+	return cfgGrp
 }
 
 func (update ccUpdate) addChaincode() {
@@ -324,4 +343,106 @@ func getModPolicies(ccGrp *common.ConfigGroup, update ccUpdate) map[string]strin
 		modPolicies["[Policy] Endorsement"] = oldChaincodeGroup.Policies["Endorsement"].ModPolicy
 	}
 	return modPolicies
+}
+
+func configBasedLifecycleUpdate(ss *sigSupport, cf *ChaincodeCmdFactory, config *common.Config, sendInit sendInitTransaction) error {
+	var env *common.Envelope
+	hash, err := fetchCCID(ss, cf.EndorserClient, chaincodeName, chaincodeVersion)
+	if err != nil {
+		return err
+	}
+	var pol *common.SignaturePolicyEnvelope
+	if policy != "" {
+		pol, err = cauthdsl.FromString(policy)
+		if err != nil {
+			return err
+		}
+	}
+
+	if policy == "" && (vscc == "vscc" || vscc == "") {
+		return errors.New("policy must be specified when vscc flag is set to 'vscc' or missing")
+	}
+
+	update := ccUpdate{
+		policy:           pol,
+		computeDelta:     update2.Compute,
+		ccName:           chaincodeName,
+		oldConfig:        config,
+		version:          chaincodeVersion,
+		endorsement:      escc,
+		validation:       vscc,
+		hash:             hash,
+		chainID:          channelID,
+		SignatureSupport: &sigSupport{cf.Signer},
+	}
+	if resourceEnvelopeLoadPath == "" {
+		// We're making a new config update
+		env = update.buildCCUpdateEnvelope()
+	} else {
+		// We're loading the config update from disk
+		updateEnv, err := loadEnvelope(resourceEnvelopeLoadPath)
+		if err != nil {
+			return err
+		}
+		// and appending our signature to it
+		updateEnv = update.appendSignature(updateEnv)
+		// and putting it back into an envelope
+		env = update.updateIntoEnvelope(updateEnv)
+	}
+	if resourceEnvelopeSavePath != "" {
+		return saveEnvelope(env)
+	}
+	if err := cf.BroadcastClient.Send(env); err != nil {
+		return err
+	}
+	return sendInit()
+}
+
+func loadEnvelope(file string) (*common.ConfigUpdateEnvelope, error) {
+	data, err := ioutil.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+	env := &common.Envelope{}
+	if err := proto.Unmarshal(data, env); err != nil {
+		return nil, err
+	}
+	payload := &common.Payload{}
+	if err := proto.Unmarshal(env.Payload, payload); err != nil {
+		return nil, err
+	}
+	update := &common.ConfigUpdateEnvelope{}
+	if err := proto.Unmarshal(payload.Data, update); err != nil {
+		return nil, err
+	}
+	return update, nil
+}
+
+func saveEnvelope(env *common.Envelope) error {
+	f, err := os.Create(resourceEnvelopeSavePath)
+	if err != nil {
+		return errors.Errorf("failed saving resource envelope to file %s: %v", resourceEnvelopeSavePath, err)
+	}
+	if _, err := f.Write(utils.MarshalOrPanic(env)); err != nil {
+		return errors.Errorf("failed saving resource envelope to file %s: %v", resourceEnvelopeSavePath, err)
+	}
+	fmt.Printf(`Saved config update envelope to %s.
+			You can now either:
+			1) Append your signature using --resourceEnvelopeSave along with --resourceEnvelopeLoad
+			2) Submit a transaction using only --resourceEnvelopeLoad
+			`, f.Name())
+	return nil
+}
+
+type sigSupport struct {
+	msp.SigningIdentity
+}
+
+// NewSignatureHeader creates a new signature header
+func (s *sigSupport) NewSignatureHeader() (*common.SignatureHeader, error) {
+	sID, err := s.Serialize()
+	if err != nil {
+		return nil, err
+	}
+	return utils.MakeSignatureHeader(sID, utils.CreateNonceOrPanic()), nil
 }
