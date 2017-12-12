@@ -354,9 +354,6 @@ Orderer: &OrdererDefaults
         # ConnectionPoolSize: The size of the connection pool that links the golang component to the java component.
         ConnectionPoolSize: 20
 
-        # SendPort: The localhost TCP port from which the golang component requests pool connections to the java component.
-        SendPort: 9998
-
         # RecvPort: The localhost TCP port from which the java component sends blocks to the golang component.
         RecvPort: 9999
 

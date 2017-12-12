@@ -28,6 +28,7 @@ import (
 	"io"
 	"net"
 
+	localconfig "github.com/hyperledger/fabric/orderer/common/localconfig"
 	"github.com/hyperledger/fabric/orderer/consensus" //JCS: not used anymore
 	"github.com/hyperledger/fabric/protos/utils"
 )
@@ -36,7 +37,6 @@ var logger = logging.MustGetLogger("orderer/bftsmart")
 var poolsize uint = 0
 var poolindex uint = 0
 var recvport uint = 0
-var sendport uint = 0
 var sendProxy net.Conn //JCS: my code, to send data to proxy
 var sendPool []net.Conn
 var mutex []*sync.Mutex
@@ -65,10 +65,9 @@ type chain struct {
 // The solo consensus scheme is very simple, and allows only one consenter for a given chain (this process).
 // It accepts messages being delivered via Enqueue, orders them, and then uses the blockcutter to form the messages
 // into blocks before writing to the given ledger
-func New(size uint, send uint, recv uint) consensus.Consenter {
-	poolsize = size
-	recvport = recv
-	sendport = send
+func New(config localconfig.BFTsmart) consensus.Consenter {
+	poolsize = config.ConnectionPoolSize
+	recvport = config.RecvPort
 	return &consenter{
 		createSystemChannel: true,
 	}
@@ -99,9 +98,7 @@ func (ch *chain) Start() {
 
 	if ch.isSystemChannel {
 
-		//addr := fmt.Sprintf("localhost:%d", sendport)
-		//conn, err := net.Dial("tcp", addr)
-		conn, err := net.Dial("unix", "/tmp/bft.sock")
+		conn, err := net.Dial("unix", "/tmp/hlf-pool.sock")
 
 		if err != nil {
 			logger.Info("[SEND] Error while connecting to proxy:", err)
@@ -115,9 +112,8 @@ func (ch *chain) Start() {
 
 		//create connection pool
 		for i := uint(0); i < poolsize; i++ {
-			//addr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("localhost:%d", sendport))
-			//conn, err := net.DialTCP("tcp", nil, addr)
-			conn, err := net.Dial("unix", "/tmp/bft.sock")
+
+			conn, err := net.Dial("unix", "/tmp/hlf-pool.sock")
 
 			if err != nil {
 				panic(fmt.Sprintf("Could not create connection %v: %d\n", i, err))

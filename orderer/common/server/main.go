@@ -22,13 +22,13 @@ import (
 	"github.com/hyperledger/fabric/common/tools/configtxgen/encoder"
 	genesisconfig "github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
 	"github.com/hyperledger/fabric/core/comm"
-	"github.com/hyperledger/fabric/orderer/consensus/bftsmart" //JCS: import my package
 	"github.com/hyperledger/fabric/msp"
 	"github.com/hyperledger/fabric/orderer/common/bootstrap/file"
 	"github.com/hyperledger/fabric/orderer/common/localconfig"
 	"github.com/hyperledger/fabric/orderer/common/metadata"
 	"github.com/hyperledger/fabric/orderer/common/multichannel"
 	"github.com/hyperledger/fabric/orderer/consensus"
+	"github.com/hyperledger/fabric/orderer/consensus/bftsmart" //JCS: import my package
 	"github.com/hyperledger/fabric/orderer/consensus/kafka"
 	"github.com/hyperledger/fabric/orderer/consensus/solo"
 	cb "github.com/hyperledger/fabric/protos/common"
@@ -251,7 +251,7 @@ func initializeMultichannelRegistrar(conf *config.TopLevel, signer crypto.LocalS
 	consenters := make(map[string]consensus.Consenter)
 	consenters["solo"] = solo.New()
 	consenters["kafka"] = kafka.New(conf.Kafka)
-	consenters["bftsmart"] = bftsmart.New(conf.BFTsmart.ConnectionPoolSize, conf.BFTsmart.SendPort, conf.BFTsmart.RecvPort) //JCS: create my own consenter
+	consenters["bftsmart"] = bftsmart.New(conf.BFTsmart) //JCS: create my own consenter
 
 	return multichannel.NewRegistrar(lf, consenters, signer, callbacks...)
 }
