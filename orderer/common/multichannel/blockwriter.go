@@ -61,33 +61,23 @@ func newBlockWriter(lastBlock *cb.Block, r *Registrar, support blockWriterSuppor
 	return bw
 }
 
-// CreateNextBlock creates a new block with the next block number, and the given contents.
-func (bw *BlockWriter) CreateNextBlock(messages []*cb.Envelope) *cb.Block {
-	previousBlockHash := bw.lastBlock.Header.Hash()
-
-	data := &cb.BlockData{
-		Data: make([][]byte, len(messages)),
-	}
-
-	var err error
-	for i, msg := range messages {
-		data.Data[i], err = proto.Marshal(msg)
-		if err != nil {
-			logger.Panicf("Could not marshal envelope: %s", err)
-		}
-	}
-
-	block := cb.NewBlock(bw.lastBlock.Header.Number+1, previousBlockHash)
-	block.Header.DataHash = data.Hash()
-	block.Data = data
-
-	return block
+//JCS: my own method
+func (bw *BlockWriter) GetLastBlock() *cb.Block {
+	return bw.lastBlock
 }
 
-// WriteConfigBlock should be invoked for blocks which contain a config transaction.
-// This call will block until the new config has taken effect, then will return
-// while the block is written asynchronously to disk.
-func (bw *BlockWriter) WriteConfigBlock(block *cb.Block, encodedMetadataValue []byte) {
+//JCS: my own method
+func (bw *BlockWriter) AppendBlock(block *cb.Block) error {
+
+	bw.committingBlock.Lock()
+	bw.lastBlock = block
+
+	defer bw.committingBlock.Unlock()
+	return bw.support.Append(block)
+}
+
+//JCS: my own method
+func (bw *BlockWriter) ProcessConfigBlock(block *cb.Block) {
 	ctx, err := utils.ExtractEnvelope(block, 0)
 	if err != nil {
 		logger.Panicf("Told to write a config block, but could not get configtx: %s", err)
@@ -127,6 +117,38 @@ func (bw *BlockWriter) WriteConfigBlock(block *cb.Block, encodedMetadataValue []
 	default:
 		logger.Panicf("Told to write a config block with unknown header type: %v", chdr.Type)
 	}
+}
+
+// CreateNextBlock creates a new block with the next block number, and the given contents.
+func (bw *BlockWriter) CreateNextBlock(messages []*cb.Envelope) *cb.Block {
+	previousBlockHash := bw.lastBlock.Header.Hash()
+
+	data := &cb.BlockData{
+		Data: make([][]byte, len(messages)),
+	}
+
+	var err error
+	for i, msg := range messages {
+		data.Data[i], err = proto.Marshal(msg)
+		if err != nil {
+			logger.Panicf("Could not marshal envelope: %s", err)
+		}
+	}
+
+	block := cb.NewBlock(bw.lastBlock.Header.Number+1, previousBlockHash)
+	block.Header.DataHash = data.Hash()
+	block.Data = data
+
+	return block
+}
+
+// WriteConfigBlock should be invoked for blocks which contain a config transaction.
+// This call will block until the new config has taken effect, then will return
+// while the block is written asynchronously to disk.
+func (bw *BlockWriter) WriteConfigBlock(block *cb.Block, encodedMetadataValue []byte) {
+
+	//JCS: moved the configuration related code to this seperate method
+	bw.ProcessConfigBlock(block)
 
 	bw.WriteBlock(block, encodedMetadataValue)
 }

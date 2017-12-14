@@ -43,6 +43,17 @@ Profiles:
             SampleConsortium:
                 Organizations:
 
+    # JCS: my profile
+    # SampleInsecureBFTsmart defines a configuration that differs from the
+    # SampleInsecureSolo one only in that is uses the Kafka-based orderer.
+    SampleInsecureBFTsmart:
+        Orderer:
+            <<: *OrdererDefaults
+            OrdererType: bftsmart
+        Consortiums:
+            SampleConsortium:
+                Organizations:
+
     # SampleDevModeSolo defines a configuration which uses the Solo orderer,
     # contains the sample MSP as both orderer and consortium member, and
     # requires only basic membership for admin privileges
@@ -64,6 +75,21 @@ Profiles:
     SampleSingleMSPSolo:
         Orderer:
             <<: *OrdererDefaults
+            Organizations:
+                - *SampleOrg
+        Consortiums:
+            SampleConsortium:
+                Organizations:
+                    - *SampleOrg
+
+    # JCS: my profile
+    # SampleSingleMSPBFTsmart defines a configuration which uses the Solo orderer,
+    # and contains a single MSP definition (the MSP sampleconfig).
+    # The Consortium SampleConsortium has only a single member, SampleOrg
+    SampleSingleMSPBFTsmart:
+        Orderer:
+            <<: *OrdererDefaults
+            OrdererType: bftsmart
             Organizations:
                 - *SampleOrg
         Consortiums:
@@ -174,6 +200,15 @@ Orderer: &OrdererDefaults
             - kafka0:9092
             - kafka1:9092
             - kafka2:9092
+
+    #JCS: BFT-SMaRt options
+    BFTsmart:
+
+        # ConnectionPoolSize: The size of the connection pool that links the golang component to the java component.
+        ConnectionPoolSize: 20
+
+        # RecvPort: The localhost TCP port from which the java component sends blocks to the golang component.
+        RecvPort: 9999
 
     # Organizations is the list of orgs which are defined as participants on
     # the orderer side of the network.

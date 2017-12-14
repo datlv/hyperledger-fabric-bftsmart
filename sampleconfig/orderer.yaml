@@ -19,7 +19,7 @@ General:
     #  - json: A simple file ledger that writes blocks to disk in JSON format.
     # Only one production ledger type is provided:
     #  - file: A production file-based ledger.
-    LedgerType: file
+    LedgerType: ram
 
     # Listen address: The IP on which to bind to listen.
     ListenAddress: 127.0.0.1
@@ -49,19 +49,19 @@ General:
     #  - provisional: Utilizes a genesis profile, specified by GenesisProfile,
     #                 to dynamically generate a new genesis block.
     #  - file: Uses the file provided by GenesisFile as the genesis block.
-    GenesisMethod: provisional
+    GenesisMethod: file
 
     # Genesis profile: The profile to use to dynamically generate the genesis
     # block to use when initializing the orderer system channel and
     # GenesisMethod is set to "provisional". See the configtx.yaml file for the
     # descriptions of the available profiles. Ignored if GenesisMethod is set to
     # "file".
-    GenesisProfile: SampleInsecureSolo
+    GenesisProfile: SampleMSPBFTsmart
 
     # Genesis file: The file containing the genesis block to use when
     # initializing the orderer system channel and GenesisMethod is set to
     # "file". Ignored if GenesisMethod is set to "provisional".
-    GenesisFile: genesisblock
+    GenesisFile: ../genesisblock
 
     # LocalMSPDir is where to find the private crypto material needed by the
     # orderer. It is set relative here as a default for dev environments but
@@ -227,6 +227,22 @@ Kafka:
     # Kafka version of the Kafka cluster brokers (defaults to 0.9.0.1)
     Version:
         #
+
+# JCS: new section for bftsmart
+################################################################################
+#
+#   SECTION: BFT-SMaRt
+#
+#   - This section applies to the configuration of the bftsmart-based orderer.
+#
+################################################################################
+BFTsmart:
+
+    # ConnectionPoolSize: The size of the connection pool that links the golang component to the java component.
+    ConnectionPoolSize: 10
+
+    # RecvPort: The localhost TCP port from which the java component sends blocks to the golang component.
+    RecvPort: 9999
 
 ################################################################################
 #

@@ -173,6 +173,28 @@ func ExtractEnvelope(block *cb.Block, index int) (*cb.Envelope, error) {
 	return envelope, nil
 }
 
+//JCS: my method; UnmarshalMetadata unmarshals bytes to a Metadata structure
+//Note: these methods are only used in the `deliver_stdout` sample client, they are not necessary for the main codebase
+func UnmarshalMetadata(encoded []byte) (*cb.Metadata, error) {
+	metadata := &cb.Metadata{}
+	err := proto.Unmarshal(encoded, metadata)
+	if err != nil {
+		return nil, err
+	}
+	return metadata, err
+}
+
+//JCS: my method; UnmarshalSignatureHeader unmarshals bytes to a Metadata structure
+//Note: these methods are only used in the `deliver_stdout` sample client, they are not necessary for the main codebase
+func UnmarshalSignatureHeader(encoded []byte) (*cb.SignatureHeader, error) {
+	header := &cb.SignatureHeader{}
+	err := proto.Unmarshal(encoded, header)
+	if err != nil {
+		return nil, err
+	}
+	return header, err
+}
+
 // ExtractPayloadOrPanic retrieves the payload of a given envelope and unmarshals it -- it panics if either of these operations fail.
 func ExtractPayloadOrPanic(envelope *cb.Envelope) *cb.Payload {
 	payload, err := ExtractPayload(envelope)

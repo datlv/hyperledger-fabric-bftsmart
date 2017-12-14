@@ -64,6 +64,7 @@ type TopLevel struct {
 	General    General
 	FileLedger FileLedger
 	RAMLedger  RAMLedger
+	BFTsmart   BFTsmart //JCS my struct
 	Kafka      Kafka
 	Debug      Debug
 }
@@ -111,6 +112,12 @@ type FileLedger struct {
 // RAMLedger contains configuration for the RAM ledger.
 type RAMLedger struct {
 	HistorySize uint
+}
+
+//JCS: BFTsmart contains configuration for the BFT-SMaRt orderer
+type BFTsmart struct {
+	ConnectionPoolSize uint
+	RecvPort           uint
 }
 
 // Kafka contains configuration for the Kafka-based orderer.
@@ -195,6 +202,11 @@ var defaults = TopLevel{
 	FileLedger: FileLedger{
 		Location: "/var/hyperledger/production/orderer",
 		Prefix:   "hyperledger-fabric-ordererledger",
+	},
+	BFTsmart: BFTsmart{ //JCS: my struct
+
+		ConnectionPoolSize: 20,
+		RecvPort:           9999,
 	},
 	Kafka: Kafka{
 		Retry: Retry{
@@ -364,6 +376,14 @@ func (c *TopLevel) completeInitialization(configDir string) {
 		case c.Kafka.Version == sarama.KafkaVersion{}:
 			logger.Infof("Kafka.Version unset, setting to %v", defaults.Kafka.Version)
 			c.Kafka.Version = defaults.Kafka.Version
+
+		//JCS: BFT-SMaRt parameters
+		case c.BFTsmart.ConnectionPoolSize == 0:
+			logger.Infof("BFTsmart.ConnectionPoolSize unset, setting to %v", defaults.BFTsmart.ConnectionPoolSize)
+			c.BFTsmart.ConnectionPoolSize = defaults.BFTsmart.ConnectionPoolSize
+		case c.BFTsmart.RecvPort == 0:
+			logger.Infof("BFTsmart.RecvPort unset, setting to %v", defaults.BFTsmart.RecvPort)
+			c.BFTsmart.RecvPort = defaults.BFTsmart.RecvPort
 
 		default:
 			return
