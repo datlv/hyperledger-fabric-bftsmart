@@ -1,3 +1,7 @@
+**This fork is intended to be used together with the BFT ordering service for Hyperledger Fabric v1.1. For more information, check the ordering service repository available [here](https://github.com/jcs47/hyperledger-bftsmart)**
+
+------------------------------------------------------------------------------------------------------------------------
+
 
 **Note:** This is a **read-only mirror** of the formal [Gerrit](https://gerrit.hyperledger.org/r/#/admin/projects/fabric) repository,
 where active development is ongoing. Issue tracking is handled in [Jira](https://jira.hyperledger.org/secure/RapidBoard.jspa?projectKey=FAB&rapidView=5&view=planning)
