@@ -97,7 +97,7 @@ func (ch *chain) Start() {
 		conn, err := net.Dial("unix", "/tmp/hlf-pool.sock")
 
 		if err != nil {
-			logger.Info("Could not start connection pool to java component: %s", err)
+			panic(fmt.Sprintf("Could not start connection pool to java component: %s", err))
 			return
 		}
 
