@@ -74,6 +74,9 @@ func New(config localconfig.BFTsmart) consensus.Consenter {
 }
 
 func (bftsmart *consenter) HandleChain(support consensus.ConsenterSupport, metadata *cb.Metadata) (consensus.Chain, error) {
+
+	logger.Infof("Creating bftsmart consenter")
+
 	isSysChan := bftsmart.createSystemChannel
 	bftsmart.createSystemChannel = false
 	return newChain(isSysChan, support), nil
@@ -101,7 +104,7 @@ func (ch *chain) Start() {
 		conn, err := net.Dial("unix", "/tmp/hlf-pool.sock")
 
 		if err != nil {
-			logger.Info("[SEND] Error while connecting to proxy:", err)
+			logger.Info("Could not create connection pool: ", err)
 			return
 		}
 
@@ -116,15 +119,17 @@ func (ch *chain) Start() {
 			conn, err := net.Dial("unix", "/tmp/hlf-pool.sock")
 
 			if err != nil {
-				panic(fmt.Sprintf("Could not create connection %v: %d\n", i, err))
+				panic(fmt.Sprintf("Could not create connection #%v: %d\n", i, err))
 				//return
 			} else {
-				logger.Info("Created connection: %v\n", i)
+				logger.Debug(fmt.Sprintf("Created connection: %v\n", i))
 				//conn.SetNoDelay(true)
 				sendPool[i] = conn
 				mutex[i] = &sync.Mutex{}
 			}
 		}
+
+		logger.Info("Successfully created connection pool to the java component")
 
 		batchTimeout = ch.support.SharedConfig().BatchTimeout()
 
@@ -163,7 +168,7 @@ func (ch *chain) Start() {
 	conn, err := net.Dial("tcp", addr)
 
 	if err != nil {
-		logger.Info("[RECV] Error while connecting to proxy:", err)
+		logger.Info("Error while connecting to java component: ", err)
 		return
 	}
 
@@ -461,26 +466,25 @@ func (ch *chain) connLoop() {
 		//JCS receive a marshalled block
 		bytes, err := ch.recvBytes()
 		if err != nil {
-			logger.Debugf("[recv] Error while receiving block from BFT proxy: %v\n", err)
+			logger.Debugf("Error while receiving block from java component: %v\n", err)
 			continue
 		}
 
 		block, err := utils.GetBlockFromBlockBytes(bytes)
 		if err != nil {
-			logger.Debugf("[recv] Error while unmarshaling block from BFT proxy: %v\n", err)
+			logger.Debugf("Error while unmarshaling block from java component: %v\n", err)
 			continue
 		}
 
 		//JCS receive block type
 		bytes, err = ch.recvBytes()
 		if err != nil {
-			logger.Debugf("[recv] Error while receiving block type from BFT proxy: %v\n", err)
+			logger.Debugf("Error while receiving block type from java component: %v\n", err)
 			continue
 		}
 
 		if bytes[0] == 1 {
 
-			logger.Infof("[recv] Received config block! \n")
 			ch.sendChanConfig <- block
 		} else {
 

@@ -88,38 +88,36 @@ func (r *deliverClient) readUntilClose() {
 			fmt.Println("Got status ", t)
 			return
 		case *ab.DeliverResponse_Block:
+
+			blocksReceived++
+
 			if !r.quiet {
 				fmt.Println("Received block: ")
 				err := protolator.DeepMarshalJSON(os.Stdout, t.Block)
 				if err != nil {
 					fmt.Printf("  Error pretty printing block: %s", err)
+
 				}
+
+				if t.Block.Header.Number > 0 { //JCS: print signatures
+
+					meta, _ := utils.UnmarshalMetadata(t.Block.Metadata.Metadata[cb.BlockMetadataIndex_SIGNATURES])
+
+					fmt.Printf("Block #%d contains %d block signatures\n", t.Block.Header.Number, len(meta.Signatures)) // JCS: see what the bytes are and compare to proxy
+
+					validateSignatures(meta, t.Block)
+
+					meta, _ = utils.UnmarshalMetadata(t.Block.Metadata.Metadata[cb.BlockMetadataIndex_LAST_CONFIG])
+
+					fmt.Printf("Block #%d contains %d lastconfig signatures\n", t.Block.Header.Number, len(meta.Signatures)) // JCS: see what the bytes are and compare to proxy
+
+					validateSignatures(meta, t.Block)
+
+					fmt.Printf("Blocks received: %d\n", blocksReceived)
+				}
+
 			} else {
 				fmt.Println("Received block: ", t.Block.Header.Number)
-			}
-
-			blocksReceived++
-			fmt.Printf("\n\n\nReceived block #%d: \n", t.Block.GetHeader().Number) //JCS changed to print only the number of the header
-			fmt.Printf("BlockHeader bytes #%d: ", t.Block.Header.Number)           // JCS: see what the bytes are and compare to proxy
-			printBytes(t.Block.Header.Bytes())
-			fmt.Printf("BlockData hash #%d: ", t.Block.Header.Number) // JCS: see what the bytes are and compare to proxy
-			printBytes(t.Block.Data.Hash())
-
-			if t.Block.Header.Number > 0 {
-
-				meta, _ := utils.UnmarshalMetadata(t.Block.Metadata.Metadata[cb.BlockMetadataIndex_SIGNATURES])
-
-				fmt.Printf("Block #%d contains %d block signatures\n", t.Block.Header.Number, len(meta.Signatures)) // JCS: see what the bytes are and compare to proxy
-
-				validateSignatures(meta, t.Block)
-
-				meta, _ = utils.UnmarshalMetadata(t.Block.Metadata.Metadata[cb.BlockMetadataIndex_LAST_CONFIG])
-
-				fmt.Printf("Block #%d contains %d lastconfig signatures\n", t.Block.Header.Number, len(meta.Signatures)) // JCS: see what the bytes are and compare to proxy
-
-				validateSignatures(meta, t.Block)
-
-				fmt.Printf("Blocks received: %d\n", blocksReceived)
 			}
 
 		}
@@ -217,8 +215,8 @@ func validateSignatures(meta *cb.Metadata, block *cb.Block) { //JCS: my function
 		}
 
 		fmt.Printf("Signature #%d\n: ", i)
-		fmt.Println("MSPID: ", ident.GetMSPIdentifier())
-		printBytes(sig.Signature)
+		fmt.Printf("MSPID: %s\n", ident.GetMSPIdentifier())
+		fmt.Printf("Bytes: %x\n", sig.Signature)
 		fmt.Println("")
 
 		err = ident.Verify(bytes, sig.Signature)
@@ -250,12 +248,4 @@ func validateSignatures(meta *cb.Metadata, block *cb.Block) { //JCS: my function
 			fmt.Printf("Block #%d does NOT contain enough valid signatures!\n", block.Header.Number)
 		}
 	}
-}
-
-func printBytes(bytes []byte) { //JCS: my function
-	fmt.Print("[")
-	for _, b := range bytes {
-		fmt.Printf("%d, ", int8(b))
-	}
-	fmt.Println("]")
 }
