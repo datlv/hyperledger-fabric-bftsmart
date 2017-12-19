@@ -94,8 +94,10 @@ func Start(cmd string, conf *config.TopLevel) {
 			updateTrustedRoots(grpcServer, caSupport, bundle)
 		}
 	}
+
 	manager := initializeMultichannelRegistrar(conf, signer, tlsCallback)
-	server := NewServer(manager, signer, &conf.Debug)
+	mutualTLS := serverConfig.SecOpts.UseTLS && serverConfig.SecOpts.RequireClientCert
+	server := NewServer(manager, signer, &conf.Debug, conf.General.Authentication.TimeWindow, mutualTLS)
 
 	switch cmd {
 	case start.FullCommand(): // "start" command

@@ -86,6 +86,7 @@ type General struct {
 	LocalMSPDir    string
 	LocalMSPID     string
 	BCCSP          *bccsp.FactoryOpts
+	Authentication Authentication
 }
 
 // Keepalive contains configuration for gRPC servers
@@ -103,6 +104,12 @@ type TLS struct {
 	RootCAs           []string
 	ClientAuthEnabled bool
 	ClientRootCAs     []string
+}
+
+// Authentication contains configuration parameters related to authenticating
+// client messages
+type Authentication struct {
+	TimeWindow time.Duration
 }
 
 // Profile contains configuration for Go pprof profiling.
@@ -203,6 +210,9 @@ var defaults = TopLevel{
 		LocalMSPDir: "msp",
 		LocalMSPID:  "DEFAULT",
 		BCCSP:       bccsp.GetDefaultOpts(),
+		Authentication: Authentication{
+			TimeWindow: time.Duration(15 * time.Minute),
+		},
 	},
 	RAMLedger: RAMLedger{
 		HistorySize: 10000,
