@@ -18,6 +18,7 @@ import (
 	commonledger "github.com/hyperledger/fabric/common/ledger"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/aclmgmt"
+	"github.com/hyperledger/fabric/core/aclmgmt/resources"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
 	"github.com/hyperledger/fabric/core/common/sysccprovider"
 	"github.com/hyperledger/fabric/core/container/ccintf"
@@ -248,7 +249,7 @@ func (handler *Handler) checkACL(signedProp *pb.SignedProposal, proposal *pb.Pro
 		return errors.Errorf("signed proposal must not be nil from caller [%s]", ccIns.String())
 	}
 
-	return aclmgmt.GetACLProvider().CheckACL(aclmgmt.CC2CC, ccIns.ChainID, signedProp)
+	return aclmgmt.GetACLProvider().CheckACL(resources.CC2CC, ccIns.ChainID, signedProp)
 }
 
 func (handler *Handler) deregister() error {
@@ -1326,21 +1327,10 @@ func (handler *Handler) enterBusyState(e *fsm.Event, state string) {
 
 				version = cd.CCVersion()
 
-				ac, err := getApplicationConfigForChain(calledCcIns.ChainID)
+				err = ccprovider.CheckInstantiationPolicy(calledCcIns.ChaincodeName, version, cd.(*ccprovider.ChaincodeData))
 				if err != nil {
-					errHandler([]byte(err.Error()), "[%s]Failed to get application config (%s) for invoked chaincode. Sending %s", shorttxid(msg.Txid), err, pb.ChaincodeMessage_ERROR)
+					errHandler([]byte(err.Error()), "[%s]CheckInstantiationPolicy, error %s. Sending %s", shorttxid(msg.Txid), err, pb.ChaincodeMessage_ERROR)
 					return
-				}
-
-				if !ac.Capabilities().LifecycleViaConfig() {
-					err = ccprovider.CheckInsantiationPolicy(calledCcIns.ChaincodeName, version, cd.(*ccprovider.ChaincodeData))
-					if err != nil {
-						errHandler([]byte(err.Error()), "[%s]CheckInsantiationPolicy, error %s. Sending %s", shorttxid(msg.Txid), err, pb.ChaincodeMessage_ERROR)
-						return
-					}
-				} else {
-					// FIXME: consider checking the instantiation policy
-					//        a better place to do it would be the chaincodeSupport.Launch function
 				}
 			} else {
 				//this is a system cc, just call it directly

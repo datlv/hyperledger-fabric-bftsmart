@@ -81,9 +81,9 @@ type Support interface {
 	// that requires the java runtime environment to execute
 	IsJavaCC(buf []byte) (bool, error)
 
-	// CheckInsantiationPolicy returns an error if the instantiation in the supplied
+	// CheckInstantiationPolicy returns an error if the instantiation in the supplied
 	// ChaincodeDefinition differs from the instantiation policy stored on the ledger
-	CheckInsantiationPolicy(name, version string, cd resourcesconfig.ChaincodeDefinition) error
+	CheckInstantiationPolicy(name, version string, cd resourcesconfig.ChaincodeDefinition) error
 
 	// GetApplicationConfig returns the configtxapplication.SharedConfig for the channel
 	// and whether the Application config exists
@@ -240,19 +240,9 @@ func (e *Endorser) simulateProposal(ctx context.Context, chainID string, txid st
 		}
 		version = cdLedger.CCVersion()
 
-		ac, exists := e.s.GetApplicationConfig(chainID)
-		if !exists {
-			endorserLogger.Panicf("Programming error, application config could not be found for channel '%s'", chainID)
-		}
-
-		if !ac.Capabilities().LifecycleViaConfig() {
-			err = e.s.CheckInsantiationPolicy(cid.Name, version, cdLedger)
-			if err != nil {
-				return nil, nil, nil, nil, err
-			}
-		} else {
-			// FIXME: consider checking the instantiation policy
-			//        a better place to do it would be the chaincodeSupport.Launch function
+		err = e.s.CheckInstantiationPolicy(cid.Name, version, cdLedger)
+		if err != nil {
+			return nil, nil, nil, nil, err
 		}
 	} else {
 		version = util.GetSysCCVersion()
@@ -275,6 +265,10 @@ func (e *Endorser) simulateProposal(ctx context.Context, chainID string, txid st
 		}
 
 		if simResult.PvtSimulationResults != nil {
+			if cid.Name == "lscc" {
+				// TODO: remove once we can store collection configuration outside of LSCC
+				return nil, nil, nil, nil, errors.New("Private data is forbidden to be used in instantiate")
+			}
 			if err := e.distributePrivateData(chainID, txid, simResult.PvtSimulationResults); err != nil {
 				return nil, nil, nil, nil, err
 			}

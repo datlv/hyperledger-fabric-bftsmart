@@ -16,11 +16,13 @@ import (
 	"testing"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/common/mocks/config"
 	mscc "github.com/hyperledger/fabric/common/mocks/scc"
 	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/aclmgmt"
 	"github.com/hyperledger/fabric/core/aclmgmt/mocks"
+	"github.com/hyperledger/fabric/core/aclmgmt/resources"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
 	"github.com/hyperledger/fabric/core/common/sysccprovider"
@@ -31,6 +33,7 @@ import (
 	"github.com/hyperledger/fabric/msp"
 	mspmgmt "github.com/hyperledger/fabric/msp/mgmt"
 	"github.com/hyperledger/fabric/msp/mgmt/testtools"
+	"github.com/hyperledger/fabric/protos/common"
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protos/utils"
 	putils "github.com/hyperledger/fabric/protos/utils"
@@ -250,13 +253,13 @@ func testDeploy(t *testing.T, ccname string, version string, path string, forceB
 		assert.Equal(t, res.Status, int32(shim.OK), res.Message)
 
 		mockAclProvider.Reset()
-		mockAclProvider.On("CheckACL", aclmgmt.LSCC_GETCCINFO, "test", sProp).Return(nil)
+		mockAclProvider.On("CheckACL", resources.LSCC_GETCCINFO, "test", sProp).Return(nil)
 		args = [][]byte{[]byte(GETCCINFO), []byte("test"), []byte(cds.ChaincodeSpec.ChaincodeId.Name)}
 		res = stub.MockInvokeWithSignedProposal("1", args, sProp)
 		assert.Equal(t, res.Status, int32(shim.OK), res.Message)
 
 		mockAclProvider.Reset()
-		mockAclProvider.On("CheckACL", aclmgmt.LSCC_GETDEPSPEC, "test", sProp).Return(nil)
+		mockAclProvider.On("CheckACL", resources.LSCC_GETDEPSPEC, "test", sProp).Return(nil)
 		args = [][]byte{[]byte(GETDEPSPEC), []byte("test"), []byte(cds.ChaincodeSpec.ChaincodeId.Name)}
 		res = stub.MockInvokeWithSignedProposal("1", args, sProp)
 		assert.Equal(t, res.Status, int32(shim.OK), res.Message)
@@ -270,7 +273,7 @@ func testDeploy(t *testing.T, ccname string, version string, path string, forceB
 
 		scc.support.(*lscc.MockSupport).GetChaincodeFromLocalStorageRv = nil
 		mockAclProvider.Reset()
-		mockAclProvider.On("CheckACL", aclmgmt.LSCC_GETCCDATA, "test", sProp).Return(nil)
+		mockAclProvider.On("CheckACL", resources.LSCC_GETCCDATA, "test", sProp).Return(nil)
 		args = [][]byte{[]byte(GETCCDATA), []byte("test"), []byte(cds.ChaincodeSpec.ChaincodeId.Name)}
 		res = stub.MockInvokeWithSignedProposal("1", args, sProp)
 		assert.Equal(t, res.Status, int32(shim.OK), res.Message)
@@ -401,12 +404,12 @@ func TestGETCCINFO(t *testing.T) {
 	sProp.Signature = sProp.ProposalBytes
 
 	mockAclProvider.Reset()
-	mockAclProvider.On("CheckACL", aclmgmt.LSCC_GETCCINFO, "chain", sProp).Return(errors.New("Failed access control"))
+	mockAclProvider.On("CheckACL", resources.LSCC_GETCCINFO, "chain", sProp).Return(errors.New("Failed access control"))
 	res = stub.MockInvokeWithSignedProposal("1", [][]byte{[]byte(GETCCINFO), []byte("chain"), []byte("chaincode")}, sProp)
 	assert.NotEqual(t, res.Status, int32(shim.OK), res.Message)
 
 	mockAclProvider.Reset()
-	mockAclProvider.On("CheckACL", aclmgmt.LSCC_GETCCINFO, "chain", sProp).Return(nil)
+	mockAclProvider.On("CheckACL", resources.LSCC_GETCCINFO, "chain", sProp).Return(nil)
 	res = stub.MockInvokeWithSignedProposal("1", [][]byte{[]byte(GETCCINFO), []byte("chain"), []byte("nonexistentchaincode")}, sProp)
 	assert.NotEqual(t, res.Status, int32(shim.OK), res.Message)
 }
@@ -546,6 +549,45 @@ func TestErrors(t *testing.T) {
 	assert.True(t, len(err3.Error()) > 0)
 }
 
+func TestPutChaincodeCollectionData(t *testing.T) {
+	scc := new(lifeCycleSysCC)
+	stub := shim.NewMockStub("lscc", scc)
+
+	if res := stub.MockInit("1", nil); res.Status != shim.OK {
+		fmt.Println("Init failed", string(res.Message))
+		t.FailNow()
+	}
+
+	err := scc.putChaincodeCollectionData(stub, nil, nil)
+	assert.Error(t, err)
+
+	cd := &ccprovider.ChaincodeData{Name: "foo"}
+
+	err = scc.putChaincodeCollectionData(stub, cd, nil)
+	assert.NoError(t, err)
+
+	cc := &common.CollectionConfig{Payload: &common.CollectionConfig_StaticCollectionConfig{&common.StaticCollectionConfig{Name: "mycollection"}}}
+	ccp := &common.CollectionConfigPackage{[]*common.CollectionConfig{cc}}
+	ccpBytes, err := proto.Marshal(ccp)
+	assert.NoError(t, err)
+	assert.NotNil(t, ccpBytes)
+
+	stub.MockTransactionStart("foo")
+	err = scc.putChaincodeCollectionData(stub, cd, []byte("barf"))
+	assert.Error(t, err)
+	stub.MockTransactionEnd("foo")
+
+	stub.MockTransactionStart("foo")
+	err = scc.putChaincodeCollectionData(stub, cd, ccpBytes)
+	assert.NoError(t, err)
+	stub.MockTransactionEnd("foo")
+
+	stub.MockTransactionStart("foo")
+	err = scc.putChaincodeCollectionData(stub, cd, ccpBytes)
+	assert.Error(t, err)
+	stub.MockTransactionEnd("foo")
+}
+
 var id msp.SigningIdentity
 var chainid string = util.GetTestChainID()
 var mockAclProvider *mocks.MockACLProvider
@@ -562,7 +604,14 @@ func TestMain(m *testing.M) {
 	mockAclProvider = &mocks.MockACLProvider{}
 	mockAclProvider.Reset()
 
-	sysccprovider.RegisterSystemChaincodeProviderFactory(&mscc.MocksccProviderFactory{})
+	sysccprovider.RegisterSystemChaincodeProviderFactory(
+		&mscc.MocksccProviderFactory{
+			ApplicationConfigBool: true,
+			ApplicationConfigRv: &config.MockApplication{
+				CapabilitiesRv: &config.MockApplicationCapabilities{},
+			},
+		},
+	)
 	aclmgmt.RegisterACLProvider(mockAclProvider)
 
 	os.Exit(m.Run())

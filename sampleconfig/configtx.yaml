@@ -208,7 +208,6 @@ Profiles:
                 Organizations:
                     - *SampleOrg
 
-
     # JCS: I added this so that bftsmart can be initialized
     # SampleSingleMSPBFTsmartV1_1 defines a configuration that differs from the
     # SampleSingleMSPSoloV1_1 one only in that it uses the Kafka-based orderer.
@@ -424,6 +423,12 @@ Capabilities:
         # modification of which would cause imcompatibilities.  Users should
         # leave this flag set to true.
         V1_1: true
+        # V1_1_PVTDATA_EXPERIMENTAL is an Application capability to enable the
+        # private data capability.  It is only supported when using peers built
+        # with experimental build tag.  When set to true, private data
+        # collections can be configured upon chaincode instantiation and
+        # utilized within chaincode Invokes.
+        V1_1_PVTDATA_EXPERIMENTAL: false
 
 ################################################################################
 #

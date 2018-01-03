@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/hyperledger/fabric/core/common/privdata"
 	"github.com/hyperledger/fabric/gossip/api"
@@ -112,7 +111,6 @@ func (d *distributorImpl) computeDisseminationPlan(txID string, privData *rwset.
 
 func (d *distributorImpl) disseminationPlanForMsg(colAP privdata.CollectionAccessPolicy, colFilter privdata.Filter, pvtDataMsg *proto.SignedGossipMessage) ([]*dissemination, error) {
 	var disseminationPlan []*dissemination
-	minAck := colAP.RequiredPeerCount()
 	routingFilter, err := d.gossipAdapter.PeerFilter(gossipCommon.ChainID(d.chainID), func(signature api.PeerSignature) bool {
 		return colFilter(common.SignedData{
 			Data:      signature.Message,
@@ -126,13 +124,11 @@ func (d *distributorImpl) disseminationPlanForMsg(colAP privdata.CollectionAcces
 		return nil, err
 	}
 
-	maxPeers := viper.GetInt("peer.gossip.pvtData.maxPeers")
-
 	sc := gossip2.SendCriteria{
-		Timeout:  time.Second,
+		Timeout:  viper.GetDuration("peer.gossip.pvtData.pushAckTimeout"),
 		Channel:  gossipCommon.ChainID(d.chainID),
-		MaxPeers: maxPeers,
-		MinAck:   minAck,
+		MaxPeers: colAP.MaximumPeerCount(),
+		MinAck:   colAP.RequiredPeerCount(),
 		IsEligible: func(member discovery.NetworkMember) bool {
 			return routingFilter(member)
 		},

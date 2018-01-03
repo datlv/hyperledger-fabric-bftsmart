@@ -34,7 +34,9 @@ import (
 	"github.com/hyperledger/fabric/core/peer"
 	"github.com/hyperledger/fabric/core/scc"
 	"github.com/hyperledger/fabric/events/producer"
+	common2 "github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/service"
+	"github.com/hyperledger/fabric/msp"
 	"github.com/hyperledger/fabric/msp/mgmt"
 	"github.com/hyperledger/fabric/peer/common"
 	peergossip "github.com/hyperledger/fabric/peer/gossip"
@@ -91,6 +93,17 @@ func initSysCCs() {
 }
 
 func serve(args []string) error {
+	// currently the peer only works with the standard MSP
+	// because in certain scenarios the MSP has to make sure
+	// that from a single credential you only have a single 'identity'.
+	// Idemix does not support this *YET* but it can be easily
+	// fixed to support it. For now, we just make sure that
+	// the peer only comes up with the standard MSP
+	mspType := mgmt.GetLocalMSP().GetType()
+	if mspType != msp.FABRIC {
+		panic("Unsupported msp type " + msp.ProviderTypeToString(mspType))
+	}
+
 	logger.Infof("Starting %s", version.GetInfo())
 
 	//aclmgmt initializes a proxy Processor that will be redirected to RSCC provider
@@ -235,7 +248,20 @@ func serve(args []string) error {
 		}
 		return dialOpts
 	}
-	err = service.InitGossipService(serializedIdentity, peerEndpoint.Address, peerServer.Server(),
+
+	var certs *common2.TLSCertificates
+	if peerServer.TLSEnabled() {
+		serverCert := peerServer.ServerCertificate()
+		clientCert, err := peer.GetClientCertificate()
+		if err != nil {
+			return errors.Wrap(err, "failed obtaining client certificates")
+		}
+		certs = &common2.TLSCertificates{}
+		certs.TLSServerCert.Store(&serverCert)
+		certs.TLSClientCert.Store(&clientCert)
+	}
+
+	err = service.InitGossipService(serializedIdentity, peerEndpoint.Address, peerServer.Server(), certs,
 		messageCryptoService, secAdv, secureDialOpts, bootstrap...)
 	if err != nil {
 		return err
@@ -363,8 +389,8 @@ func createChaincodeServer(ca accesscontrol.CA, peerHostname string) (srv comm.G
 			// Trust only client certificates signed by ourselves
 			ClientRootCAs: [][]byte{ca.CertBytes()},
 			// Use our own self-signed TLS certificate and key
-			ServerCertificate: certKeyPair.Cert,
-			ServerKey:         certKeyPair.Key,
+			Certificate: certKeyPair.Cert,
+			Key:         certKeyPair.Key,
 			// No point in specifying server root CAs since this TLS config is only used for
 			// a gRPC server and not a client
 			ServerRootCAs: nil,

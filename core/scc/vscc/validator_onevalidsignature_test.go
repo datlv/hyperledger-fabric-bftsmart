@@ -27,13 +27,12 @@ import (
 	"github.com/hyperledger/fabric/common/cauthdsl"
 	mc "github.com/hyperledger/fabric/common/mocks/config"
 	lm "github.com/hyperledger/fabric/common/mocks/ledger"
-	"github.com/hyperledger/fabric/common/mocks/policies"
-	mockpolicies "github.com/hyperledger/fabric/common/mocks/policies"
 	"github.com/hyperledger/fabric/common/mocks/scc"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	"github.com/hyperledger/fabric/core/common/ccpackage"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
+	"github.com/hyperledger/fabric/core/common/privdata"
 	"github.com/hyperledger/fabric/core/common/sysccprovider"
 	cutils "github.com/hyperledger/fabric/core/container/util"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/rwsetutil"
@@ -44,6 +43,7 @@ import (
 	mspmgmt "github.com/hyperledger/fabric/msp/mgmt"
 	"github.com/hyperledger/fabric/msp/mgmt/testtools"
 	"github.com/hyperledger/fabric/protos/common"
+	"github.com/hyperledger/fabric/protos/ledger/rwset/kvrwset"
 	mspproto "github.com/hyperledger/fabric/protos/msp"
 	"github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protos/utils"
@@ -374,59 +374,6 @@ func TestInvoke(t *testing.T) {
 	args = [][]byte{[]byte("dv"), envBytes, policy}
 	if res := stub.MockInvoke("1", args); res.Status == shim.OK || res.Message != DUPLICATED_IDENTITY_ERROR {
 		t.Fatalf("vscc invoke should have failed due to policy evaluation failure caused by duplicated identity")
-	}
-}
-
-func TestInvokeNewLifecycle(t *testing.T) {
-	v := new(ValidatorOneValidSignature)
-	stub := shim.NewMockStub("validatoronevalidsignature", v)
-
-	sysccprovider.RegisterSystemChaincodeProviderFactory(&scc.MocksccProviderFactory{
-		ApplicationConfigBool: true,
-		ApplicationConfigRv:   &mc.MockApplication{&mc.MockApplicationCapabilities{LifecycleViaConfigRv: true}},
-		PolicyManagerBool:     true,
-		PolicyManagerRv:       &policies.Manager{Policy: &mockpolicies.Policy{}},
-	})
-
-	if res := stub.MockInit("1", nil); res.Status != shim.OK {
-		t.Fatalf("vscc init failed with %s", res.Message)
-	}
-
-	tx, err := createTx(false)
-	if err != nil {
-		t.Fatalf("createTx returned err %s", err)
-	}
-
-	envBytes, err := utils.GetBytesEnvelope(tx)
-	if err != nil {
-		t.Fatalf("GetBytesEnvelope returned err %s", err)
-	}
-
-	args := [][]byte{[]byte("dv"), envBytes, []byte("barf")}
-	if res := stub.MockInvoke("1", args); res.Status == shim.OK {
-		t.Fatalf("vscc invoke should have failed")
-	}
-
-	v.sccprovider.(*scc.MocksccProviderImpl).PolicyManagerBool = false
-
-	args = [][]byte{[]byte("dv"), envBytes, utils.MarshalOrPanic(&peer.VSCCArgs{EndorsementPolicyRef: "somePolicy"})}
-	if res := stub.MockInvoke("1", args); res.Status == shim.OK {
-		t.Fatalf("vscc invoke should have failed")
-	}
-
-	v.sccprovider.(*scc.MocksccProviderImpl).PolicyManagerBool = true
-	v.sccprovider.(*scc.MocksccProviderImpl).PolicyManagerRv = &policies.Manager{}
-
-	args = [][]byte{[]byte("dv"), envBytes, utils.MarshalOrPanic(&peer.VSCCArgs{EndorsementPolicyRef: "somePolicy"})}
-	if res := stub.MockInvoke("1", args); res.Status == shim.OK {
-		t.Fatalf("vscc invoke should have failed")
-	}
-
-	v.sccprovider.(*scc.MocksccProviderImpl).PolicyManagerRv = &policies.Manager{Policy: &mockpolicies.Policy{}}
-
-	args = [][]byte{[]byte("dv"), envBytes, utils.MarshalOrPanic(&peer.VSCCArgs{EndorsementPolicyRef: "somePolicy"})}
-	if res := stub.MockInvoke("1", args); res.Status != shim.OK {
-		t.Fatalf("vscc invoke should have succeeded but got error %s", res.Message)
 	}
 }
 
@@ -1426,6 +1373,118 @@ func TestValidateUpgradeWithPoliciesOK(t *testing.T) {
 	}
 }
 
+func TestValidateUpgradeWithNewFailAllIP(t *testing.T) {
+	// we're testing upgrade.
+	// In particular, we want to test the scenario where the upgrader
+	// complies with the instantiation policy of the current version
+	// BUT NOT the instantiation policy of the new version. For this
+	// reason we first deploy a cc with IP whic is equal to the AcceptAllPolicy
+	// and then try to upgrade with a cc with the RejectAllPolicy.
+	// We run this test twice, once with the V11 capability (and expect
+	// a failure) and once without (and we expect success).
+
+	validateUpgradeWithNewFailAllIP(t, true, true)
+	validateUpgradeWithNewFailAllIP(t, false, false)
+}
+
+func validateUpgradeWithNewFailAllIP(t *testing.T, v11capability, expecterr bool) {
+	// create the validator
+	v := new(ValidatorOneValidSignature)
+	stub := shim.NewMockStub("validatoronevalidsignature", v)
+
+	lccc := lscc.NewLifeCycleSysCC()
+	stublccc := shim.NewMockStub("lscc", lccc)
+
+	State := make(map[string]map[string][]byte)
+	State["lscc"] = stublccc.State
+	sysccprovider.RegisterSystemChaincodeProviderFactory(&scc.MocksccProviderFactory{
+		Qe: lm.NewMockQueryExecutor(State),
+		ApplicationConfigBool: true,
+		ApplicationConfigRv:   &mc.MockApplication{&mc.MockApplicationCapabilities{V1_1ValidationRv: v11capability}},
+	})
+	stub.MockPeerChaincode("lscc", stublccc)
+
+	// init both chaincodes
+	r1 := stub.MockInit("1", [][]byte{})
+	if r1.Status != shim.OK {
+		fmt.Println("Init failed", string(r1.Message))
+		t.FailNow()
+	}
+
+	r := stublccc.MockInit("1", [][]byte{})
+	if r.Status != shim.OK {
+		fmt.Println("Init failed", string(r.Message))
+		t.FailNow()
+	}
+
+	// deploy the chaincode with an accept all policy
+
+	ccname := "mycc"
+	ccver := "1"
+	path := "github.com/hyperledger/fabric/examples/chaincode/go/chaincode_example02"
+	ppath := lccctestpath + "/" + ccname + "." + ccver
+
+	os.Remove(ppath)
+
+	cds, err := constructDeploymentSpec(ccname, path, ccver, [][]byte{[]byte("init"), []byte("a"), []byte("100"), []byte("b"), []byte("200")}, false)
+	if err != nil {
+		fmt.Printf("%s\n", err)
+		t.FailNow()
+	}
+	_, err = processSignedCDS(cds, cauthdsl.AcceptAllPolicy)
+	assert.NoError(t, err)
+	defer os.Remove(ppath)
+	var b []byte
+	if b, err = proto.Marshal(cds); err != nil || b == nil {
+		t.FailNow()
+	}
+
+	sProp2, _ := utils.MockSignedEndorserProposal2OrPanic(chainId, &peer.ChaincodeSpec{}, id)
+	args := [][]byte{[]byte("deploy"), []byte(ccname), b}
+	if res := stublccc.MockInvokeWithSignedProposal("1", args, sProp2); res.Status != shim.OK {
+		fmt.Printf("%#v\n", res)
+		t.FailNow()
+	}
+
+	// if we're here, we have a cc deployed with an accept all IP
+
+	// now we upgrade, with v 2 of the same cc, with the crucial difference that it has a reject all IP
+
+	ccver = "2"
+
+	simresres, err := createCCDataRWset(ccname, ccname, ccver,
+		cauthdsl.MarshaledRejectAllPolicy, // here's where we specify the IP of the upgraded cc
+	)
+	assert.NoError(t, err)
+
+	tx, err := createLSCCTx(ccname, ccver, lscc.UPGRADE, simresres)
+	if err != nil {
+		t.Fatalf("createTx returned err %s", err)
+	}
+
+	envBytes, err := utils.GetBytesEnvelope(tx)
+	if err != nil {
+		t.Fatalf("GetBytesEnvelope returned err %s", err)
+	}
+
+	policy, err := getSignedByMSPMemberPolicy(mspid)
+	if err != nil {
+		t.Fatalf("failed getting policy, err %s", err)
+	}
+
+	// execute the upgrade tx
+	args = [][]byte{[]byte("dv"), envBytes, policy}
+	if expecterr {
+		if res := stub.MockInvoke("1", args); res.Status == shim.OK {
+			t.Fatalf("vscc invoke should have failed")
+		}
+	} else {
+		if res := stub.MockInvoke("1", args); res.Status != shim.OK {
+			t.Fatalf("vscc invoke failed with %s", res.Message)
+		}
+	}
+}
+
 func TestValidateUpgradeWithPoliciesFail(t *testing.T) {
 	v := new(ValidatorOneValidSignature)
 	stub := shim.NewMockStub("validatoronevalidsignature", v)
@@ -1534,6 +1593,84 @@ func (c *mockPolicyChecker) CheckPolicyBySignedData(channelID, policyName string
 
 func (c *mockPolicyChecker) CheckPolicyNoChannel(policyName string, signedProp *peer.SignedProposal) error {
 	return nil
+}
+
+func TestValidateDeployRWSetAndCollection(t *testing.T) {
+	chid := "ch"
+	ccid := "cc"
+
+	cd := &ccprovider.ChaincodeData{Name: "mycc"}
+
+	v := new(ValidatorOneValidSignature)
+	stub := shim.NewMockStub("validatoronevalidsignature", v)
+
+	State := make(map[string]map[string][]byte)
+	State["lscc"] = make(map[string][]byte)
+	sysccprovider.RegisterSystemChaincodeProviderFactory(&scc.MocksccProviderFactory{Qe: lm.NewMockQueryExecutor(State)})
+
+	r1 := stub.MockInit("1", [][]byte{})
+	if r1.Status != shim.OK {
+		fmt.Println("Init failed", string(r1.Message))
+		t.FailNow()
+	}
+
+	rwset := &kvrwset.KVRWSet{Writes: []*kvrwset.KVWrite{{Key: "a"}, {Key: "b"}, {Key: "c"}}}
+
+	err := v.validateDeployRWSetAndCollection(rwset, nil, nil, chid, ccid)
+	assert.Error(t, err)
+
+	rwset = &kvrwset.KVRWSet{Writes: []*kvrwset.KVWrite{{Key: "a"}, {Key: "b"}}}
+
+	err = v.validateDeployRWSetAndCollection(rwset, cd, nil, chid, ccid)
+	assert.Error(t, err)
+
+	rwset = &kvrwset.KVRWSet{Writes: []*kvrwset.KVWrite{{Key: "a"}}}
+
+	err = v.validateDeployRWSetAndCollection(rwset, cd, nil, chid, ccid)
+	assert.NoError(t, err)
+
+	lsccargs := [][]byte{nil, nil, nil, nil, nil, nil}
+
+	err = v.validateDeployRWSetAndCollection(rwset, cd, lsccargs, chid, ccid)
+	assert.NoError(t, err)
+
+	rwset = &kvrwset.KVRWSet{Writes: []*kvrwset.KVWrite{{Key: "a"}, {Key: privdata.BuildCollectionKVSKey("mycc")}}}
+
+	err = v.validateDeployRWSetAndCollection(rwset, cd, lsccargs, chid, ccid)
+	assert.NoError(t, err)
+
+	lsccargs = [][]byte{nil, nil, nil, nil, nil, []byte("barf")}
+
+	err = v.validateDeployRWSetAndCollection(rwset, cd, lsccargs, chid, ccid)
+	assert.Error(t, err)
+
+	lsccargs = [][]byte{nil, nil, nil, nil, nil, []byte("barf")}
+	rwset = &kvrwset.KVRWSet{Writes: []*kvrwset.KVWrite{{Key: "a"}, {Key: privdata.BuildCollectionKVSKey("mycc"), Value: []byte("barf")}}}
+
+	err = v.validateDeployRWSetAndCollection(rwset, cd, lsccargs, chid, ccid)
+	assert.Error(t, err)
+
+	cc := &common.CollectionConfig{Payload: &common.CollectionConfig_StaticCollectionConfig{&common.StaticCollectionConfig{Name: "mycollection"}}}
+	ccp := &common.CollectionConfigPackage{[]*common.CollectionConfig{cc}}
+	ccpBytes, err := proto.Marshal(ccp)
+	assert.NoError(t, err)
+	assert.NotNil(t, ccpBytes)
+
+	lsccargs = [][]byte{nil, nil, nil, nil, nil, ccpBytes}
+	rwset = &kvrwset.KVRWSet{Writes: []*kvrwset.KVWrite{{Key: "a"}, {Key: privdata.BuildCollectionKVSKey("mycc"), Value: ccpBytes}}}
+
+	err = v.validateDeployRWSetAndCollection(rwset, cd, lsccargs, chid, ccid)
+	assert.NoError(t, err)
+
+	State["lscc"][(&collectionStoreSupport{v.sccprovider}).GetCollectionKVSKey(common.CollectionCriteria{Channel: chid, Namespace: ccid})] = []byte("barf")
+
+	err = v.validateDeployRWSetAndCollection(rwset, cd, lsccargs, chid, ccid)
+	assert.Error(t, err)
+
+	State["lscc"][(&collectionStoreSupport{v.sccprovider}).GetCollectionKVSKey(common.CollectionCriteria{Channel: chid, Namespace: ccid})] = ccpBytes
+
+	err = v.validateDeployRWSetAndCollection(rwset, cd, lsccargs, chid, ccid)
+	assert.Error(t, err)
 }
 
 var lccctestpath = "/tmp/lscc-validation-test"

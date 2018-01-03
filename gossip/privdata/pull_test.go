@@ -59,6 +59,10 @@ func (cs mockCollectionStore) RetrieveCollection(fcommon.CollectionCriteria) (pr
 	panic("implement me")
 }
 
+func (cs mockCollectionStore) RetrieveCollectionConfigPackage(fcommon.CollectionCriteria) (*fcommon.CollectionConfigPackage, error) {
+	panic("implement me")
+}
+
 type mockCollectionAccess struct {
 	cs *mockCollectionStore
 }
@@ -88,6 +92,10 @@ func (mc *mockCollectionAccess) AccessFilter() privdata.Filter {
 }
 
 func (mc *mockCollectionAccess) RequiredPeerCount() int {
+	return 0
+}
+
+func (mc *mockCollectionAccess) MaximumPeerCount() int {
 	return 0
 }
 

@@ -86,9 +86,9 @@ func TestClientConnections(t *testing.T) {
 			name: "ValidConnectionTLS",
 			sc: ServerConfig{
 				SecOpts: &SecureOptions{
-					UseTLS:            true,
-					ServerCertificate: certPEMBlock,
-					ServerKey:         keyPEMBlock}},
+					UseTLS:      true,
+					Certificate: certPEMBlock,
+					Key:         keyPEMBlock}},
 			creds:      credentials.NewClientTLSFromCert(certPool, ""),
 			serverPort: 8052,
 		},
@@ -96,9 +96,9 @@ func TestClientConnections(t *testing.T) {
 			name: "InvalidConnectionTLS",
 			sc: ServerConfig{
 				SecOpts: &SecureOptions{
-					UseTLS:            true,
-					ServerCertificate: certPEMBlock,
-					ServerKey:         keyPEMBlock}},
+					UseTLS:      true,
+					Certificate: certPEMBlock,
+					Key:         keyPEMBlock}},
 			creds:      credentials.NewClientTLSFromCert(nil, ""),
 			fail:       true,
 			serverPort: 8053,
@@ -202,6 +202,7 @@ func TestCredentialSupport(t *testing.T) {
 	cert := tls.Certificate{Certificate: [][]byte{}}
 	cs.SetClientCertificate(cert)
 	assert.Equal(t, cert, cs.clientCert)
+	assert.Equal(t, cert, cs.GetClientCertificate())
 
 	cs.AppRootCAsByChain["channel1"] = [][]byte{rootCAs[0]}
 	cs.AppRootCAsByChain["channel2"] = [][]byte{rootCAs[1]}
@@ -283,9 +284,9 @@ func newServer(org string, port int) *srv {
 	}
 	gSrv, err := NewGRPCServerFromListener(l, ServerConfig{
 		SecOpts: &SecureOptions{
-			ServerCertificate: certs["server.crt"],
-			ServerKey:         certs["server.key"],
-			UseTLS:            true,
+			Certificate: certs["server.crt"],
+			Key:         certs["server.key"],
+			UseTLS:      true,
 		},
 	})
 	if err != nil {

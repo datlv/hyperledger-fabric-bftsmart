@@ -196,8 +196,8 @@ func (org *testOrg) testServers(port int, clientRootCAs [][]byte) []testServer {
 			comm.ServerConfig{
 				SecOpts: &comm.SecureOptions{
 					UseTLS:            true,
-					ServerCertificate: serverCert.certPEM,
-					ServerKey:         serverCert.keyPEM,
+					Certificate:       serverCert.certPEM,
+					Key:               serverCert.keyPEM,
 					RequireClientCert: true,
 					ClientRootCAs:     clientRootCAs,
 				},
@@ -395,39 +395,39 @@ func TestNewGRPCServerInvalidParameters(t *testing.T) {
 		t.Log(err.Error())
 	}
 
-	//missing serverCertificate
+	//missing server Certificate
 	_, err = comm.NewGRPCServer(":9041",
 		comm.ServerConfig{
 			SecOpts: &comm.SecureOptions{
-				UseTLS:            true,
-				ServerCertificate: []byte{}}})
+				UseTLS:      true,
+				Certificate: []byte{}}})
 	//check for error
-	msg = "serverConfig.SecOpts must contain both ServerKey and " +
-		"ServerCertificate when UseTLS is true"
+	msg = "serverConfig.SecOpts must contain both Key and " +
+		"Certificate when UseTLS is true"
 	assert.EqualError(t, err, msg)
 	if err != nil {
 		t.Log(err.Error())
 	}
 
-	//missing serverKey
+	//missing server Key
 	_, err = comm.NewGRPCServer(":9042",
 		comm.ServerConfig{
 			SecOpts: &comm.SecureOptions{
-				UseTLS:            true,
-				ServerCertificate: []byte{}}})
+				UseTLS:      true,
+				Certificate: []byte{}}})
 	//check for error
 	assert.EqualError(t, err, msg)
 	if err != nil {
 		t.Log(err.Error())
 	}
 
-	//bad serverKey
+	//bad server Key
 	_, err = comm.NewGRPCServer(":9043",
 		comm.ServerConfig{
 			SecOpts: &comm.SecureOptions{
-				UseTLS:            true,
-				ServerCertificate: []byte(selfSignedCertPEM),
-				ServerKey:         []byte{}}})
+				UseTLS:      true,
+				Certificate: []byte(selfSignedCertPEM),
+				Key:         []byte{}}})
 
 	//check for error
 	msg = "tls: failed to find any PEM data in key input"
@@ -436,13 +436,13 @@ func TestNewGRPCServerInvalidParameters(t *testing.T) {
 		t.Log(err.Error())
 	}
 
-	//bad serverCertificate
+	//bad server Certificate
 	_, err = comm.NewGRPCServer(":9044",
 		comm.ServerConfig{
 			SecOpts: &comm.SecureOptions{
-				UseTLS:            true,
-				ServerCertificate: []byte{},
-				ServerKey:         []byte(selfSignedKeyPEM)}})
+				UseTLS:      true,
+				Certificate: []byte{},
+				Key:         []byte(selfSignedKeyPEM)}})
 	//check for error
 	msg = "tls: failed to find any PEM data in certificate input"
 	assert.EqualError(t, err, msg)
@@ -454,8 +454,8 @@ func TestNewGRPCServerInvalidParameters(t *testing.T) {
 		comm.ServerConfig{
 			SecOpts: &comm.SecureOptions{
 				UseTLS:            true,
-				ServerCertificate: []byte(selfSignedCertPEM),
-				ServerKey:         []byte(selfSignedKeyPEM),
+				Certificate:       []byte(selfSignedCertPEM),
+				Key:               []byte(selfSignedKeyPEM),
 				RequireClientCert: true}})
 	badRootCAs := [][]byte{[]byte(badPEM)}
 	err = srv.SetClientRootCAs(badRootCAs)
@@ -576,9 +576,9 @@ func TestNewSecureGRPCServer(t *testing.T) {
 	testAddress := "localhost:9055"
 	srv, err := comm.NewGRPCServer(testAddress, comm.ServerConfig{
 		SecOpts: &comm.SecureOptions{
-			UseTLS:            true,
-			ServerCertificate: []byte(selfSignedCertPEM),
-			ServerKey:         []byte(selfSignedKeyPEM)}})
+			UseTLS:      true,
+			Certificate: []byte(selfSignedCertPEM),
+			Key:         []byte(selfSignedKeyPEM)}})
 	//check for error
 	if err != nil {
 		t.Fatalf("Failed to return new GRPC server: %v", err)
@@ -661,9 +661,9 @@ func TestNewSecureGRPCServerFromListener(t *testing.T) {
 
 	srv, err := comm.NewGRPCServerFromListener(lis, comm.ServerConfig{
 		SecOpts: &comm.SecureOptions{
-			UseTLS:            true,
-			ServerCertificate: []byte(selfSignedCertPEM),
-			ServerKey:         []byte(selfSignedKeyPEM)}})
+			UseTLS:      true,
+			Certificate: []byte(selfSignedCertPEM),
+			Key:         []byte(selfSignedKeyPEM)}})
 	//check for error
 	if err != nil {
 		t.Fatalf("Failed to return new GRPC server: %v", err)
@@ -743,9 +743,9 @@ func TestWithSignedRootCertificates(t *testing.T) {
 
 	srv, err := comm.NewGRPCServerFromListener(lis, comm.ServerConfig{
 		SecOpts: &comm.SecureOptions{
-			UseTLS:            true,
-			ServerCertificate: certPEMBlock,
-			ServerKey:         keyPEMBlock}})
+			UseTLS:      true,
+			Certificate: certPEMBlock,
+			Key:         keyPEMBlock}})
 	//check for error
 	if err != nil {
 		t.Fatalf("Failed to return new GRPC server: %v", err)
@@ -822,9 +822,9 @@ func TestWithSignedIntermediateCertificates(t *testing.T) {
 
 	srv, err := comm.NewGRPCServerFromListener(lis, comm.ServerConfig{
 		SecOpts: &comm.SecureOptions{
-			UseTLS:            true,
-			ServerCertificate: certPEMBlock,
-			ServerKey:         keyPEMBlock}})
+			UseTLS:      true,
+			Certificate: certPEMBlock,
+			Key:         keyPEMBlock}})
 	//check for error
 	if err != nil {
 		t.Fatalf("Failed to return new GRPC server: %v", err)
@@ -1444,9 +1444,9 @@ func TestUpdateTLSCert(t *testing.T) {
 
 	cfg := comm.ServerConfig{
 		SecOpts: &comm.SecureOptions{
-			UseTLS:            true,
-			ServerKey:         key,
-			ServerCertificate: cert,
+			UseTLS:      true,
+			Key:         key,
+			Certificate: cert,
 		},
 	}
 	srv, err := comm.NewGRPCServer("localhost:8333", cfg)
@@ -1489,4 +1489,104 @@ func TestUpdateTLSCert(t *testing.T) {
 	err = probeServer()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "certificate is valid for notlocalhost.org1.example.com, notlocalhost, not localhost")
+}
+
+func TestCipherSuites(t *testing.T) {
+	t.Parallel()
+
+	// default cipher suites
+	defaultCipherSuites := []uint16{
+		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+	}
+	// the other cipher suites supported by Go
+	otherCipherSuites := []uint16{
+		tls.TLS_RSA_WITH_RC4_128_SHA,
+		tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
+		tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_RSA_WITH_AES_128_CBC_SHA256,
+		tls.TLS_ECDHE_ECDSA_WITH_RC4_128_SHA,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_RC4_128_SHA,
+		tls.TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
+		tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+		tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+	}
+	certPEM, err := ioutil.ReadFile(filepath.Join("testdata", "certs",
+		"Org1-server1-cert.pem"))
+	assert.NoError(t, err)
+	keyPEM, err := ioutil.ReadFile(filepath.Join("testdata", "certs",
+		"Org1-server1-key.pem"))
+	assert.NoError(t, err)
+	caPEM, err := ioutil.ReadFile(filepath.Join("testdata", "certs",
+		"Org1-cert.pem"))
+	assert.NoError(t, err)
+	certPool, err := createCertPool([][]byte{caPEM})
+	assert.NoError(t, err)
+
+	serverConfig := comm.ServerConfig{
+		SecOpts: &comm.SecureOptions{
+			Certificate: certPEM,
+			Key:         keyPEM,
+			UseTLS:      true,
+		}}
+
+	var tests = []struct {
+		name          string
+		port          int
+		clientCiphers []uint16
+		success       bool
+	}{
+		{
+			name:    "server default / client all",
+			port:    8340,
+			success: true,
+		},
+		{
+			name:          "server default / client match",
+			port:          8341,
+			clientCiphers: defaultCipherSuites,
+			success:       true,
+		},
+		{
+			name:          "server default / client no match",
+			port:          8342,
+			clientCiphers: otherCipherSuites,
+			success:       false,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			t.Logf("Running test %s ...", test.name)
+			address := fmt.Sprintf("localhost:%d", test.port)
+			srv, err := comm.NewGRPCServer(address, serverConfig)
+			assert.NoError(t, err)
+			go srv.Start()
+			defer srv.Stop()
+			tlsConfig := &tls.Config{
+				RootCAs:      certPool,
+				CipherSuites: test.clientCiphers,
+			}
+			_, err = tls.Dial("tcp", address, tlsConfig)
+			if test.success {
+				assert.NoError(t, err)
+			} else {
+				t.Log(err)
+				assert.Contains(t, err.Error(), "handshake failure")
+			}
+		})
+	}
 }
