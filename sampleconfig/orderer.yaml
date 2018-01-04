@@ -19,7 +19,7 @@ General:
     #  - json: A simple file ledger that writes blocks to disk in JSON format.
     # Only one production ledger type is provided:
     #  - file: A production file-based ledger.
-    LedgerType: ram
+    LedgerType: file
 
     # Listen address: The IP on which to bind to listen.
     ListenAddress: 127.0.0.1
