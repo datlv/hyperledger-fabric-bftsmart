@@ -44,7 +44,6 @@ import (
 	"github.com/pkg/errors"
 	"github.com/spf13/viper"
 	"golang.org/x/sync/semaphore"
-	"google.golang.org/grpc"
 )
 
 var peerLogger = flogging.MustGetLogger("peer")
@@ -336,7 +335,7 @@ func createChain(cid string, ledger ledger.PeerLedger, cb *common.Block) error {
 	}
 
 	resConf := &common.Config{ChannelGroup: &common.ConfigGroup{}}
-	if ac != nil && ac.Capabilities().LifecycleViaConfig() {
+	if ac != nil && ac.Capabilities().ResourcesTree() {
 		if resConf, err = retrievePersistedResourceConfig(ledger); err != nil {
 			return err
 		}
@@ -645,11 +644,6 @@ func SetCurrConfigBlock(block *common.Block, cid string) error {
 	return fmt.Errorf("Chain %s doesn't exist on the peer", cid)
 }
 
-// NewPeerClientConnection Returns a new grpc.ClientConn to the configured local PEER.
-func NewPeerClientConnection() (*grpc.ClientConn, error) {
-	return NewPeerClientConnectionWithAddress(viper.GetString("peer.address"))
-}
-
 // GetLocalIP returns the non loopback local IP of the host
 func GetLocalIP() string {
 	addrs, err := net.InterfaceAddrs()
@@ -665,16 +659,6 @@ func GetLocalIP() string {
 		}
 	}
 	return ""
-}
-
-// NewPeerClientConnectionWithAddress Returns a new grpc.ClientConn to the configured local PEER.
-func NewPeerClientConnectionWithAddress(peerAddress string) (*grpc.ClientConn, error) {
-	if comm.TLSEnabled() {
-		return comm.NewClientConnectionWithAddress(peerAddress, true, true,
-			comm.InitTLSForPeer(), nil)
-	}
-	return comm.NewClientConnectionWithAddress(peerAddress, true, false,
-		nil, nil)
 }
 
 // GetChannelsInfo returns an array with information about all channels for
@@ -808,18 +792,4 @@ func (*configSupport) GetResourceConfig(channel string) cc.Config {
 		return nil
 	}
 	return chain.cs.bundleSource.ConfigtxValidator()
-}
-
-// GetPolicyMapper returns an instance of a object that represents
-// an API policy mapper which provides a mapping from specific API
-// function to its policy
-func (*configSupport) GetPolicyMapper(channel string) resourcesconfig.PolicyMapper {
-	chains.RLock()
-	defer chains.RUnlock()
-	chain := chains.list[channel]
-	if chain == nil {
-		peerLogger.Error("GetPolicyMapper: channel", channel, "not found in the list of channels associated with this peer")
-		return nil
-	}
-	return chain.cs.bundleSource.APIPolicyMapper()
 }

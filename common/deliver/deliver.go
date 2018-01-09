@@ -21,6 +21,8 @@ import (
 	"math"
 	"time"
 
+	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/common/crypto"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/ledger/blockledger"
 	"github.com/hyperledger/fabric/common/policies"
@@ -29,10 +31,8 @@ import (
 	cb "github.com/hyperledger/fabric/protos/common"
 	ab "github.com/hyperledger/fabric/protos/orderer"
 	"github.com/hyperledger/fabric/protos/utils"
-	"github.com/pkg/errors"
-
-	"github.com/golang/protobuf/proto"
 	"github.com/op/go-logging"
+	"github.com/pkg/errors"
 )
 
 const pkgLogID = "common/deliver"
@@ -55,6 +55,7 @@ type SupportManager interface {
 
 // Support provides the backing resources needed to support deliver on a chain
 type Support interface {
+
 	// Sequence returns the current config sequence number, can be used to detect config changes
 	Sequence() uint64
 
@@ -68,18 +69,19 @@ type Support interface {
 	Errored() <-chan struct{}
 }
 
-// PolicyNameProvider provides a policy name given the channel id
-type PolicyNameProvider func(chainID string) (string, error)
+// PolicyChecker checks the envelope against the policy logic supplied by the
+// function
+type PolicyChecker func(envelope *cb.Envelope, channelID string) error
 
 type deliverServer struct {
 	sm               SupportManager
-	policyProvider   PolicyNameProvider
+	policyChecker    PolicyChecker
 	timeWindow       time.Duration
 	bindingInspector comm.BindingInspector
 }
 
 // NewHandlerImpl creates an implementation of the Handler interface
-func NewHandlerImpl(sm SupportManager, policyProvider PolicyNameProvider, timeWindow time.Duration, mutualTLS bool) Handler {
+func NewHandlerImpl(sm SupportManager, policyChecker PolicyChecker, timeWindow time.Duration, mutualTLS bool) Handler {
 	// function to extract the TLS cert hash from a channel header
 	extract := func(msg proto.Message) []byte {
 		chdr, isChannelHeader := msg.(*cb.ChannelHeader)
@@ -92,7 +94,7 @@ func NewHandlerImpl(sm SupportManager, policyProvider PolicyNameProvider, timeWi
 
 	return &deliverServer{
 		sm:               sm,
-		policyProvider:   policyProvider,
+		policyChecker:    policyChecker,
 		timeWindow:       timeWindow,
 		bindingInspector: bindingInspector,
 	}
@@ -164,16 +166,14 @@ func (ds *deliverServer) deliverBlocks(srv ab.AtomicBroadcast_DeliverServer, env
 
 	}
 
-	lastConfigSequence := chain.Sequence()
-
-	policyName, err := ds.policyProvider(chdr.ChannelId)
+	accessControl, err := newSessionAC(chain, envelope, ds.policyChecker, chdr.ChannelId, crypto.ExpiresAt)
 	if err != nil {
-		logger.Warningf("[channel: %s] failed to obtain policy name due to %s", chdr.ChannelId, err)
+		logger.Warningf("[channel: %s] failed to create access control object due to %s", chdr.ChannelId, err)
 		return sendStatusReply(srv, cb.Status_BAD_REQUEST)
 	}
-	sf := NewSigFilter(policyName, chain)
-	if err := sf.Apply(envelope); err != nil {
-		logger.Warningf("[channel: %s] Received unauthorized deliver request from %s: %s", chdr.ChannelId, addr, err)
+
+	if err := accessControl.evaluate(); err != nil {
+		logger.Warningf("[channel: %s] Client authorization revoked for deliver request from %s: %s", chdr.ChannelId, addr, err)
 		return sendStatusReply(srv, cb.Status_FORBIDDEN)
 	}
 
@@ -219,16 +219,13 @@ func (ds *deliverServer) deliverBlocks(srv ab.AtomicBroadcast_DeliverServer, env
 			logger.Errorf("[channel: %s] Error reading from channel, cause was: %v", chdr.ChannelId, status)
 			return sendStatusReply(srv, status)
 		}
+
 		// increment block number to support FAIL_IF_NOT_READY deliver behavior
 		number++
 
-		currentConfigSequence := chain.Sequence()
-		if currentConfigSequence > lastConfigSequence {
-			lastConfigSequence = currentConfigSequence
-			if err := sf.Apply(envelope); err != nil {
-				logger.Warningf("[channel: %s] Client authorization revoked for deliver request from %s: %s", chdr.ChannelId, addr, err)
-				return sendStatusReply(srv, cb.Status_FORBIDDEN)
-			}
+		if err := accessControl.evaluate(); err != nil {
+			logger.Warningf("[channel: %s] Client authorization revoked for deliver request from %s: %s", chdr.ChannelId, addr, err)
+			return sendStatusReply(srv, cb.Status_FORBIDDEN)
 		}
 
 		logger.Debugf("[channel: %s] Delivering block for (%p) for %s", chdr.ChannelId, seekInfo, addr)

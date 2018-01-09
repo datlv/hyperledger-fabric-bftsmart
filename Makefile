@@ -18,6 +18,7 @@
 #   - release-all - builds release packages for all target platforms
 #   - unit-test - runs the go-test based unit tests
 #   - verify - runs unit tests for only the changed package tree
+#   - profile - runs unit tests for all packages in coverprofile mode (slow)
 #   - test-cmd - generates a "go test" string suitable for manual customization
 #   - behave - runs the behave test
 #   - behave-deps - ensures pre-requisites are available for running behave manually
@@ -34,6 +35,10 @@
 #   - clean-all - superset of 'clean' that also removes persistent state
 #   - dist-clean - clean release packages for all target platforms
 #   - unit-test-clean - cleans unit test state (particularly from docker)
+#   - basic-checks - performs basic checks like license, spelling and linter
+#   - enable_ci_only_tests - triggers unit-tests in downstream jobs. Applicable only for CI not to
+#     use in the local machine.
+#   - docker-thirdparty - pulls thirdparty images (kafka,zookeeper,couchdb)
 
 BASE_VERSION = 1.1.0-alpha
 PREV_VERSION = 1.1.0-preview
@@ -112,6 +117,8 @@ all: native docker checks
 
 checks: license spelling linter unit-test behave
 
+basic-checks: license spelling linter
+
 desk-check: license spelling linter verify behave
 
 .PHONY: docker-thirdparty
@@ -177,8 +184,14 @@ unit-test: unit-test-clean peer-docker testenv
 
 unit-tests: unit-test
 
+enable_ci_only_tests: testenv
+	cd unit-test && docker-compose up --abort-on-container-exit --force-recreate && docker-compose down
+
 verify: unit-test-clean peer-docker testenv
 	cd unit-test && JOB_TYPE=VERIFY docker-compose up --abort-on-container-exit --force-recreate && docker-compose down
+
+profile: unit-test-clean peer-docker testenv
+	cd unit-test && JOB_TYPE=PROFILE docker-compose up --abort-on-container-exit --force-recreate && docker-compose down
 
 # Generates a string to the terminal suitable for manual augmentation / re-issue, useful for running tests by hand
 test-cmd:

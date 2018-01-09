@@ -308,7 +308,7 @@ func TestIterator(t *testing.T) {
 }
 
 func testIterator(t *testing.T, env testEnv, numKeys int, startKeyNum int, endKeyNum int) {
-	cID := "cID"
+	cID := "cid"
 	txMgr := env.getTxMgr()
 	txMgrHelper := newTxMgrTestHelper(t, txMgr)
 	s, _ := txMgr.NewTxSimulator("test_tx1")
@@ -376,7 +376,7 @@ func TestIteratorWithDeletes(t *testing.T) {
 }
 
 func testIteratorWithDeletes(t *testing.T, env testEnv) {
-	cID := "cID"
+	cID := "cid"
 	txMgr := env.getTxMgr()
 	txMgrHelper := newTxMgrTestHelper(t, txMgr)
 	s, _ := txMgr.NewTxSimulator("test_tx1")
@@ -418,7 +418,7 @@ func TestTxValidationWithItr(t *testing.T) {
 }
 
 func testTxValidationWithItr(t *testing.T, env testEnv) {
-	cID := "cID"
+	cID := "cid"
 	txMgr := env.getTxMgr()
 	txMgrHelper := newTxMgrTestHelper(t, txMgr)
 
@@ -483,7 +483,7 @@ func TestGetSetMultipeKeys(t *testing.T) {
 }
 
 func testGetSetMultipeKeys(t *testing.T, env testEnv) {
-	cID := "cID"
+	cID := "cid"
 	txMgr := env.getTxMgr()
 	txMgrHelper := newTxMgrTestHelper(t, txMgr)
 	// simulate tx1
@@ -687,4 +687,52 @@ func TestTxSimulatorMissingPvtdata(t *testing.T) {
 	val, err = simulator.GetPrivateData("ns1", "coll4", "key4")
 	testutil.AssertNoError(t, err, "")
 	testutil.AssertNil(t, val)
+}
+
+func TestDeleteOnCursor(t *testing.T) {
+	cID := "cid"
+	env := testEnvs[0]
+	env.init(t, "TestDeleteOnCursor")
+	defer env.cleanup()
+
+	txMgr := env.getTxMgr()
+	txMgrHelper := newTxMgrTestHelper(t, txMgr)
+
+	// Simulate and commit tx1 to populate sample data (key_001 through key_010)
+	s, _ := txMgr.NewTxSimulator("test_tx1")
+	for i := 1; i <= 10; i++ {
+		k := createTestKey(i)
+		v := createTestValue(i)
+		t.Logf("Adding k=[%s], v=[%s]", k, v)
+		s.SetState(cID, k, v)
+	}
+	s.Done()
+	txRWSet1, _ := s.GetTxSimulationResults()
+	txMgrHelper.validateAndCommitRWSet(txRWSet1.PubSimulationResults)
+
+	// simulate and commit tx2 that reads keys key_001 through key_004 and deletes them one by one (in a loop - itr.Next() followed by Delete())
+	s2, _ := txMgr.NewTxSimulator("test_tx2")
+	itr2, _ := s2.GetStateRangeScanIterator(cID, createTestKey(1), createTestKey(5))
+	for i := 1; i <= 4; i++ {
+		kv, err := itr2.Next()
+		testutil.AssertNoError(t, err, "")
+		testutil.AssertNotNil(t, kv)
+		key := kv.(*queryresult.KV).Key
+		s2.DeleteState(cID, key)
+	}
+	itr2.Close()
+	s2.Done()
+	txRWSet2, _ := s2.GetTxSimulationResults()
+	txMgrHelper.validateAndCommitRWSet(txRWSet2.PubSimulationResults)
+
+	// simulate tx3 to verify that the keys key_001 through key_004 got deleted
+	s3, _ := txMgr.NewTxSimulator("test_tx3")
+	itr3, _ := s3.GetStateRangeScanIterator(cID, createTestKey(1), createTestKey(10))
+	kv, err := itr3.Next()
+	testutil.AssertNoError(t, err, "")
+	testutil.AssertNotNil(t, kv)
+	key := kv.(*queryresult.KV).Key
+	testutil.AssertEquals(t, key, "key_005")
+	itr3.Close()
+	s3.Done()
 }

@@ -19,11 +19,9 @@ import (
 
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/core/config"
-	"github.com/spf13/viper"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/grpclog"
 )
 
 const defaultTimeout = time.Second * 3
@@ -187,10 +185,6 @@ func getEnv(key, def string) string {
 	}
 }
 
-func GetPeerTestingAddress(port string) string {
-	return getEnv("UNIT_TEST_PEER_IP", "localhost") + ":" + port
-}
-
 // NewClientConnectionWithAddress Returns a new grpc.ClientConn to the given address
 func NewClientConnectionWithAddress(peerAddress string, block bool, tslEnabled bool,
 	creds credentials.TransportCredentials, ka *KeepaliveOptions) (*grpc.ClientConn, error) {
@@ -220,25 +214,6 @@ func NewClientConnectionWithAddress(peerAddress string, block bool, tslEnabled b
 		return nil, err
 	}
 	return conn, err
-}
-
-// InitTLSForPeer returns TLS credentials for peer
-func InitTLSForPeer() credentials.TransportCredentials {
-	var sn string
-	if viper.GetString("peer.tls.serverhostoverride") != "" {
-		sn = viper.GetString("peer.tls.serverhostoverride")
-	}
-	var creds credentials.TransportCredentials
-	if config.GetPath("peer.tls.rootcert.file") != "" {
-		var err error
-		creds, err = credentials.NewClientTLSFromFile(config.GetPath("peer.tls.rootcert.file"), sn)
-		if err != nil {
-			grpclog.Fatalf("Failed to create TLS credentials %v", err)
-		}
-	} else {
-		logger.Panic("peer.tls.rootcert.file isn't configured")
-	}
-	return creds
 }
 
 func InitTLSForShim(key, certStr string) credentials.TransportCredentials {
