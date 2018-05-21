@@ -61,9 +61,10 @@ func invokeEmptyCall(address string, dialOptions []grpc.DialOption) (*testpb.Emp
 
 	//add DialOptions
 	dialOptions = append(dialOptions, grpc.WithBlock())
-	dialOptions = append(dialOptions, grpc.WithTimeout(timeout))
+	ctx := context.Background()
+	ctx, _ = context.WithTimeout(ctx, timeout)
 	//create GRPC client conn
-	clientConn, err := grpc.Dial(address, dialOptions...)
+	clientConn, err := grpc.DialContext(ctx, address, dialOptions...)
 	if err != nil {
 		return nil, err
 	}
@@ -72,12 +73,12 @@ func invokeEmptyCall(address string, dialOptions []grpc.DialOption) (*testpb.Emp
 	//create GRPC client
 	client := testpb.NewTestServiceClient(clientConn)
 
-	ctx := context.Background()
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	callCtx := context.Background()
+	callCtx, cancel := context.WithTimeout(callCtx, timeout)
 	defer cancel()
 
 	//invoke service
-	empty, err := client.EmptyCall(ctx, new(testpb.Empty))
+	empty, err := client.EmptyCall(callCtx, new(testpb.Empty))
 	if err != nil {
 		return nil, err
 	}
@@ -221,7 +222,7 @@ func TestUpdateRootsFromConfigBlock(t *testing.T) {
 	var tests = []struct {
 		name          string
 		listenAddress string
-		secureConfig  comm.SecureServerConfig
+		serverConfig  comm.ServerConfig
 		createChannel func()
 		goodOptions   []grpc.DialOption
 		badOptions    []grpc.DialOption
@@ -232,53 +233,59 @@ func TestUpdateRootsFromConfigBlock(t *testing.T) {
 		{
 			name:          "MutualTLSOrg1Org1",
 			listenAddress: fmt.Sprintf("localhost:%d", 4051),
-			secureConfig: comm.SecureServerConfig{
-				UseTLS:            true,
-				ServerCertificate: org1Server1Cert,
-				ServerKey:         org1Server1Key,
-				ServerRootCAs:     [][]byte{org1CA},
-				RequireClientCert: true,
+			serverConfig: comm.ServerConfig{
+				SecOpts: &comm.SecureOptions{
+					UseTLS:            true,
+					Certificate:       org1Server1Cert,
+					Key:               org1Server1Key,
+					ServerRootCAs:     [][]byte{org1CA},
+					RequireClientCert: true,
+				},
 			},
 			createChannel: func() { createChannel("channel1", channel1Block) },
 			goodOptions:   []grpc.DialOption{grpc.WithTransportCredentials(org1Creds)},
 			badOptions:    []grpc.DialOption{grpc.WithTransportCredentials(ordererOrgCreds)},
-			numAppCAs:     2, // each channel also has a DEFAULT MSP
+			numAppCAs:     3, // each channel also has a DEFAULT MSP
 			numOrdererCAs: 1,
 		},
 		{
 			name:          "MutualTLSOrg1Org2",
 			listenAddress: fmt.Sprintf("localhost:%d", 4052),
-			secureConfig: comm.SecureServerConfig{
-				UseTLS:            true,
-				ServerCertificate: org1Server1Cert,
-				ServerKey:         org1Server1Key,
-				ServerRootCAs:     [][]byte{org1CA},
-				RequireClientCert: true,
+			serverConfig: comm.ServerConfig{
+				SecOpts: &comm.SecureOptions{
+					UseTLS:            true,
+					Certificate:       org1Server1Cert,
+					Key:               org1Server1Key,
+					ServerRootCAs:     [][]byte{org1CA},
+					RequireClientCert: true,
+				},
 			},
 			createChannel: func() { createChannel("channel2", channel2Block) },
 			goodOptions: []grpc.DialOption{
 				grpc.WithTransportCredentials(org2Creds)},
 			badOptions: []grpc.DialOption{
 				grpc.WithTransportCredentials(ordererOrgCreds)},
-			numAppCAs:     4,
+			numAppCAs:     6,
 			numOrdererCAs: 2,
 		},
 		{
 			name:          "MutualTLSOrg1Org2Intermediate",
 			listenAddress: fmt.Sprintf("localhost:%d", 4053),
-			secureConfig: comm.SecureServerConfig{
-				UseTLS:            true,
-				ServerCertificate: org1Server1Cert,
-				ServerKey:         org1Server1Key,
-				ServerRootCAs:     [][]byte{org1CA},
-				RequireClientCert: true,
+			serverConfig: comm.ServerConfig{
+				SecOpts: &comm.SecureOptions{
+					UseTLS:            true,
+					Certificate:       org1Server1Cert,
+					Key:               org1Server1Key,
+					ServerRootCAs:     [][]byte{org1CA},
+					RequireClientCert: true,
+				},
 			},
 			createChannel: func() { createChannel("channel3", channel3Block) },
 			goodOptions: []grpc.DialOption{
 				grpc.WithTransportCredentials(org2IntermediateCreds)},
 			badOptions: []grpc.DialOption{
 				grpc.WithTransportCredentials(ordererOrgCreds)},
-			numAppCAs:     7,
+			numAppCAs:     10,
 			numOrdererCAs: 3,
 		},
 	}
@@ -287,7 +294,7 @@ func TestUpdateRootsFromConfigBlock(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Logf("Running test %s ...", test.name)
-			_, err := peer.CreatePeerServer(test.listenAddress, test.secureConfig)
+			_, err := peer.CreatePeerServer(test.listenAddress, test.serverConfig)
 			if err != nil {
 				t.Fatalf("CreatePeerServer failed with error [%s]", err)
 			} else {
@@ -309,7 +316,7 @@ func TestUpdateRootsFromConfigBlock(t *testing.T) {
 				test.createChannel()
 
 				// make sure we have the expected number of CAs
-				appCAs, ordererCAs := comm.GetCASupport().GetClientRootCAs()
+				appCAs, ordererCAs := comm.GetCredentialSupport().GetClientRootCAs()
 				assert.Equal(t, test.numAppCAs, len(appCAs),
 					"Did not find expected number of app CAs for channel")
 				assert.Equal(t, test.numOrdererCAs, len(ordererCAs),

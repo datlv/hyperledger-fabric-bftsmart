@@ -44,12 +44,20 @@ func acceptAll(msg interface{}) bool {
 	return true
 }
 
+var noopPurgeIdentity = func(_ common.PKIidType, _ api.PeerIdentityType) {
+
+}
+
 var (
 	naiveSec = &naiveSecProvider{}
 	hmacKey  = []byte{0, 0, 0}
 )
 
 type naiveSecProvider struct {
+}
+
+func (*naiveSecProvider) Expiration(peerIdentity api.PeerIdentityType) (time.Time, error) {
+	return time.Now().Add(time.Hour), nil
 }
 
 func (*naiveSecProvider) ValidateIdentity(peerIdentity api.PeerIdentityType) error {
@@ -97,7 +105,7 @@ func (*naiveSecProvider) VerifyByChannel(_ common.ChainID, _ api.PeerIdentityTyp
 func newCommInstance(port int, sec api.MessageCryptoService) (Comm, error) {
 	endpoint := fmt.Sprintf("localhost:%d", port)
 	id := []byte(endpoint)
-	inst, err := NewCommInstanceWithServer(port, identity.NewIdentityMapper(sec, id), id, nil)
+	inst, err := NewCommInstanceWithServer(port, identity.NewIdentityMapper(sec, id, noopPurgeIdentity), id, nil)
 	return inst, err
 }
 
@@ -126,7 +134,9 @@ func handshaker(endpoint string, comm Comm, t *testing.T, connMutator msgMutator
 		secureOpts = grpc.WithInsecure()
 	}
 	acceptChan := comm.Accept(acceptAll)
-	conn, err := grpc.Dial("localhost:9611", secureOpts, grpc.WithBlock(), grpc.WithTimeout(time.Second))
+	ctx := context.Background()
+	ctx, _ = context.WithTimeout(ctx, time.Second)
+	conn, err := grpc.DialContext(ctx, "localhost:9611", secureOpts, grpc.WithBlock())
 	assert.NoError(t, err, "%v", err)
 	if err != nil {
 		return nil
@@ -203,7 +213,6 @@ func TestHandshake(t *testing.T) {
 		assert.Equal(t, expectedPKIID, msg.GetConnectionInfo().ID)
 		assert.Equal(t, api.PeerIdentityType(endpoint), msg.GetConnectionInfo().Identity)
 		assert.NotNil(t, msg.GetConnectionInfo().Auth)
-		assert.True(t, msg.GetConnectionInfo().IsAuthenticated())
 		sig, _ := (&naiveSecProvider{}).Sign(msg.GetConnectionInfo().Auth.SignedData)
 		assert.Equal(t, sig, msg.GetConnectionInfo().Auth.Signature)
 	}
@@ -212,13 +221,12 @@ func TestHandshake(t *testing.T) {
 	ll, err := net.Listen("tcp", fmt.Sprintf("%s:%d", "", 9611))
 	assert.NoError(t, err)
 	s := grpc.NewServer()
-	go s.Serve(ll)
-
 	id := []byte("localhost:9611")
-	idMapper := identity.NewIdentityMapper(naiveSec, id)
+	idMapper := identity.NewIdentityMapper(naiveSec, id, noopPurgeIdentity)
 	inst, err := NewCommInstance(s, nil, idMapper, api.PeerIdentityType("localhost:9611"), func() []grpc.DialOption {
 		return []grpc.DialOption{grpc.WithInsecure()}
 	})
+	go s.Serve(ll)
 	assert.NoError(t, err)
 	var msg proto.ReceivedMessage
 
@@ -230,8 +238,8 @@ func TestHandshake(t *testing.T) {
 	}
 	assert.Equal(t, common.PKIidType("localhost:9608"), msg.GetConnectionInfo().ID)
 	assert.Equal(t, api.PeerIdentityType("localhost:9608"), msg.GetConnectionInfo().Identity)
-	assert.Nil(t, msg.GetConnectionInfo().Auth)
-	assert.False(t, msg.GetConnectionInfo().IsAuthenticated())
+	sig, _ := (&naiveSecProvider{}).Sign(msg.GetConnectionInfo().Auth.SignedData)
+	assert.Equal(t, sig, msg.GetConnectionInfo().Auth.Signature)
 
 	inst.Stop()
 	s.Stop()
@@ -342,22 +350,18 @@ func TestBasic(t *testing.T) {
 
 func TestProdConstructor(t *testing.T) {
 	t.Parallel()
-	peerIdentity := GenerateCertificatesOrPanic()
-	srv, lsnr, dialOpts, certHash := createGRPCLayer(20000)
+	srv, lsnr, dialOpts, certs := createGRPCLayer(20000)
 	defer srv.Stop()
 	defer lsnr.Close()
 	id := []byte("localhost:20000")
-	comm1, _ := NewCommInstance(srv, &peerIdentity, identity.NewIdentityMapper(naiveSec, id), id, dialOpts)
-	comm1.(*commImpl).selfCertHash = certHash
+	comm1, _ := NewCommInstance(srv, certs, identity.NewIdentityMapper(naiveSec, id, noopPurgeIdentity), id, dialOpts)
 	go srv.Serve(lsnr)
 
-	peerIdentity = GenerateCertificatesOrPanic()
-	srv, lsnr, dialOpts, certHash = createGRPCLayer(30000)
+	srv, lsnr, dialOpts, certs = createGRPCLayer(30000)
 	defer srv.Stop()
 	defer lsnr.Close()
 	id = []byte("localhost:30000")
-	comm2, _ := NewCommInstance(srv, &peerIdentity, identity.NewIdentityMapper(naiveSec, id), id, dialOpts)
-	comm2.(*commImpl).selfCertHash = certHash
+	comm2, _ := NewCommInstance(srv, certs, identity.NewIdentityMapper(naiveSec, id, noopPurgeIdentity), id, dialOpts)
 	go srv.Serve(lsnr)
 	defer comm1.Stop()
 	defer comm2.Stop()
@@ -406,7 +410,9 @@ func TestCloseConn(t *testing.T) {
 	}
 	ta := credentials.NewTLS(tlsCfg)
 
-	conn, err := grpc.Dial("localhost:1611", grpc.WithTransportCredentials(ta), grpc.WithBlock(), grpc.WithTimeout(time.Second))
+	ctx := context.Background()
+	ctx, _ = context.WithTimeout(ctx, time.Second)
+	conn, err := grpc.DialContext(ctx, "localhost:1611", grpc.WithTransportCredentials(ta), grpc.WithBlock())
 	assert.NoError(t, err, "%v", err)
 	cl := proto.NewGossipClient(conn)
 	stream, err := cl.GossipStream(context.Background())

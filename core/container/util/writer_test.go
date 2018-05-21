@@ -1,17 +1,7 @@
 /*
 Copyright London Stock Exchange 2016 All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package util
@@ -21,6 +11,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -52,6 +43,7 @@ func Test_WriteFileToPackage(t *testing.T) {
 	// Read the file from the archive and check the name and file content
 	r := bytes.NewReader(buf.Bytes())
 	gr, err1 := gzip.NewReader(r)
+	defer gr.Close()
 	assert.NoError(t, err1, "Error creating a gzip reader")
 	tr := tar.NewReader(gr)
 	header, err2 := tr.Next()
@@ -120,6 +112,7 @@ func Test_WriteStreamToPackage(t *testing.T) {
 	// Read the file from the archive and check the name and file content
 	br := bytes.NewReader(buf.Bytes())
 	gr, err1 := gzip.NewReader(br)
+	defer gr.Close()
 	assert.NoError(t, err1, "Error creating a gzip reader")
 	tr := tar.NewReader(gr)
 	header, err2 := tr.Next()
@@ -134,14 +127,12 @@ func Test_WriteStreamToPackage(t *testing.T) {
 		"file content from the archive is not same as original file content")
 }
 
-func Test_WriteFolderToPackage(t *testing.T) {
-	buf := bytes.NewBuffer(nil)
-	gw := gzip.NewWriter(buf)
-	tw := tar.NewWriter(gw)
+// Success case 1: with include and exclude file types and without exclude dir
+func Test_WriteFolderToTarPackage1(t *testing.T) {
 
-	// Success case 1: with include and exclude file types and without exclude dir
 	gopath := os.Getenv("GOPATH")
 	gopath = filepath.SplitList(gopath)[0]
+
 	srcPath := filepath.Join(gopath, "src",
 		"github.com/hyperledger/fabric/examples/chaincode/java/SimpleSample")
 	filePath := "src/src/main/java/example/SimpleSample.java"
@@ -152,31 +143,214 @@ func Test_WriteFolderToPackage(t *testing.T) {
 		".xml": true,
 	}
 
-	err := WriteFolderToTarPackage(tw, srcPath, "",
-		includeFileTypes, excludeFileTypes)
-	assert.NoError(t, err, "Error writing folder to package")
-
-	tw.Close()
-	gw.Close()
+	tarBytes := createTestTar(t, srcPath, "", includeFileTypes, excludeFileTypes)
 
 	// Read the file from the archive and check the name
-	br := bytes.NewReader(buf.Bytes())
+	br := bytes.NewReader(tarBytes)
 	gr, err1 := gzip.NewReader(br)
+	defer gr.Close()
 	assert.NoError(t, err1, "Error creating a gzip reader")
 	tr := tar.NewReader(gr)
 	header, err2 := tr.Next()
 	assert.NoError(t, err2, "Error getting the file from the tar")
 	assert.Equal(t, filePath, header.Name,
 		"Name of the file read from the archive is not same as the file added to the archive")
+}
 
-	// Success case 2: with exclude dir and no include file types
-	srcPath = filepath.Join(gopath, "src",
+// Success case 2: with exclude dir and no include file types
+func Test_WriteFolderToTarPackage2(t *testing.T) {
+
+	gopath := os.Getenv("GOPATH")
+	gopath = filepath.SplitList(gopath)[0]
+
+	srcPath := filepath.Join(gopath, "src",
 		"github.com/hyperledger/fabric/examples/chaincode/java")
-	tarw := tar.NewWriter(bytes.NewBuffer(nil))
-	defer tarw.Close()
-	err = WriteFolderToTarPackage(tarw, srcPath, "SimpleSample",
-		nil, excludeFileTypes)
+	excludeFileTypes := map[string]bool{
+		".xml": true,
+	}
+
+	createTestTar(t, srcPath, "SimpleSample", nil, excludeFileTypes)
+}
+
+// Success case 3: with chaincode metadata in META-INF directory
+func Test_WriteFolderToTarPackage3(t *testing.T) {
+
+	gopath := os.Getenv("GOPATH")
+	gopath = filepath.SplitList(gopath)[0]
+
+	// Note - go chaincode does not use WriteFolderToTarPackage(),
+	// but we can still use the go example for unit test,
+	// since there are no node chaincode examples in fabric repos
+	srcPath := filepath.Join(gopath, "src",
+		"github.com/hyperledger/fabric/examples/chaincode/go/marbles02")
+	filePath := "META-INF/statedb/couchdb/indexes/indexOwner.json"
+
+	tarBytes := createTestTar(t, srcPath, "", nil, nil)
+
+	// Read the files from the archive and check for the metadata index file
+	br := bytes.NewReader(tarBytes)
+	gr, err := gzip.NewReader(br)
+	defer gr.Close()
+	assert.NoError(t, err, "Error creating a gzip reader")
+	tr := tar.NewReader(gr)
+	var foundIndexArtifact bool
+	for {
+		header, err := tr.Next()
+		if err == io.EOF { // No more entries
+			break
+		}
+		assert.NoError(t, err, "Error getting Next() file in tar")
+		t.Logf("Found file in tar: %s", header.Name)
+		if header.Name == filePath {
+			foundIndexArtifact = true
+			break
+		}
+	}
+	assert.True(t, foundIndexArtifact, "should have found statedb index artifact in marbles02 META-INF directory")
+}
+
+// Success case 4: with chaincode metadata in META-INF directory, pass trailing slash in srcPath
+func Test_WriteFolderToTarPackage4(t *testing.T) {
+
+	gopath := os.Getenv("GOPATH")
+	gopath = filepath.SplitList(gopath)[0]
+
+	// Note - go chaincode does not use WriteFolderToTarPackage(),
+	// but we can still use the go example for unit test,
+	// since there are no node chaincode examples in fabric repos
+	srcPath := filepath.Join(gopath, "src",
+		"github.com/hyperledger/fabric/examples/chaincode/go/marbles02")
+	srcPath = srcPath + "/"
+	filePath := "META-INF/statedb/couchdb/indexes/indexOwner.json"
+
+	tarBytes := createTestTar(t, srcPath, "", nil, nil)
+
+	// Read the files from the archive and check for the metadata index file
+	br := bytes.NewReader(tarBytes)
+	gr, err := gzip.NewReader(br)
+	defer gr.Close()
+	assert.NoError(t, err, "Error creating a gzip reader")
+	tr := tar.NewReader(gr)
+	var foundIndexArtifact bool
+	for {
+		header, err := tr.Next()
+		if err == io.EOF { // No more entries
+			break
+		}
+		assert.NoError(t, err, "Error getting Next() file in tar")
+		t.Logf("Found file in tar: %s", header.Name)
+		if header.Name == filePath {
+			foundIndexArtifact = true
+			break
+		}
+	}
+	assert.True(t, foundIndexArtifact, "should have found statedb index artifact in marbles02 META-INF directory")
+}
+
+// Success case 5: with hidden files in META-INF directory (hidden files get ignored)
+func Test_WriteFolderToTarPackage5(t *testing.T) {
+
+	gopath := os.Getenv("GOPATH")
+	gopath = filepath.SplitList(gopath)[0]
+
+	srcPath := filepath.Join(gopath, "src",
+		"github.com/hyperledger/fabric/test/chaincodes/BadMetadataIgnoreHiddenFile")
+
+	filePath := "META-INF/.hiddenfile"
+
+	tarBytes := createTestTar(t, srcPath, "", nil, nil)
+
+	// Read the files from the archive and check for no hidden files
+	br := bytes.NewReader(tarBytes)
+	gr, err := gzip.NewReader(br)
+	defer gr.Close()
+	assert.NoError(t, err, "Error creating a gzip reader")
+	tr := tar.NewReader(gr)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF { // No more entries
+			break
+		}
+		assert.NoError(t, err, "Error getting Next() file in tar")
+		t.Logf("Found file in tar: %s", header.Name)
+		assert.NotEqual(t, filePath, header.Name, "should not have found hidden file META-INF/.hiddenfile")
+	}
+}
+
+func createTestTar(t *testing.T, srcPath string, excludeDir string, includeFileTypeMap map[string]bool, excludeFileTypeMap map[string]bool) []byte {
+	buf := bytes.NewBuffer(nil)
+	gw := gzip.NewWriter(buf)
+	tw := tar.NewWriter(gw)
+
+	err := WriteFolderToTarPackage(tw, srcPath, "", includeFileTypeMap, excludeFileTypeMap)
 	assert.NoError(t, err, "Error writing folder to package")
+
+	tw.Close()
+	gw.Close()
+	return buf.Bytes()
+}
+
+// Failure case 1: no files in directory
+func Test_WriteFolderToTarPackageFailure1(t *testing.T) {
+	gopath := os.Getenv("GOPATH")
+	gopath = filepath.SplitList(gopath)[0]
+
+	srcPath := filepath.Join(gopath, "src",
+		"github.com/hyperledger/fabric/core/container/util",
+		fmt.Sprintf("%d", os.Getpid()))
+	os.Mkdir(srcPath, os.ModePerm)
+	defer os.Remove(srcPath)
+
+	tw := tar.NewWriter(bytes.NewBuffer(nil))
+	defer tw.Close()
+	err := WriteFolderToTarPackage(tw, srcPath, "", nil, nil)
+	assert.Contains(t, err.Error(), "no source files found")
+}
+
+// Failure case 2: with invalid chaincode metadata in META-INF directory
+func Test_WriteFolderToTarPackageFailure2(t *testing.T) {
+
+	gopath := os.Getenv("GOPATH")
+	gopath = filepath.SplitList(gopath)[0]
+
+	// Note - go chaincode does not use WriteFolderToTarPackage(),
+	// but we can still use the go example for unit test,
+	// since there are no node chaincode examples in fabric repos
+	srcPath := filepath.Join(gopath, "src",
+		"github.com/hyperledger/fabric/test/chaincodes/BadMetadataInvalidIndex")
+
+	buf := bytes.NewBuffer(nil)
+	gw := gzip.NewWriter(buf)
+	tw := tar.NewWriter(gw)
+
+	err := WriteFolderToTarPackage(tw, srcPath, "", nil, nil)
+	assert.Error(t, err, "Should have received error writing folder to package")
+
+	tw.Close()
+	gw.Close()
+}
+
+// Failure case 3: with unexpected content in META-INF directory
+func Test_WriteFolderToTarPackageFailure3(t *testing.T) {
+
+	gopath := os.Getenv("GOPATH")
+	gopath = filepath.SplitList(gopath)[0]
+
+	// Note - go chaincode does not use WriteFolderToTarPackage(),
+	// but we can still use the go example for unit test,
+	// since there are no node chaincode examples in fabric repos
+	srcPath := filepath.Join(gopath, "src",
+		"github.com/hyperledger/fabric/test/chaincodes/BadMetadataUnexpectedFolderContent")
+
+	buf := bytes.NewBuffer(nil)
+	gw := gzip.NewWriter(buf)
+	tw := tar.NewWriter(gw)
+
+	err := WriteFolderToTarPackage(tw, srcPath, "", nil, nil)
+	assert.Error(t, err, "Should have received error writing folder to package")
+
+	tw.Close()
+	gw.Close()
 }
 
 func Test_WriteJavaProjectToPackage(t *testing.T) {

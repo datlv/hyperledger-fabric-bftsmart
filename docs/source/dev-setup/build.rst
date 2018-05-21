@@ -33,7 +33,7 @@ To run a specific test use the ``-run RE`` flag where RE is a regular
 expression that matches the test case name. To run tests with verbose
 output use the ``-v`` flag. For example, to run the ``TestGetFoo`` test
 case, change to the directory containing the ``foo_test.go`` and
-call/excecute
+call/execute
 
 ::
 
@@ -41,10 +41,10 @@ call/excecute
 
 
 
-Running Node.js Unit Tests
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+Running Node.js Client SDK Unit Tests
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-You must also run the Node.js unit tests to insure that the Node.js
+You must also run the Node.js unit tests to ensure that the Node.js
 client SDK is not broken by your changes. To run the Node.js unit tests,
 follow the instructions
 `here <https://github.com/hyperledger/fabric-sdk-node/blob/master/README.md>`__.
@@ -56,7 +56,7 @@ Running Behave BDD Tests
 Vagrant environment. See the :doc:`development environment <devenv>` setup instructions
 if you have not already set up your Vagrant environment.
 
-`Behave <http://pythonhosted.org/behave/>`__ tests will setup networks
+`Behave <https://pypi.python.org/pypi/behave>`__ tests will setup networks
 of peers with different security and consensus configurations and verify
 that transactions run properly. To run these tests
 
@@ -138,6 +138,29 @@ the following commands to build the fabric code:
     cd $GOPATH/src/github.com/hyperledger/fabric
     make dist-clean all
 
+Building on Centos 7
+~~~~~~~~~~~~~~~~~~~~
+
+You will have to build CouchDB from source because there is no package
+available from the distribution. If you are planning a multi-orderer
+arrangement, you will also need to install Apache Kafka from source.
+Apache Kafka includes both Zookeeper and Kafka executables and
+supporting artifacts.
+
+::
+
+   export GOPATH={directory of your choice}
+   mkdir -p $GOPATH/src/github.com/hyperledger
+   FABRIC=$GOPATH/src/github.hyperledger/fabric
+   git clone https://github.com/hyperledger/fabric $FABRIC
+   cd $FABRIC
+   git checkout master # <-- only if you want the master branch
+   export PATH=$GOPATH/bin:$PATH
+   make native
+
+If you are not trying to build for docker, you only need the natives.
+
+
 Configuration
 -------------
 
@@ -153,19 +176,6 @@ manipulation through the environment is shown below:
 ::
 
     CORE_PEER_LOGGING_LEVEL=CRITICAL peer
-
-Logging
--------
-
-Logging utilizes the `go-logging <https://github.com/op/go-logging>`__
-library.
-
-The available log levels in order of increasing verbosity are: *CRITICAL
-\| ERROR \| WARNING \| NOTICE \| INFO \| DEBUG*
-
-See the :doc:`logging-control` document for
-instructions on tweaking the level of log messages to output when running
-the various Hyperledger Fabric components.
 
 .. Licensed under Creative Commons Attribution 4.0 International License
    https://creativecommons.org/licenses/by/4.0/

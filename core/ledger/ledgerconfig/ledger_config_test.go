@@ -128,6 +128,42 @@ func TestIsHistoryDBEnabledFalse(t *testing.T) {
 	testutil.AssertEquals(t, updatedValue, false) //test config returns false
 }
 
+func TestIsAutoWarmIndexesEnabledDefault(t *testing.T) {
+	setUpCoreYAMLConfig()
+	defaultValue := IsAutoWarmIndexesEnabled()
+	testutil.AssertEquals(t, defaultValue, true) //test default config is true
+}
+
+func TestIsAutoWarmIndexesEnabledTrue(t *testing.T) {
+	setUpCoreYAMLConfig()
+	defer ledgertestutil.ResetConfigToDefaultValues()
+	viper.Set("ledger.state.couchDBConfig.autoWarmIndexes", true)
+	updatedValue := IsAutoWarmIndexesEnabled()
+	testutil.AssertEquals(t, updatedValue, true) //test config returns true
+}
+
+func TestIsAutoWarmIndexesEnabledFalse(t *testing.T) {
+	setUpCoreYAMLConfig()
+	defer ledgertestutil.ResetConfigToDefaultValues()
+	viper.Set("ledger.state.couchDBConfig.autoWarmIndexes", false)
+	updatedValue := IsAutoWarmIndexesEnabled()
+	testutil.AssertEquals(t, updatedValue, false) //test config returns false
+}
+
+func TestGetWarmIndexesAfterNBlocksDefault(t *testing.T) {
+	setUpCoreYAMLConfig()
+	defaultValue := GetWarmIndexesAfterNBlocks()
+	testutil.AssertEquals(t, defaultValue, 1) //test default config is true
+}
+
+func TestGetWarmIndexesAfterNBlocks(t *testing.T) {
+	setUpCoreYAMLConfig()
+	defer ledgertestutil.ResetConfigToDefaultValues()
+	viper.Set("ledger.state.couchDBConfig.warmIndexesAfterNBlocks", 10)
+	updatedValue := GetWarmIndexesAfterNBlocks()
+	testutil.AssertEquals(t, updatedValue, 10)
+}
+
 func setUpCoreYAMLConfig() {
 	//call a helper method to load the core.yaml
 	ledgertestutil.SetupCoreYAMLConfig()

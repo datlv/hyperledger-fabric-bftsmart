@@ -18,7 +18,6 @@ import (
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/discovery"
-	"github.com/hyperledger/fabric/gossip/identity"
 	"github.com/hyperledger/fabric/gossip/util"
 	proto "github.com/hyperledger/fabric/protos/gossip"
 	"github.com/stretchr/testify/assert"
@@ -36,6 +35,10 @@ func init() {
 
 type configurableCryptoService struct {
 	m map[string]api.OrgIdentityType
+}
+
+func (c *configurableCryptoService) Expiration(peerIdentity api.PeerIdentityType) (time.Time, error) {
+	return time.Now().Add(time.Hour), nil
 }
 
 func (c *configurableCryptoService) putInOrg(port int, org string) {
@@ -109,9 +112,8 @@ func newGossipInstanceWithExternalEndpoint(portPrefix int, id int, mcs *configur
 		PublishStateInfoInterval:   time.Duration(1) * time.Second,
 		RequestStateInfoInterval:   time.Duration(1) * time.Second,
 	}
-	selfId := api.PeerIdentityType(conf.InternalEndpoint)
-	idMapper := identity.NewIdentityMapper(mcs, selfId)
-	g := NewGossipServiceWithServer(conf, mcs, mcs, idMapper, selfId,
+	selfID := api.PeerIdentityType(conf.InternalEndpoint)
+	g := NewGossipServiceWithServer(conf, mcs, mcs, selfID,
 		nil)
 
 	return g
@@ -205,7 +207,7 @@ func TestMultipleOrgEndpointLeakage(t *testing.T) {
 	for _, peers := range orgs2Peers {
 		for _, p := range peers {
 			p.JoinChan(jcm, channel)
-			p.UpdateChannelMetadata([]byte("bla"), channel)
+			p.UpdateChannelMetadata(createMetadata(1), channel)
 		}
 	}
 
@@ -396,11 +398,11 @@ func TestConfidentiality(t *testing.T) {
 			if isOrgInChan(org, ch) {
 				for _, p := range peers {
 					p.JoinChan(joinChanMsgsByChan[ch], common.ChainID(ch))
-					p.UpdateChannelMetadata([]byte{}, common.ChainID(ch))
+					p.UpdateChannelMetadata(createMetadata(1), common.ChainID(ch))
 					go func(p Gossip) {
 						for i := 0; i < 5; i++ {
 							time.Sleep(time.Second)
-							p.UpdateChannelMetadata([]byte{}, common.ChainID(ch))
+							p.UpdateChannelMetadata(createMetadata(1), common.ChainID(ch))
 						}
 					}(p)
 				}

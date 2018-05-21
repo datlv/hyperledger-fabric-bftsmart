@@ -7,15 +7,15 @@ SPDX-License-Identifier: Apache-2.0
 package config
 
 import (
-	channelconfig "github.com/hyperledger/fabric/common/config/channel"
-	configtxapi "github.com/hyperledger/fabric/common/configtx/api"
+	"github.com/hyperledger/fabric/common/channelconfig"
+	"github.com/hyperledger/fabric/common/configtx"
 	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/msp"
 )
 
 type Resources struct {
-	// ConfigtxManagerVal is returned as the result of ConfigtxManager
-	ConfigtxManagerVal configtxapi.Manager
+	// ConfigtxValidatorVal is returned as the result of ConfigtxValidator
+	ConfigtxValidatorVal configtx.Validator
 
 	// PolicyManagerVal is returned as the result of PolicyManager()
 	PolicyManagerVal policies.Manager
@@ -34,11 +34,14 @@ type Resources struct {
 
 	// MSPManagerVal is returned as the result of MSPManager()
 	MSPManagerVal msp.MSPManager
+
+	// ValidateNewErr is returned as the result of ValidateNew
+	ValidateNewErr error
 }
 
-// ConfigtxMangaer returns ConfigtxManagerVal
-func (r *Resources) ConfigtxManager() configtxapi.Manager {
-	return r.ConfigtxManagerVal
+// ConfigtxMangaer returns ConfigtxValidatorVal
+func (r *Resources) ConfigtxValidator() configtx.Validator {
+	return r.ConfigtxValidatorVal
 }
 
 // Returns the PolicyManagerVal
@@ -53,12 +56,12 @@ func (r *Resources) ChannelConfig() channelconfig.Channel {
 
 // Returns the OrdererConfigVal
 func (r *Resources) OrdererConfig() (channelconfig.Orderer, bool) {
-	return r.OrdererConfigVal, r.OrdererConfigVal == nil
+	return r.OrdererConfigVal, r.OrdererConfigVal != nil
 }
 
 // Returns the ApplicationConfigVal
 func (r *Resources) ApplicationConfig() (channelconfig.Application, bool) {
-	return r.ApplicationConfigVal, r.ApplicationConfigVal == nil
+	return r.ApplicationConfigVal, r.ApplicationConfigVal != nil
 }
 
 func (r *Resources) ConsortiumsConfig() (channelconfig.Consortiums, bool) {
@@ -68,4 +71,9 @@ func (r *Resources) ConsortiumsConfig() (channelconfig.Consortiums, bool) {
 // Returns the MSPManagerVal
 func (r *Resources) MSPManager() msp.MSPManager {
 	return r.MSPManagerVal
+}
+
+// ValidateNew returns ValidateNewErr
+func (r *Resources) ValidateNew(res channelconfig.Resources) error {
+	return r.ValidateNewErr
 }

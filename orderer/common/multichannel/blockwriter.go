@@ -9,11 +9,11 @@ package multichannel
 import (
 	"sync"
 
+	newchannelconfig "github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/configtx"
-	configtxapi "github.com/hyperledger/fabric/common/configtx/api"
 	"github.com/hyperledger/fabric/common/crypto"
+	"github.com/hyperledger/fabric/common/ledger/blockledger"
 	"github.com/hyperledger/fabric/common/util"
-	"github.com/hyperledger/fabric/orderer/common/ledger"
 	cb "github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/utils"
 
@@ -22,8 +22,10 @@ import (
 
 type blockWriterSupport interface {
 	crypto.LocalSigner
-	ledger.ReadWriter
-	configtxapi.Manager
+	blockledger.ReadWriter
+	configtx.Validator
+	Update(*newchannelconfig.Bundle)
+	CreateBundle(channelID string, config *cb.Config) (*newchannelconfig.Bundle, error)
 }
 
 // BlockWriter efficiently writes the blockchain to disk.
@@ -110,10 +112,17 @@ func (bw *BlockWriter) ProcessConfigBlock(block *cb.Block) {
 			logger.Panicf("Told to write a config block with new channel, but did not have config envelope encoded: %s", err)
 		}
 
-		err = bw.support.Apply(configEnvelope)
+		err = bw.support.Validate(configEnvelope)
 		if err != nil {
 			logger.Panicf("Told to write a config block with new config, but could not apply it: %s", err)
 		}
+
+		bundle, err := bw.support.CreateBundle(chdr.ChannelId, configEnvelope.Config)
+		if err != nil {
+			logger.Panicf("Told to write a config block with a new config, but could not convert it to a bundle: %s", err)
+		}
+
+		bw.support.Update(bundle)
 	default:
 		logger.Panicf("Told to write a config block with unknown header type: %v", chdr.Type)
 	}

@@ -192,6 +192,10 @@ func (ch *chain) Halt() {
 	}
 }
 
+func (ch *chain) WaitReady() error {
+	return nil
+}
+
 // Errored only closes on exit
 func (ch *chain) Errored() <-chan struct{} {
 	return ch.exitChan
@@ -394,13 +398,15 @@ func (ch *chain) Order(env *cb.Envelope, configSeq uint64) error {
 }
 
 // Configure accepts configuration update messages for ordering
-func (ch *chain) Configure(impetus *cb.Envelope, config *cb.Envelope, configSeq uint64) error {
+//func (ch *chain) Configure(impetus *cb.Envelope, config *cb.Envelope, configSeq uint64) error {
+func (ch *chain) Configure(config *cb.Envelope, configSeq uint64) error {
 
 	//perform usual config processing
 	seq := ch.support.Sequence()
 	msg := config
 	if configSeq < seq {
-		configMsg, _, err := ch.support.ProcessConfigUpdateMsg(impetus)
+		//configMsg, _, err := ch.support.ProcessConfigUpdateMsg(impetus)
+		configMsg, _, err := ch.support.ProcessConfigMsg(config)
 		if err != nil {
 			logger.Warningf("Discarding bad config message: %s", err)
 			return nil

@@ -14,17 +14,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package mocks
+package blockcutter
 
 import (
+	"github.com/hyperledger/fabric/common/flogging"
 	cb "github.com/hyperledger/fabric/protos/common"
-)
-
-import (
 	"github.com/op/go-logging"
 )
 
-var logger = logging.MustGetLogger("orderer/mocks/blockcutter")
+const pkgLogID = "orderer/mocks/common/blockcutter"
+
+var logger *logging.Logger
+
+func init() {
+	logger = flogging.MustGetLogger(pkgLogID)
+}
 
 // Receiver mocks the blockcutter.Receiver interface
 type Receiver struct {
@@ -63,7 +67,7 @@ func (mbc *Receiver) Ordered(env *cb.Envelope) ([][]*cb.Envelope, bool) {
 
 	if mbc.IsolatedTx {
 		logger.Debugf("Receiver: Returning dual batch")
-		res := [][]*cb.Envelope{mbc.CurBatch, []*cb.Envelope{env}}
+		res := [][]*cb.Envelope{mbc.CurBatch, {env}}
 		mbc.CurBatch = nil
 		return res, false
 	}

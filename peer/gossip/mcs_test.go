@@ -17,8 +17,10 @@ limitations under the License.
 package gossip
 
 import (
+	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric/bccsp"
@@ -33,14 +35,16 @@ import (
 	"github.com/hyperledger/fabric/msp/mgmt"
 	"github.com/hyperledger/fabric/peer/gossip/mocks"
 	"github.com/hyperledger/fabric/protos/common"
+	pmsp "github.com/hyperledger/fabric/protos/msp"
 	protospeer "github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protos/utils"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 )
 
 func TestPKIidOfCert(t *testing.T) {
 	deserializersManager := &mocks.DeserializersManager{
-		LocalDeserializer: &mocks.IdentityDeserializer{[]byte("Alice"), []byte("msg1")},
+		LocalDeserializer: &mocks.IdentityDeserializer{[]byte("Alice"), []byte("msg1"), mock.Mock{}},
 	}
 	msgCryptoService := NewMCS(&mocks.ChannelPolicyManagerGetterWithManager{},
 		&mockscrypto.LocalSigner{Identity: []byte("Alice")},
@@ -76,9 +80,9 @@ func TestPKIidOfNil(t *testing.T) {
 
 func TestValidateIdentity(t *testing.T) {
 	deserializersManager := &mocks.DeserializersManager{
-		LocalDeserializer: &mocks.IdentityDeserializer{[]byte("Alice"), []byte("msg1")},
+		LocalDeserializer: &mocks.IdentityDeserializer{[]byte("Alice"), []byte("msg1"), mock.Mock{}},
 		ChannelDeserializers: map[string]msp.IdentityDeserializer{
-			"A": &mocks.IdentityDeserializer{[]byte("Bob"), []byte("msg2")},
+			"A": &mocks.IdentityDeserializer{[]byte("Bob"), []byte("msg2"), mock.Mock{}},
 		},
 	}
 	msgCryptoService := NewMCS(
@@ -98,6 +102,17 @@ func TestValidateIdentity(t *testing.T) {
 
 	err = msgCryptoService.ValidateIdentity(nil)
 	assert.Error(t, err)
+
+	// Now, pretend the identities are not well formed
+	deserializersManager.ChannelDeserializers["A"].(*mocks.IdentityDeserializer).On("IsWellFormed", mock.Anything).Return(errors.New("invalid form"))
+	err = msgCryptoService.ValidateIdentity([]byte("Bob"))
+	assert.Error(t, err)
+	assert.Equal(t, "identity is not well formed: invalid form", err.Error())
+
+	deserializersManager.LocalDeserializer.(*mocks.IdentityDeserializer).On("IsWellFormed", mock.Anything).Return(errors.New("invalid form"))
+	err = msgCryptoService.ValidateIdentity([]byte("Alice"))
+	assert.Error(t, err)
+	assert.Equal(t, "identity is not well formed: invalid form", err.Error())
 }
 
 func TestSign(t *testing.T) {
@@ -117,18 +132,18 @@ func TestVerify(t *testing.T) {
 	msgCryptoService := NewMCS(
 		&mocks.ChannelPolicyManagerGetterWithManager{
 			map[string]policies.Manager{
-				"A": &mocks.ChannelPolicyManager{&mocks.Policy{&mocks.IdentityDeserializer{[]byte("Bob"), []byte("msg2")}}},
-				"B": &mocks.ChannelPolicyManager{&mocks.Policy{&mocks.IdentityDeserializer{[]byte("Charlie"), []byte("msg3")}}},
+				"A": &mocks.ChannelPolicyManager{&mocks.Policy{&mocks.IdentityDeserializer{[]byte("Bob"), []byte("msg2"), mock.Mock{}}}},
+				"B": &mocks.ChannelPolicyManager{&mocks.Policy{&mocks.IdentityDeserializer{[]byte("Charlie"), []byte("msg3"), mock.Mock{}}}},
 				"C": nil,
 			},
 		},
 		&mockscrypto.LocalSigner{Identity: []byte("Alice")},
 		&mocks.DeserializersManager{
-			LocalDeserializer: &mocks.IdentityDeserializer{[]byte("Alice"), []byte("msg1")},
+			LocalDeserializer: &mocks.IdentityDeserializer{[]byte("Alice"), []byte("msg1"), mock.Mock{}},
 			ChannelDeserializers: map[string]msp.IdentityDeserializer{
-				"A": &mocks.IdentityDeserializer{[]byte("Bob"), []byte("msg2")},
-				"B": &mocks.IdentityDeserializer{[]byte("Charlie"), []byte("msg3")},
-				"C": &mocks.IdentityDeserializer{[]byte("Dave"), []byte("msg4")},
+				"A": &mocks.IdentityDeserializer{[]byte("Bob"), []byte("msg2"), mock.Mock{}},
+				"B": &mocks.IdentityDeserializer{[]byte("Charlie"), []byte("msg3"), mock.Mock{}},
+				"C": &mocks.IdentityDeserializer{[]byte("Dave"), []byte("msg4"), mock.Mock{}},
 			},
 		},
 	)
@@ -160,10 +175,10 @@ func TestVerifyBlock(t *testing.T) {
 	aliceSigner := &mockscrypto.LocalSigner{Identity: []byte("Alice")}
 	policyManagerGetter := &mocks.ChannelPolicyManagerGetterWithManager{
 		map[string]policies.Manager{
-			"A": &mocks.ChannelPolicyManager{&mocks.Policy{&mocks.IdentityDeserializer{[]byte("Bob"), []byte("msg2")}}},
-			"B": &mocks.ChannelPolicyManager{&mocks.Policy{&mocks.IdentityDeserializer{[]byte("Charlie"), []byte("msg3")}}},
-			"C": &mocks.ChannelPolicyManager{&mocks.Policy{&mocks.IdentityDeserializer{[]byte("Alice"), []byte("msg1")}}},
-			"D": &mocks.ChannelPolicyManager{&mocks.Policy{&mocks.IdentityDeserializer{[]byte("Alice"), []byte("msg1")}}},
+			"A": &mocks.ChannelPolicyManager{&mocks.Policy{&mocks.IdentityDeserializer{[]byte("Bob"), []byte("msg2"), mock.Mock{}}}},
+			"B": &mocks.ChannelPolicyManager{&mocks.Policy{&mocks.IdentityDeserializer{[]byte("Charlie"), []byte("msg3"), mock.Mock{}}}},
+			"C": &mocks.ChannelPolicyManager{&mocks.Policy{&mocks.IdentityDeserializer{[]byte("Alice"), []byte("msg1"), mock.Mock{}}}},
+			"D": &mocks.ChannelPolicyManager{&mocks.Policy{&mocks.IdentityDeserializer{[]byte("Alice"), []byte("msg1"), mock.Mock{}}}},
 		},
 	}
 
@@ -171,10 +186,10 @@ func TestVerifyBlock(t *testing.T) {
 		policyManagerGetter,
 		aliceSigner,
 		&mocks.DeserializersManager{
-			LocalDeserializer: &mocks.IdentityDeserializer{[]byte("Alice"), []byte("msg1")},
+			LocalDeserializer: &mocks.IdentityDeserializer{[]byte("Alice"), []byte("msg1"), mock.Mock{}},
 			ChannelDeserializers: map[string]msp.IdentityDeserializer{
-				"A": &mocks.IdentityDeserializer{[]byte("Bob"), []byte("msg2")},
-				"B": &mocks.IdentityDeserializer{[]byte("Charlie"), []byte("msg3")},
+				"A": &mocks.IdentityDeserializer{[]byte("Bob"), []byte("msg2"), mock.Mock{}},
+				"B": &mocks.IdentityDeserializer{[]byte("Charlie"), []byte("msg3"), mock.Mock{}},
 			},
 		},
 	)
@@ -253,4 +268,63 @@ func mockBlock(t *testing.T, channel string, seqNum uint64, localSigner crypto.L
 	assert.NoError(t, err, "Failed marshalling block")
 
 	return blockRaw, msg
+}
+
+func TestExpiration(t *testing.T) {
+	expirationDate := time.Now().Add(time.Minute)
+	id1 := &pmsp.SerializedIdentity{
+		Mspid:   "X509BasedMSP",
+		IdBytes: []byte("X509BasedIdentity"),
+	}
+
+	x509IdentityBytes, _ := proto.Marshal(id1)
+
+	id2 := &pmsp.SerializedIdentity{
+		Mspid:   "nonX509BasedMSP",
+		IdBytes: []byte("nonX509RawIdentity"),
+	}
+
+	nonX509IdentityBytes, _ := proto.Marshal(id2)
+
+	deserializersManager := &mocks.DeserializersManager{
+		LocalDeserializer: &mocks.IdentityDeserializer{
+			Identity: []byte{1, 2, 3},
+			Msg:      []byte{1, 2, 3},
+		},
+		ChannelDeserializers: map[string]msp.IdentityDeserializer{
+			"X509BasedMSP": &mocks.IdentityDeserializerWithExpiration{
+				Expiration: expirationDate,
+				IdentityDeserializer: &mocks.IdentityDeserializer{
+					Identity: x509IdentityBytes,
+					Msg:      []byte("x509IdentityBytes"),
+				},
+			},
+			"nonX509BasedMSP": &mocks.IdentityDeserializer{
+				Identity: nonX509IdentityBytes,
+				Msg:      []byte("nonX509IdentityBytes"),
+			},
+		},
+	}
+	msgCryptoService := NewMCS(
+		&mocks.ChannelPolicyManagerGetterWithManager{},
+		&mockscrypto.LocalSigner{Identity: []byte("Yacov")},
+		deserializersManager,
+	)
+
+	// Green path I check the expiration date is as expected
+	exp, err := msgCryptoService.Expiration(x509IdentityBytes)
+	assert.NoError(t, err)
+	assert.Equal(t, expirationDate.Second(), exp.Second())
+
+	// Green path II - a non-x509 identity has a zero expiration time
+	exp, err = msgCryptoService.Expiration(nonX509IdentityBytes)
+	assert.NoError(t, err)
+	assert.Zero(t, exp)
+
+	// Bad path I - corrupt the x509 identity and make sure error is returned
+	x509IdentityBytes = append(x509IdentityBytes, 0, 0, 0, 0, 0, 0)
+	exp, err = msgCryptoService.Expiration(x509IdentityBytes)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "No MSP found able to do that")
+	assert.Zero(t, exp)
 }

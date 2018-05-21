@@ -14,18 +14,18 @@ import (
 	"strings"
 
 	"github.com/hyperledger/fabric/bccsp/factory"
-	channelconfig "github.com/hyperledger/fabric/common/config/channel"
-	mspconfig "github.com/hyperledger/fabric/common/config/channel/msp"
+	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric/common/tools/configtxgen/encoder"
 	genesisconfig "github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
 	"github.com/hyperledger/fabric/common/tools/configtxgen/metadata"
-	"github.com/hyperledger/fabric/common/tools/configtxgen/provisional"
 	"github.com/hyperledger/fabric/common/tools/protolator"
 	cb "github.com/hyperledger/fabric/protos/common"
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protos/utils"
 
 	logging "github.com/op/go-logging"
+	"github.com/pkg/errors"
 )
 
 var exitCode = 0
@@ -33,11 +33,8 @@ var exitCode = 0
 var logger = flogging.MustGetLogger("common/tools/configtxgen")
 
 func doOutputBlock(config *genesisconfig.Profile, channelID string, outputBlock string) error {
-	pgen := provisional.New(config)
+	pgen := encoder.New(config)
 	logger.Info("Generating genesis block")
-	if config.Orderer == nil {
-		return fmt.Errorf("config does not contain an Orderers section, necessary for all config blocks, aborting")
-	}
 	if config.Consortiums == nil {
 		logger.Warning("Genesis block does not contain a consortiums group definition.  This block cannot be used for orderer bootstrap.")
 	}
@@ -53,25 +50,11 @@ func doOutputBlock(config *genesisconfig.Profile, channelID string, outputBlock 
 func doOutputChannelCreateTx(conf *genesisconfig.Profile, channelID string, outputChannelCreateTx string) error {
 	logger.Info("Generating new channel configtx")
 
-	if conf.Application == nil {
-		return fmt.Errorf("Cannot define a new channel with no Application section")
-	}
-
-	if conf.Consortium == "" {
-		return fmt.Errorf("Cannot define a new channel with no Consortium value")
-	}
-
-	// XXX we ignore the non-application org names here, once the tool supports configuration updates
-	// we should come up with a cleaner way to handle this, but leaving as is for the moment to not break
-	// backwards compatibility
-	var orgNames []string
-	for _, org := range conf.Application.Organizations {
-		orgNames = append(orgNames, org.Name)
-	}
-	configtx, err := channelconfig.MakeChainCreationTransaction(channelID, conf.Consortium, nil, orgNames...)
+	configtx, err := encoder.MakeChannelCreationTransaction(channelID, nil, nil, conf)
 	if err != nil {
-		return fmt.Errorf("Error generating configtx: %s", err)
+		return err
 	}
+
 	logger.Info("Writing new channel tx")
 	err = ioutil.WriteFile(outputChannelCreateTx, utils.MarshalOrPanic(configtx), 0644)
 	if err != nil {
@@ -109,33 +92,37 @@ func doOutputAnchorPeersUpdate(conf *genesisconfig.Profile, channelID string, ou
 		}
 	}
 
-	configGroup := channelconfig.TemplateAnchorPeers(org.Name, anchorPeers)
-	configGroup.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name].Values[channelconfig.AnchorPeersKey].ModPolicy = mspconfig.AdminsPolicyKey
 	configUpdate := &cb.ConfigUpdate{
 		ChannelId: channelID,
-		WriteSet:  configGroup,
+		WriteSet:  cb.NewConfigGroup(),
 		ReadSet:   cb.NewConfigGroup(),
 	}
 
 	// Add all the existing config to the readset
 	configUpdate.ReadSet.Groups[channelconfig.ApplicationGroupKey] = cb.NewConfigGroup()
 	configUpdate.ReadSet.Groups[channelconfig.ApplicationGroupKey].Version = 1
-	configUpdate.ReadSet.Groups[channelconfig.ApplicationGroupKey].ModPolicy = mspconfig.AdminsPolicyKey
+	configUpdate.ReadSet.Groups[channelconfig.ApplicationGroupKey].ModPolicy = channelconfig.AdminsPolicyKey
 	configUpdate.ReadSet.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name] = cb.NewConfigGroup()
 	configUpdate.ReadSet.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name].Values[channelconfig.MSPKey] = &cb.ConfigValue{}
-	configUpdate.ReadSet.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name].Policies[mspconfig.ReadersPolicyKey] = &cb.ConfigPolicy{}
-	configUpdate.ReadSet.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name].Policies[mspconfig.WritersPolicyKey] = &cb.ConfigPolicy{}
-	configUpdate.ReadSet.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name].Policies[mspconfig.AdminsPolicyKey] = &cb.ConfigPolicy{}
+	configUpdate.ReadSet.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name].Policies[channelconfig.ReadersPolicyKey] = &cb.ConfigPolicy{}
+	configUpdate.ReadSet.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name].Policies[channelconfig.WritersPolicyKey] = &cb.ConfigPolicy{}
+	configUpdate.ReadSet.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name].Policies[channelconfig.AdminsPolicyKey] = &cb.ConfigPolicy{}
 
 	// Add all the existing at the same versions to the writeset
+	configUpdate.WriteSet.Groups[channelconfig.ApplicationGroupKey] = cb.NewConfigGroup()
 	configUpdate.WriteSet.Groups[channelconfig.ApplicationGroupKey].Version = 1
-	configUpdate.WriteSet.Groups[channelconfig.ApplicationGroupKey].ModPolicy = mspconfig.AdminsPolicyKey
+	configUpdate.WriteSet.Groups[channelconfig.ApplicationGroupKey].ModPolicy = channelconfig.AdminsPolicyKey
+	configUpdate.WriteSet.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name] = cb.NewConfigGroup()
 	configUpdate.WriteSet.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name].Version = 1
-	configUpdate.WriteSet.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name].ModPolicy = mspconfig.AdminsPolicyKey
+	configUpdate.WriteSet.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name].ModPolicy = channelconfig.AdminsPolicyKey
 	configUpdate.WriteSet.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name].Values[channelconfig.MSPKey] = &cb.ConfigValue{}
-	configUpdate.WriteSet.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name].Policies[mspconfig.ReadersPolicyKey] = &cb.ConfigPolicy{}
-	configUpdate.WriteSet.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name].Policies[mspconfig.WritersPolicyKey] = &cb.ConfigPolicy{}
-	configUpdate.WriteSet.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name].Policies[mspconfig.AdminsPolicyKey] = &cb.ConfigPolicy{}
+	configUpdate.WriteSet.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name].Policies[channelconfig.ReadersPolicyKey] = &cb.ConfigPolicy{}
+	configUpdate.WriteSet.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name].Policies[channelconfig.WritersPolicyKey] = &cb.ConfigPolicy{}
+	configUpdate.WriteSet.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name].Policies[channelconfig.AdminsPolicyKey] = &cb.ConfigPolicy{}
+	configUpdate.WriteSet.Groups[channelconfig.ApplicationGroupKey].Groups[org.Name].Values[channelconfig.AnchorPeersKey] = &cb.ConfigValue{
+		Value:     utils.MarshalOrPanic(channelconfig.AnchorPeersValue(anchorPeers).Value()),
+		ModPolicy: channelconfig.AdminsPolicyKey,
+	}
 
 	configUpdateEnvelope := &cb.ConfigUpdateEnvelope{
 		ConfigUpdate: utils.MarshalOrPanic(configUpdate),
@@ -201,17 +188,35 @@ func doInspectChannelCreateTx(inspectChannelCreateTx string) error {
 	return nil
 }
 
+func doPrintOrg(t *genesisconfig.TopLevel, printOrg string) error {
+	for _, org := range t.Organizations {
+		if org.Name == printOrg {
+			og, err := encoder.NewOrdererOrgGroup(org)
+			if err != nil {
+				return errors.Wrapf(err, "bad org definition for org %s", org.Name)
+			}
+
+			if err := protolator.DeepMarshalJSON(os.Stdout, &cb.DynamicConsortiumOrgGroup{ConfigGroup: og}); err != nil {
+				return errors.Wrapf(err, "malformed org definition for org: %s", org.Name)
+			}
+			return nil
+		}
+	}
+	return errors.Errorf("organization %s not found", printOrg)
+}
+
 func main() {
-	var outputBlock, outputChannelCreateTx, profile, channelID, inspectBlock, inspectChannelCreateTx, outputAnchorPeersUpdate, asOrg string
+	var outputBlock, outputChannelCreateTx, profile, channelID, inspectBlock, inspectChannelCreateTx, outputAnchorPeersUpdate, asOrg, printOrg string
 
 	flag.StringVar(&outputBlock, "outputBlock", "", "The path to write the genesis block to (if set)")
-	flag.StringVar(&channelID, "channelID", provisional.TestChainID, "The channel ID to use in the configtx")
+	flag.StringVar(&channelID, "channelID", genesisconfig.TestChainID, "The channel ID to use in the configtx")
 	flag.StringVar(&outputChannelCreateTx, "outputCreateChannelTx", "", "The path to write a channel creation configtx to (if set)")
-	flag.StringVar(&profile, "profile", genesisconfig.SampleInsecureProfile, "The profile from configtx.yaml to use for generation.")
+	flag.StringVar(&profile, "profile", genesisconfig.SampleInsecureSoloProfile, "The profile from configtx.yaml to use for generation.")
 	flag.StringVar(&inspectBlock, "inspectBlock", "", "Prints the configuration contained in the block at the specified path")
 	flag.StringVar(&inspectChannelCreateTx, "inspectChannelCreateTx", "", "Prints the configuration contained in the transaction at the specified path")
 	flag.StringVar(&outputAnchorPeersUpdate, "outputAnchorPeersUpdate", "", "Creates an config update to update an anchor peer (works only with the default channel creation, and only for the first update)")
 	flag.StringVar(&asOrg, "asOrg", "", "Performs the config generation as a particular organization (by name), only including values in the write set that org (likely) has privilege to set")
+	flag.StringVar(&printOrg, "printOrg", "", "Prints the definition of an organization as JSON. (useful for adding an org to a channel manually)")
 
 	version := flag.Bool("version", false, "Show version information")
 
@@ -232,23 +237,29 @@ func main() {
 				logger.Error("Could not find configtx.yaml. " +
 					"Please make sure that FABRIC_CFG_PATH is set to a path " +
 					"which contains configtx.yaml")
+				os.Exit(1)
 			}
-			os.Exit(1)
+			logger.Panic(err)
 		}
 	}()
 
 	logger.Info("Loading configuration")
 	factory.InitFactories(nil)
-	config := genesisconfig.Load(profile)
+	var profileConfig *genesisconfig.Profile
+	if outputBlock != "" || outputChannelCreateTx != "" || outputAnchorPeersUpdate != "" {
+		profileConfig = genesisconfig.Load(profile)
+	}
+
+	topLevelConfig := genesisconfig.LoadTopLevel()
 
 	if outputBlock != "" {
-		if err := doOutputBlock(config, channelID, outputBlock); err != nil {
+		if err := doOutputBlock(profileConfig, channelID, outputBlock); err != nil {
 			logger.Fatalf("Error on outputBlock: %s", err)
 		}
 	}
 
 	if outputChannelCreateTx != "" {
-		if err := doOutputChannelCreateTx(config, channelID, outputChannelCreateTx); err != nil {
+		if err := doOutputChannelCreateTx(profileConfig, channelID, outputChannelCreateTx); err != nil {
 			logger.Fatalf("Error on outputChannelCreateTx: %s", err)
 		}
 	}
@@ -266,8 +277,14 @@ func main() {
 	}
 
 	if outputAnchorPeersUpdate != "" {
-		if err := doOutputAnchorPeersUpdate(config, channelID, outputAnchorPeersUpdate, asOrg); err != nil {
+		if err := doOutputAnchorPeersUpdate(profileConfig, channelID, outputAnchorPeersUpdate, asOrg); err != nil {
 			logger.Fatalf("Error on inspectChannelCreateTx: %s", err)
+		}
+	}
+
+	if printOrg != "" {
+		if err := doPrintOrg(topLevelConfig, printOrg); err != nil {
+			logger.Fatalf("Error on printOrg: %s", err)
 		}
 	}
 }

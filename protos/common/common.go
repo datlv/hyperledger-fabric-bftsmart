@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/protos/msp"
 )
 
 func (e *Envelope) StaticallyOpaqueFields() []string {
@@ -28,9 +29,11 @@ func (p *Payload) VariablyOpaqueFields() []string {
 }
 
 var PayloadDataMap = map[int32]proto.Message{
-	int32(HeaderType_CONFIG):        &ConfigEnvelope{},
-	int32(HeaderType_CONFIG_UPDATE): &ConfigUpdateEnvelope{},
-	int32(HeaderType_MESSAGE):       &ConfigValue{}, // Only used by broadcast_msg sample client
+	int32(HeaderType_CONFIG):               &ConfigEnvelope{},
+	int32(HeaderType_ORDERER_TRANSACTION):  &Envelope{},
+	int32(HeaderType_CONFIG_UPDATE):        &ConfigUpdateEnvelope{},
+	int32(HeaderType_PEER_RESOURCE_UPDATE): &ConfigUpdateEnvelope{},
+	int32(HeaderType_MESSAGE):              &ConfigValue{}, // Only used by broadcast_msg sample client
 }
 
 func (p *Payload) VariablyOpaqueFieldProto(name string) (proto.Message, error) {
@@ -46,7 +49,7 @@ func (p *Payload) VariablyOpaqueFieldProto(name string) (proto.Message, error) {
 	}
 
 	if msg, ok := PayloadDataMap[ch.Type]; ok {
-		return msg, nil
+		return proto.Clone(msg), nil
 	}
 	return nil, fmt.Errorf("decoding type %v is unimplemented", ch.Type)
 }
@@ -61,6 +64,19 @@ func (h *Header) StaticallyOpaqueFieldProto(name string) (proto.Message, error) 
 		return &ChannelHeader{}, nil
 	case h.StaticallyOpaqueFields()[1]: // signature_header
 		return &SignatureHeader{}, nil
+	default:
+		return nil, fmt.Errorf("unknown header field: %s", name)
+	}
+}
+
+func (sh *SignatureHeader) StaticallyOpaqueFields() []string {
+	return []string{"creator"}
+}
+
+func (sh *SignatureHeader) StaticallyOpaqueFieldProto(name string) (proto.Message, error) {
+	switch name {
+	case sh.StaticallyOpaqueFields()[0]: // channel_header
+		return &msp.SerializedIdentity{}, nil
 	default:
 		return nil, fmt.Errorf("unknown header field: %s", name)
 	}

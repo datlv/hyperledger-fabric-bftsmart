@@ -24,8 +24,10 @@ import (
 
 	"github.com/hyperledger/fabric/common/cauthdsl"
 	ctxt "github.com/hyperledger/fabric/common/configtx/test"
+	commonerrors "github.com/hyperledger/fabric/common/errors"
 	ledger2 "github.com/hyperledger/fabric/common/ledger"
 	"github.com/hyperledger/fabric/common/ledger/testutil"
+	mockconfig "github.com/hyperledger/fabric/common/mocks/config"
 	"github.com/hyperledger/fabric/common/mocks/scc"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
@@ -36,6 +38,7 @@ import (
 	"github.com/hyperledger/fabric/core/ledger/ledgermgmt"
 	lutils "github.com/hyperledger/fabric/core/ledger/util"
 	"github.com/hyperledger/fabric/core/mocks/ccprovider"
+	mocktxvalidator "github.com/hyperledger/fabric/core/mocks/txvalidator"
 	"github.com/hyperledger/fabric/msp"
 	"github.com/hyperledger/fabric/msp/mgmt"
 	"github.com/hyperledger/fabric/msp/mgmt/testtools"
@@ -45,6 +48,7 @@ import (
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"golang.org/x/sync/semaphore"
 )
 
 func signedByAnyMember(ids []string) []byte {
@@ -59,7 +63,11 @@ func setupLedgerAndValidator(t *testing.T) (ledger.PeerLedger, Validator) {
 	assert.NoError(t, err)
 	theLedger, err := ledgermgmt.CreateLedger(gb)
 	assert.NoError(t, err)
-	theValidator := NewTxValidator(&mockSupport{l: theLedger})
+	vcs := struct {
+		*mocktxvalidator.Support
+		*semaphore.Weighted
+	}{&mocktxvalidator.Support{LedgerVal: theLedger, ACVal: &mockconfig.MockApplicationCapabilities{}}, semaphore.NewWeighted(10)}
+	theValidator := NewTxValidator(vcs)
 
 	return theLedger, theValidator
 }
@@ -75,22 +83,22 @@ func createRWset(t *testing.T, ccnames ...string) []byte {
 	return rwsetBytes
 }
 
-func getProposal(ccID string) (*peer.Proposal, error) {
+func getProposalWithType(ccID string, pType common.HeaderType) (*peer.Proposal, error) {
 	cis := &peer.ChaincodeInvocationSpec{
 		ChaincodeSpec: &peer.ChaincodeSpec{
 			ChaincodeId: &peer.ChaincodeID{Name: ccID, Version: ccVersion},
 			Input:       &peer.ChaincodeInput{Args: [][]byte{[]byte("func")}},
 			Type:        peer.ChaincodeSpec_GOLANG}}
 
-	proposal, _, err := utils.CreateProposalFromCIS(common.HeaderType_ENDORSER_TRANSACTION, util.GetTestChainID(), cis, signerSerialized)
+	proposal, _, err := utils.CreateProposalFromCIS(pType, util.GetTestChainID(), cis, signerSerialized)
 	return proposal, err
 }
 
 const ccVersion = "1.0"
 
-func getEnv(ccID string, res []byte, t *testing.T) *common.Envelope {
+func getEnvWithType(ccID string, res []byte, pType common.HeaderType, t *testing.T) *common.Envelope {
 	// get a toy proposal
-	prop, err := getProposal(ccID)
+	prop, err := getProposalWithType(ccID, pType)
 	assert.NoError(t, err)
 
 	response := &peer.Response{Status: 200}
@@ -104,6 +112,10 @@ func getEnv(ccID string, res []byte, t *testing.T) *common.Envelope {
 	assert.NoError(t, err)
 
 	return tx
+}
+
+func getEnv(ccID string, res []byte, t *testing.T) *common.Envelope {
+	return getEnvWithType(ccID, res, common.HeaderType_ENDORSER_TRANSACTION, t)
 }
 
 func putCCInfoWithVSCCAndVer(theLedger ledger.PeerLedger, ccname, vscc, ver string, policy []byte, t *testing.T) {
@@ -127,32 +139,14 @@ func putCCInfoWithVSCCAndVer(theLedger ledger.PeerLedger, ccname, vscc, ver stri
 	pubSimulationBytes, err := simRes.GetPubSimulationBytes()
 	assert.NoError(t, err)
 	block0 := testutil.ConstructBlock(t, 1, []byte("hash"), [][]byte{pubSimulationBytes}, true)
-	err = theLedger.Commit(block0)
+	err = theLedger.CommitWithPvtData(&ledger.BlockAndPvtData{
+		Block: block0,
+	})
 	assert.NoError(t, err)
 }
 
 func putCCInfo(theLedger ledger.PeerLedger, ccname string, policy []byte, t *testing.T) {
 	putCCInfoWithVSCCAndVer(theLedger, ccname, "vscc", ccVersion, policy, t)
-}
-
-type mockSupport struct {
-	l ledger.PeerLedger
-}
-
-func (m *mockSupport) Ledger() ledger.PeerLedger {
-	return m.l
-}
-
-func (m *mockSupport) MSPManager() msp.MSPManager {
-	return mgmt.GetManagerForChain(util.GetTestChainID())
-}
-
-func (m *mockSupport) Apply(configtx *common.ConfigEnvelope) error {
-	return nil
-}
-
-func (m *mockSupport) GetMSPIDs(cid string) []string {
-	return []string{"DEFAULT"}
 }
 
 func assertInvalid(block *common.Block, t *testing.T, code peer.TxValidationCode) {
@@ -213,6 +207,38 @@ func TestInvokeOK(t *testing.T) {
 	err := v.Validate(b)
 	assert.NoError(t, err)
 	assertValid(b, t)
+}
+
+func TestInvokeOKPvtDataOnly(t *testing.T) {
+	l, v := setupLedgerAndValidator(t)
+	defer ledgermgmt.CleanupTestEnv()
+	defer l.Close()
+
+	v.(*txValidator).support.(struct {
+		*mocktxvalidator.Support
+		*semaphore.Weighted
+	}).ACVal = &mockconfig.MockApplicationCapabilities{PrivateChannelDataRv: true}
+
+	ccID := "mycc"
+
+	putCCInfo(l, ccID, signedByAnyMember([]string{"DEFAULT"}), t)
+
+	rwsetBuilder := rwsetutil.NewRWSetBuilder()
+	rwsetBuilder.AddToPvtAndHashedWriteSet(ccID, "mycollection", "somekey", nil)
+	rwset, err := rwsetBuilder.GetTxSimulationResults()
+	assert.NoError(t, err)
+	rwsetBytes, err := rwset.GetPubSimulationBytes()
+	assert.NoError(t, err)
+
+	tx := getEnv(ccID, rwsetBytes, t)
+	b := &common.Block{Data: &common.BlockData{Data: [][]byte{utils.MarshalOrPanic(tx)}}}
+
+	v.(*txValidator).vscc.(*vsccValidatorImpl).ccprovider.(*ccprovider.MockCcProviderImpl).ExecuteResultProvider = nil
+	v.(*txValidator).vscc.(*vsccValidatorImpl).ccprovider.(*ccprovider.MockCcProviderImpl).ExecuteChaincodeResponse = &peer.Response{Status: shim.ERROR}
+
+	err = v.Validate(b)
+	assert.NoError(t, err)
+	assertInvalid(b, t, peer.TxValidationCode_ENDORSEMENT_POLICY_FAILURE)
 }
 
 func TestInvokeOKSCC(t *testing.T) {
@@ -560,7 +586,11 @@ func (exec *mockQueryExecutor) Done() {
 // returned from the function call.
 func TestLedgerIsNoAvailable(t *testing.T) {
 	theLedger := new(mockLedger)
-	validator := NewTxValidator(&mockSupport{l: theLedger})
+	vcs := struct {
+		*mocktxvalidator.Support
+		*semaphore.Weighted
+	}{&mocktxvalidator.Support{LedgerVal: theLedger, ACVal: &mockconfig.MockApplicationCapabilities{}}, semaphore.NewWeighted(10)}
+	validator := NewTxValidator(vcs)
 
 	ccID := "mycc"
 	tx := getEnv(ccID, createRWset(t, ccID), t)
@@ -579,12 +609,16 @@ func TestLedgerIsNoAvailable(t *testing.T) {
 	// We suppose to get the error which indicates we cannot commit the block
 	assertion.Error(err)
 	// The error exptected to be of type VSCCInfoLookupFailureError
-	assertion.NotNil(err.(*VSCCInfoLookupFailureError))
+	assertion.NotNil(err.(*commonerrors.VSCCInfoLookupFailureError))
 }
 
 func TestValidationInvalidEndorsing(t *testing.T) {
 	theLedger := new(mockLedger)
-	validator := NewTxValidator(&mockSupport{l: theLedger})
+	vcs := struct {
+		*mocktxvalidator.Support
+		*semaphore.Weighted
+	}{&mocktxvalidator.Support{LedgerVal: theLedger, ACVal: &mockconfig.MockApplicationCapabilities{}}, semaphore.NewWeighted(10)}
+	validator := NewTxValidator(vcs)
 
 	ccID := "mycc"
 	tx := getEnv(ccID, createRWset(t, ccID), t)
@@ -616,6 +650,52 @@ func TestValidationInvalidEndorsing(t *testing.T) {
 	executeChaincodeProvider.setCallback(c)
 	assert.NoError(t, err)
 	assertInvalid(b, t, peer.TxValidationCode_ENDORSEMENT_POLICY_FAILURE)
+}
+
+func TestValidationResourceUpdate(t *testing.T) {
+	theLedger := new(mockLedger)
+	sup := &mocktxvalidator.Support{LedgerVal: theLedger, ACVal: &mockconfig.MockApplicationCapabilities{}}
+	vcs := struct {
+		*mocktxvalidator.Support
+		*semaphore.Weighted
+	}{sup, semaphore.NewWeighted(10)}
+	validator := NewTxValidator(vcs)
+
+	ccID := "mycc"
+	tx := getEnvWithType(ccID, createRWset(t, ccID), common.HeaderType_PEER_RESOURCE_UPDATE, t)
+
+	theLedger.On("GetTransactionByID", mock.Anything).Return(&peer.ProcessedTransaction{}, errors.New("Cannot find the transaction"))
+
+	cd := &ccp.ChaincodeData{
+		Name:    ccID,
+		Version: ccVersion,
+		Vscc:    "vscc",
+		Policy:  signedByAnyMember([]string{"DEFAULT"}),
+	}
+
+	cdbytes := utils.MarshalOrPanic(cd)
+
+	queryExecutor := new(mockQueryExecutor)
+	queryExecutor.On("GetState", "lscc", ccID).Return(cdbytes, nil)
+	theLedger.On("NewQueryExecutor", mock.Anything).Return(queryExecutor, nil)
+
+	b1 := &common.Block{Data: &common.BlockData{Data: [][]byte{utils.MarshalOrPanic(tx)}}}
+	b2 := &common.Block{Data: &common.BlockData{Data: [][]byte{utils.MarshalOrPanic(tx)}}}
+
+	// Keep default callback
+	c := executeChaincodeProvider.getCallback()
+	executeChaincodeProvider.setCallback(func() (*peer.Response, *peer.ChaincodeEvent, error) {
+		return &peer.Response{Status: shim.ERROR}, nil, nil
+	})
+	err := validator.Validate(b1)
+	assert.NoError(t, err)
+	sup.ACVal = &mockconfig.MockApplicationCapabilities{ResourcesTreeRv: true}
+	err = validator.Validate(b2)
+	assert.NoError(t, err)
+	// Restore default callback
+	executeChaincodeProvider.setCallback(c)
+	assertInvalid(b1, t, peer.TxValidationCode_UNSUPPORTED_TX_PAYLOAD)
+	assertValid(b2, t)
 }
 
 type ccResultCallback func() (*peer.Response, *peer.ChaincodeEvent, error)

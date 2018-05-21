@@ -1,17 +1,6 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+Copyright IBM Corp. All Rights Reserved.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package statebasedval
@@ -20,6 +9,7 @@ import (
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/privacyenabledstate"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/rwsetutil"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/validator/valinternal"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/version"
 	"github.com/hyperledger/fabric/protos/ledger/rwset/kvrwset"
@@ -39,8 +29,74 @@ func NewValidator(db privacyenabledstate.DB) *Validator {
 	return &Validator{db}
 }
 
+// preLoadCommittedVersionOfRSet loads committed version of all keys in each
+// transaction's read set into a cache.
+func (v *Validator) preLoadCommittedVersionOfRSet(block *valinternal.Block) error {
+
+	// Collect both public and hashed keys in read sets of all transactions in a given block
+	var pubKeys []*statedb.CompositeKey
+	var hashedKeys []*privacyenabledstate.HashedCompositeKey
+
+	// pubKeysMap and hashedKeysMap are used to avoid duplicate entries in the
+	// pubKeys and hashedKeys. Though map alone can be used to collect keys in
+	// read sets and pass as an argument in LoadCommittedVersionOfPubAndHashedKeys(),
+	// array is used for better code readability. On the negative side, this approach
+	// might use some extra memory.
+	pubKeysMap := make(map[statedb.CompositeKey]interface{})
+	hashedKeysMap := make(map[privacyenabledstate.HashedCompositeKey]interface{})
+
+	for _, tx := range block.Txs {
+		for _, nsRWSet := range tx.RWSet.NsRwSets {
+			for _, kvRead := range nsRWSet.KvRwSet.Reads {
+				compositeKey := statedb.CompositeKey{
+					Namespace: nsRWSet.NameSpace,
+					Key:       kvRead.Key,
+				}
+				if _, ok := pubKeysMap[compositeKey]; !ok {
+					pubKeysMap[compositeKey] = nil
+					pubKeys = append(pubKeys, &compositeKey)
+				}
+
+			}
+			for _, colHashedRwSet := range nsRWSet.CollHashedRwSets {
+				for _, kvHashedRead := range colHashedRwSet.HashedRwSet.HashedReads {
+					hashedCompositeKey := privacyenabledstate.HashedCompositeKey{
+						Namespace:      nsRWSet.NameSpace,
+						CollectionName: colHashedRwSet.CollectionName,
+						KeyHash:        string(kvHashedRead.KeyHash),
+					}
+					if _, ok := hashedKeysMap[hashedCompositeKey]; !ok {
+						hashedKeysMap[hashedCompositeKey] = nil
+						hashedKeys = append(hashedKeys, &hashedCompositeKey)
+					}
+				}
+			}
+		}
+	}
+
+	// Load committed version of all keys into a cache
+	if len(pubKeys) > 0 || len(hashedKeys) > 0 {
+		err := v.db.LoadCommittedVersionsOfPubAndHashedKeys(pubKeys, hashedKeys)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // ValidateAndPrepareBatch implements method in Validator interface
 func (v *Validator) ValidateAndPrepareBatch(block *valinternal.Block, doMVCCValidation bool) (*valinternal.PubAndHashUpdates, error) {
+	// Check whether statedb implements BulkOptimizable interface. For now,
+	// only CouchDB implements BulkOptimizable to reduce the number of REST
+	// API calls from peer to CouchDB instance.
+	if v.db.IsBulkOptimizable() {
+		err := v.preLoadCommittedVersionOfRSet(block)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	updates := valinternal.NewPubAndHashUpdates()
 	for _, tx := range block.Txs {
 		var validationCode peer.TxValidationCode
@@ -62,7 +118,7 @@ func (v *Validator) ValidateAndPrepareBatch(block *valinternal.Block, doMVCCVali
 	return updates, nil
 }
 
-//validate endorser transaction
+// validateEndorserTX validates endorser transaction
 func (v *Validator) validateEndorserTX(
 	txRWSet *rwsetutil.TxRwSet,
 	doMVCCValidation bool,
@@ -126,15 +182,12 @@ func (v *Validator) validateKVRead(ns string, kvRead *kvrwset.KVRead, updates *p
 	if updates.Exists(ns, kvRead.Key) {
 		return false, nil
 	}
-	versionedValue, err := v.db.GetState(ns, kvRead.Key)
+	committedVersion, err := v.db.GetVersion(ns, kvRead.Key)
 	if err != nil {
 		return false, err
 	}
-	var committedVersion *version.Height
-	if versionedValue != nil {
-		committedVersion = versionedValue.Version
-	}
-	logger.Debugf("Comapring versions for key [%s]: committed version=%#v and read version=%#v",
+
+	logger.Debugf("Comparing versions for key [%s]: committed version=%#v and read version=%#v",
 		kvRead.Key, committedVersion, rwsetutil.NewVersion(kvRead.Version))
 	if !version.AreSame(committedVersion, rwsetutil.NewVersion(kvRead.Version)) {
 		logger.Debugf("Version mismatch for key [%s:%s]. Committed version = [%#v], Version in readSet [%#v]",
@@ -156,7 +209,7 @@ func (v *Validator) validateRangeQueries(ns string, rangeQueriesInfo []*kvrwset.
 	return true, nil
 }
 
-// validateRangeQuery performs a phatom read check i.e., it
+// validateRangeQuery performs a phantom read check i.e., it
 // checks whether the results of the range query are still the same when executed on the
 // statedb (latest state as of last committed block) + updates (prepared by the writes of preceding valid transactions
 // in the current block and yet to be committed as part of group commit at the end of the validation of the block)
@@ -217,14 +270,11 @@ func (v *Validator) validateKVReadHash(ns, coll string, kvReadHash *kvrwset.KVRe
 	if updates.Contains(ns, coll, kvReadHash.KeyHash) {
 		return false, nil
 	}
-	versionedHash, err := v.db.GetValueHash(ns, coll, kvReadHash.KeyHash)
+	committedVersion, err := v.db.GetKeyHashVersion(ns, coll, kvReadHash.KeyHash)
 	if err != nil {
 		return false, err
 	}
-	var committedVersion *version.Height
-	if versionedHash != nil {
-		committedVersion = versionedHash.Version
-	}
+
 	if !version.AreSame(committedVersion, rwsetutil.NewVersion(kvReadHash.Version)) {
 		logger.Debugf("Version mismatch for key hash [%s:%s:%#v]. Committed version = [%s], Version in hashedReadSet [%s]",
 			ns, coll, kvReadHash.KeyHash, committedVersion, kvReadHash.Version)

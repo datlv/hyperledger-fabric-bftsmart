@@ -7,9 +7,10 @@ during chaincode development phase for rapid code/build/run/debug cycle
 turnaround.
 
 To keep this a realistic “dev” environment, we are going to keep it “out
-of the box” - with one exception: we create two channels instead of
-using the default ``testchainid`` channel to show how the single running
-instance can be accessed from multiple channels.
+of the box” - with one exception: we create two channels to show how the
+single running instance can be accessed from multiple channels.
+
+- Note: Make sure peer is not using TLS when running in dev mode.
 
 All commands are executed from the ``fabric`` folder.
 
@@ -68,7 +69,7 @@ Start the chaincode
 
     cd examples/chaincode/go/chaincode_example02
     go build
-    CORE_CHAINCODE_LOGLEVEL=debug CORE_PEER_ADDRESS=127.0.0.1:7051 CORE_CHAINCODE_ID_NAME=mycc:0 ./chaincode_example02
+    CORE_CHAINCODE_LOGLEVEL=debug CORE_PEER_ADDRESS=127.0.0.1:7052 CORE_CHAINCODE_ID_NAME=mycc:0 ./chaincode_example02
 
 The chaincode is started with peer and chaincode logs indicating successful registration with the peer.
 Note that at this stage the chaincode is not associated with any channel. This is done in subsequent steps

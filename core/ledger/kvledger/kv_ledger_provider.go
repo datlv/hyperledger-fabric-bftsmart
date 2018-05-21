@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package kvledger
@@ -29,7 +19,6 @@ import (
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/privacyenabledstate"
 	"github.com/hyperledger/fabric/core/ledger/ledgerconfig"
 	"github.com/hyperledger/fabric/core/ledger/ledgerstorage"
-	"github.com/hyperledger/fabric/core/transientstore"
 	"github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/utils"
 	"github.com/syndtr/goleveldb/leveldb"
@@ -49,11 +38,11 @@ var (
 
 // Provider implements interface ledger.PeerLedgerProvider
 type Provider struct {
-	idStore                *idStore
-	ledgerStoreProvider    *ledgerstorage.Provider
-	vdbProvider            privacyenabledstate.DBProvider
-	historydbProvider      historydb.HistoryDBProvider
-	transientStoreProvider transientstore.StoreProvider
+	idStore             *idStore
+	ledgerStoreProvider *ledgerstorage.Provider
+	vdbProvider         privacyenabledstate.DBProvider
+	historydbProvider   historydb.HistoryDBProvider
+	stateListeners      ledger.StateListeners
 }
 
 // NewProvider instantiates a new Provider.
@@ -72,17 +61,20 @@ func NewProvider() (ledger.PeerLedgerProvider, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Initialize the transient store (temporary storage of private rwset)
-	transientStoreProvider := transientstore.NewCustomPathStoreProvider(ledgerconfig.GetTransientStorePath())
 
 	// Initialize the history database (index for history of values by key)
 	var historydbProvider historydb.HistoryDBProvider
 	historydbProvider = historyleveldb.NewHistoryDBProvider()
 
 	logger.Info("ledger provider Initialized")
-	provider := &Provider{idStore, ledgerStoreProvider, vdbProvider, historydbProvider, transientStoreProvider}
+	provider := &Provider{idStore, ledgerStoreProvider, vdbProvider, historydbProvider, nil}
 	provider.recoverUnderConstructionLedger()
 	return provider, nil
+}
+
+// Initialize implements the corresponding method from interface ledger.PeerLedgerProvider
+func (provider *Provider) Initialize(stateListeners ledger.StateListeners) {
+	provider.stateListeners = stateListeners
 }
 
 // Create implements the corresponding method from interface ledger.PeerLedgerProvider
@@ -105,19 +97,21 @@ func (provider *Provider) Create(genesisBlock *common.Block) (ledger.PeerLedger,
 	if err = provider.idStore.setUnderConstructionFlag(ledgerID); err != nil {
 		return nil, err
 	}
-	ledger, err := provider.openInternal(ledgerID)
+	lgr, err := provider.openInternal(ledgerID)
 	if err != nil {
 		logger.Errorf("Error in opening a new empty ledger. Unsetting under construction flag. Err: %s", err)
 		panicOnErr(provider.runCleanup(ledgerID), "Error while running cleanup for ledger id [%s]", ledgerID)
 		panicOnErr(provider.idStore.unsetUnderConstructionFlag(), "Error while unsetting under construction flag")
 		return nil, err
 	}
-	if err := ledger.Commit(genesisBlock); err != nil {
-		ledger.Close()
+	if err := lgr.CommitWithPvtData(&ledger.BlockAndPvtData{
+		Block: genesisBlock,
+	}); err != nil {
+		lgr.Close()
 		return nil, err
 	}
 	panicOnErr(provider.idStore.createLedgerID(ledgerID, genesisBlock), "Error while marking ledger as created")
-	return ledger, nil
+	return lgr, nil
 }
 
 // Open implements the corresponding method from interface ledger.PeerLedgerProvider
@@ -153,15 +147,9 @@ func (provider *Provider) openInternal(ledgerID string) (ledger.PeerLedger, erro
 		return nil, err
 	}
 
-	// Get the transient store for a chain/ledger
-	transientStore, err := provider.transientStoreProvider.OpenStore(ledgerID)
-	if err != nil {
-		return nil, err
-	}
-
 	// Create a kvLedger for this chain/ledger, which encasulates the underlying data stores
 	// (id store, blockstore, state database, history database)
-	l, err := newKVLedger(ledgerID, blockStore, vDB, historyDB, transientStore)
+	l, err := newKVLedger(ledgerID, blockStore, vDB, historyDB, provider.stateListeners)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +172,6 @@ func (provider *Provider) Close() {
 	provider.ledgerStoreProvider.Close()
 	provider.vdbProvider.Close()
 	provider.historydbProvider.Close()
-	provider.transientStoreProvider.Close()
 }
 
 // recoverUnderConstructionLedger checks whether the under construction flag is set - this would be the case

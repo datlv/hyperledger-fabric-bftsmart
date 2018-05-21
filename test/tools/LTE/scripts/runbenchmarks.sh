@@ -27,10 +27,10 @@ function varyNumChains {
     done
 }
 
-function varyNumKeysInEachTx {
-    for v in "${ArrayNumKeysInEachTx[@]}"
+function varyNumWritesPerTx {
+    for v in "${ArrayNumWritesPerTx[@]}"
     do
-        NumKeysInEachTx=$v
+        NumWritesPerTx=$v
         rm -rf $DataDir;runInsertTxs;runReadWriteTxs
     done
 }
@@ -83,19 +83,44 @@ function runLargeDataExperiment {
     rm -rf $DataDir;runInsertTxs;runReadWriteTxs
 }
 
+function upCouchDB {
+    downCouchDB
+    echo "Starting couchdb container..."
+    echo "Please note that host port 5984 will be made reachable "
+    docker run --publish 5984:5984 --detach --name couchdb hyperledger/fabric-couchdb >/dev/null
+    sleep 2
+}
+
+function downCouchDB {
+    couch_id=$(docker ps -aq --filter 'ancestor=hyperledger/fabric-couchdb')
+    if [ "$couch_id" != "" ]; then
+      echo "Stopping couchdb container (id: $couch_id)..."
+      docker rm -f $couch_id &>/dev/null
+    fi
+    sleep 2
+}
+
+function cleanup {
+  if [ "$useCouchDB" == "yes" ];
+  then
+    downCouchDB
+  fi
+}
+
 function usage () {
     printf "Usage: ./runbenchmarks.sh [-f parameter_file_name] [test_name]\nAvailable tests (use \"all\" to run all tests):
 varyNumParallelTxPerChain
 varyNumChains
 varyNumParallelTxWithSingleChain
 varyNumChainsWithNoParallelism
-varyNumKeysInEachTx
+varyNumWritesPerTx
 varyKVSize
 varyBatchSize
 varyNumTxs
 runLargeDataExperiment\n"
 }
 
+trap cleanup EXIT
 PARAM_FILE=""
 
 while getopts ":f:" opt; do
@@ -117,8 +142,11 @@ then
   exit 1
 else
   source $PARAM_FILE
+  if [ "$useCouchDB" == "yes" ];
+  then
+    upCouchDB
+  fi
 fi
-
 shift $(expr $OPTIND - 1 )
 
 case $1 in
@@ -130,8 +158,8 @@ case $1 in
     varyNumParallelTxWithSingleChain ;;
   varyNumChainsWithNoParallelism)
     varyNumChainsWithNoParallelism ;;
-  varyNumKeysInEachTx)
-    varyNumKeysInEachTx ;;
+  varyNumWritesPerTx)
+    varyNumWritesPerTx ;;
   varyKVSize)
     varyKVSize ;;
   varyBatchSize)
@@ -148,7 +176,7 @@ case $1 in
     varyNumChains
     varyNumParallelTxWithSingleChain
     varyNumChainsWithNoParallelism
-    varyNumKeysInEachTx
+    varyNumWritesPerTx
     varyKVSize
     varyBatchSize
     varyNumTxs

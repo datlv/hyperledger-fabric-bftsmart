@@ -1,17 +1,6 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+Copyright IBM Corp. All Rights Reserved.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package statedb
@@ -53,9 +42,9 @@ type VersionedDB interface {
 	// GetLatestSavePoint returns the height of the highest transaction upto which
 	// the state db is consistent
 	GetLatestSavePoint() (*version.Height, error)
-	// ValidateKey tests whether the key is supported by the db implementation.
+	// ValidateKeyValue tests whether the key and value is supported by the db implementation.
 	// For instance, leveldb supports any bytes for the key while the couchdb supports only valid utf-8 string
-	ValidateKey(key string) error
+	ValidateKeyValue(key string, value []byte) error
 	// BytesKeySuppoted returns true if the implementation (underlying db) supports the any bytes to be used as key.
 	// For instance, leveldb supports any bytes for the key while the couchdb supports only valid utf-8 string
 	BytesKeySuppoted() bool
@@ -68,7 +57,8 @@ type VersionedDB interface {
 //BulkOptimizable interface provides additional functions for
 //databases capable of batch operations
 type BulkOptimizable interface {
-	LoadCommittedVersions(keys []*CompositeKey)
+	LoadCommittedVersions(keys []*CompositeKey) error
+	GetCachedVersion(namespace, key string) (*version.Height, bool)
 	ClearCachedVersions()
 }
 

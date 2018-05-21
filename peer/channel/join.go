@@ -30,7 +30,7 @@ import (
 	"golang.org/x/net/context"
 )
 
-const commandDescription = "Joins the peer to a chain."
+const commandDescription = "Joins the peer to a channel."
 
 func joinCmd(cf *ChannelCmdFactory) *cobra.Command {
 	// Set the flags on the channel start command.
@@ -124,7 +124,7 @@ func executeJoin(cf *ChannelCmdFactory) (err error) {
 	if proposalResp.Response.Status != 0 && proposalResp.Response.Status != 200 {
 		return ProposalFailedErr(fmt.Sprintf("bad proposal response %d", proposalResp.Response.Status))
 	}
-	logger.Infof("Peer joined the channel!")
+	logger.Info("Successfully submitted proposal to join channel")
 	return nil
 }
 

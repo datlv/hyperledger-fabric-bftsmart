@@ -1,32 +1,23 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. 2016-2017 All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package common
 
 import (
 	"fmt"
+	"io/ioutil"
 	"os"
+	"strings"
 
 	"github.com/hyperledger/fabric/bccsp/factory"
-	channelconfig "github.com/hyperledger/fabric/common/config/channel"
-	"github.com/hyperledger/fabric/common/errors"
+	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/viperutil"
+	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/core/config"
-	"github.com/hyperledger/fabric/core/peer"
 	"github.com/hyperledger/fabric/core/scc/cscc"
 	"github.com/hyperledger/fabric/msp"
 	mspmgmt "github.com/hyperledger/fabric/msp/mgmt"
@@ -34,6 +25,7 @@ import (
 	pb "github.com/hyperledger/fabric/protos/peer"
 	putils "github.com/hyperledger/fabric/protos/utils"
 	"github.com/op/go-logging"
+	"github.com/pkg/errors"
 	"github.com/spf13/viper"
 	"golang.org/x/net/context"
 )
@@ -55,14 +47,19 @@ var (
 
 	// GetBroadcastClientFnc returns an instance of the BroadcastClient interface
 	// by default it is set to GetBroadcastClient function
-	GetBroadcastClientFnc func(orderingEndpoint string, tlsEnabled bool,
-		caFile string) (BroadcastClient, error)
+	GetBroadcastClientFnc func() (BroadcastClient, error)
 
 	// GetOrdererEndpointOfChainFnc returns orderer endpoints of given chain
 	// by default it is set to GetOrdererEndpointOfChain function
 	GetOrdererEndpointOfChainFnc func(chainID string, signer msp.SigningIdentity,
 		endorserClient pb.EndorserClient) ([]string, error)
 )
+
+type commonClient struct {
+	comm.GRPCClient
+	address string
+	sn      string
+}
 
 func init() {
 	GetEndorserClientFnc = GetEndorserClient
@@ -73,68 +70,57 @@ func init() {
 
 //InitConfig initializes viper config
 func InitConfig(cmdRoot string) error {
-	config.InitViper(nil, cmdRoot)
+	err := config.InitViper(nil, cmdRoot)
+	if err != nil {
+		return err
+	}
 
-	err := viper.ReadInConfig() // Find and read the config file
-	if err != nil {             // Handle errors reading the config file
-		return fmt.Errorf("Error when reading %s config file: %s", cmdRoot, err)
+	err = viper.ReadInConfig() // Find and read the config file
+	if err != nil {            // Handle errors reading the config file
+		return errors.WithMessage(err, fmt.Sprintf("error when reading %s config file", cmdRoot))
 	}
 
 	return nil
 }
 
 //InitCrypto initializes crypto for this peer
-func InitCrypto(mspMgrConfigDir string, localMSPID string) error {
+func InitCrypto(mspMgrConfigDir, localMSPID, localMSPType string) error {
 	var err error
 	// Check whenever msp folder exists
 	_, err = os.Stat(mspMgrConfigDir)
 	if os.IsNotExist(err) {
 		// No need to try to load MSP from folder which is not available
-		return fmt.Errorf("cannot init crypto, missing %s folder", mspMgrConfigDir)
+		return errors.Errorf("cannot init crypto, missing %s folder", mspMgrConfigDir)
 	}
 
 	// Init the BCCSP
+	SetBCCSPKeystorePath()
 	var bccspConfig *factory.FactoryOpts
 	err = viperutil.EnhancedExactUnmarshalKey("peer.BCCSP", &bccspConfig)
 	if err != nil {
-		return fmt.Errorf("could not parse YAML config [%s]", err)
+		return errors.WithMessage(err, "could not parse YAML config")
 	}
 
-	err = mspmgmt.LoadLocalMsp(mspMgrConfigDir, bccspConfig, localMSPID)
+	err = mspmgmt.LoadLocalMspWithType(mspMgrConfigDir, bccspConfig, localMSPID, localMSPType)
 	if err != nil {
-		return fmt.Errorf("error when setting up MSP from directory %s: err %s", mspMgrConfigDir, err)
+		return errors.WithMessage(err, fmt.Sprintf("error when setting up MSP of type %s from directory %s", localMSPType, mspMgrConfigDir))
 	}
 
 	return nil
 }
 
-// GetEndorserClient returns a new endorser client connection for this peer
-func GetEndorserClient() (pb.EndorserClient, error) {
-	clientConn, err := peer.NewPeerClientConnection()
-	if err != nil {
-		err = errors.ErrorWithCallstack("PER", "404", "Error trying to connect to local peer").WrapError(err)
-		return nil, err
-	}
-	endorserClient := pb.NewEndorserClient(clientConn)
-	return endorserClient, nil
-}
-
-// GetAdminClient returns a new admin client connection for this peer
-func GetAdminClient() (pb.AdminClient, error) {
-	clientConn, err := peer.NewPeerClientConnection()
-	if err != nil {
-		err = errors.ErrorWithCallstack("PER", "404", "Error trying to connect to local peer").WrapError(err)
-		return nil, err
-	}
-	adminClient := pb.NewAdminClient(clientConn)
-	return adminClient, nil
+// SetBCCSPKeystorePath sets the file keystore path for the SW BCCSP provider
+// to an absolute path relative to the config file
+func SetBCCSPKeystorePath() {
+	viper.Set("peer.BCCSP.SW.FileKeyStore.KeyStore",
+		config.GetPath("peer.BCCSP.SW.FileKeyStore.KeyStore"))
 }
 
 // GetDefaultSigner return a default Signer(Default/PERR) for cli
 func GetDefaultSigner() (msp.SigningIdentity, error) {
 	signer, err := mspmgmt.GetLocalMSP().GetDefaultSigningIdentity()
 	if err != nil {
-		return nil, fmt.Errorf("Error obtaining the default signing identity, err %s", err)
+		return nil, errors.WithMessage(err, "error obtaining the default signing identity")
 	}
 
 	return signer, err
@@ -154,51 +140,48 @@ func GetOrdererEndpointOfChain(chainID string, signer msp.SigningIdentity, endor
 
 	creator, err := signer.Serialize()
 	if err != nil {
-		return nil, fmt.Errorf("Error serializing identity for %s: %s", signer.GetIdentifier(), err)
+		return nil, errors.WithMessage(err, fmt.Sprintf("error serializing identity for %s", signer.GetIdentifier()))
 	}
 
 	prop, _, err := putils.CreateProposalFromCIS(pcommon.HeaderType_CONFIG, "", invocation, creator)
 	if err != nil {
-		return nil, fmt.Errorf("Error creating GetConfigBlock proposal: %s", err)
+		return nil, errors.WithMessage(err, "error creating GetConfigBlock proposal")
 	}
 
 	signedProp, err := putils.GetSignedProposal(prop, signer)
 	if err != nil {
-		return nil, fmt.Errorf("Error creating signed GetConfigBlock proposal: %s", err)
+		return nil, errors.WithMessage(err, "error creating signed GetConfigBlock proposal")
 	}
 
 	proposalResp, err := endorserClient.ProcessProposal(context.Background(), signedProp)
 	if err != nil {
-		return nil, fmt.Errorf("Error endorsing GetConfigBlock: %s", err)
+		return nil, errors.WithMessage(err, "error endorsing GetConfigBlock")
 	}
 
 	if proposalResp == nil {
-		return nil, fmt.Errorf("Error nil proposal response: %s", err)
+		return nil, errors.WithMessage(err, "error nil proposal response")
 	}
 
 	if proposalResp.Response.Status != 0 && proposalResp.Response.Status != 200 {
-		return nil, fmt.Errorf("Error bad proposal response %d", proposalResp.Response.Status)
+		return nil, errors.Errorf("error bad proposal response %d", proposalResp.Response.Status)
 	}
 
 	// parse config block
 	block, err := putils.GetBlockFromBlockBytes(proposalResp.Response.Payload)
 	if err != nil {
-		return nil, fmt.Errorf("Error unmarshaling config block: %s", err)
+		return nil, errors.WithMessage(err, "error unmarshaling config block")
 	}
 
 	envelopeConfig, err := putils.ExtractEnvelope(block, 0)
 	if err != nil {
-		return nil, fmt.Errorf("Error extracting config block envelope: %s", err)
+		return nil, errors.WithMessage(err, "error extracting config block envelope")
 	}
-	configtxManager, err := channelconfig.New(
-		envelopeConfig,
-		nil,
-	)
+	bundle, err := channelconfig.NewBundleFromEnvelope(envelopeConfig)
 	if err != nil {
-		return nil, fmt.Errorf("Error loadding config block: %s", err)
+		return nil, errors.WithMessage(err, "error loading config block")
 	}
 
-	return configtxManager.ChannelConfig().OrdererAddresses(), nil
+	return bundle.ChannelConfig().OrdererAddresses(), nil
 }
 
 // SetLogLevelFromViper sets the log level for 'module' logger to the value in
@@ -206,14 +189,18 @@ func GetOrdererEndpointOfChain(chainID string, signer msp.SigningIdentity, endor
 func SetLogLevelFromViper(module string) error {
 	var err error
 	if module == "" {
-		return fmt.Errorf("log level not set, no module name provided")
+		return errors.New("log level not set, no module name provided")
 	}
 	logLevelFromViper := viper.GetString("logging." + module)
 	err = CheckLogLevel(logLevelFromViper)
 	if err != nil {
 		return err
 	}
-	_, err = flogging.SetModuleLevel(module, logLevelFromViper)
+	// replace period in module name with forward slash to allow override
+	// of logging submodules
+	module = strings.Replace(module, ".", "/", -1)
+	// only set logging modules that begin with the supplied module name here
+	_, err = flogging.SetModuleLevel("^"+module, logLevelFromViper)
 	return err
 }
 
@@ -221,7 +208,44 @@ func SetLogLevelFromViper(module string) error {
 func CheckLogLevel(level string) error {
 	_, err := logging.LogLevel(level)
 	if err != nil {
-		err = errors.ErrorWithCallstack("LOG", "400", "Invalid log level provided - %s", level)
+		err = errors.Errorf("invalid log level provided - %s", level)
 	}
 	return err
+}
+
+func configFromEnv(prefix string) (address, override string,
+	clientConfig comm.ClientConfig, err error) {
+	address = viper.GetString(prefix + ".address")
+	override = viper.GetString(prefix + ".tls.serverhostoverride")
+	clientConfig = comm.ClientConfig{}
+	secOpts := &comm.SecureOptions{
+		UseTLS:            viper.GetBool(prefix + ".tls.enabled"),
+		RequireClientCert: viper.GetBool(prefix + ".tls.clientAuthRequired")}
+	if secOpts.UseTLS {
+		caPEM, res := ioutil.ReadFile(config.GetPath(prefix + ".tls.rootcert.file"))
+		if res != nil {
+			err = errors.WithMessage(res,
+				fmt.Sprintf("unable to load %s.tls.rootcert.file", prefix))
+			return
+		}
+		secOpts.ServerRootCAs = [][]byte{caPEM}
+	}
+	if secOpts.RequireClientCert {
+		keyPEM, res := ioutil.ReadFile(config.GetPath(prefix + ".tls.clientKey.file"))
+		if res != nil {
+			err = errors.WithMessage(res,
+				fmt.Sprintf("unable to load %s.tls.clientKey.file", prefix))
+			return
+		}
+		secOpts.Key = keyPEM
+		certPEM, res := ioutil.ReadFile(config.GetPath(prefix + ".tls.clientCert.file"))
+		if res != nil {
+			err = errors.WithMessage(res,
+				fmt.Sprintf("unable to load %s.tls.clientCert.file", prefix))
+			return
+		}
+		secOpts.Certificate = certPEM
+	}
+	clientConfig.SecOpts = secOpts
+	return
 }

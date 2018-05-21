@@ -39,7 +39,8 @@ type client struct {
 }
 
 func newClient() *client {
-	conn, err := comm.NewClientConnectionWithAddress(peerAddress, true, false, nil)
+	conn, err := comm.NewClientConnectionWithAddress(peerAddress, true, false,
+		nil, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -98,18 +99,18 @@ func TestEvents(t *testing.T) {
 		Send(&peer.Event{})
 		gEventProcessorBck := gEventProcessor
 		gEventProcessor = nil
-		e, err := createEvent()
+		e, err := createRegisterEvent(nil, nil)
 		assert.NoError(t, err)
 		Send(e)
 		gEventProcessor = gEventProcessorBck
 		Send(e)
 	}
-	prevTimeout := gEventProcessor.timeout
+	prevTimeout := gEventProcessor.Timeout
 	for _, timeout := range []time.Duration{0, -1, 1} {
-		gEventProcessor.timeout = timeout
+		gEventProcessor.Timeout = timeout
 		test(timeout)
 	}
-	gEventProcessor.timeout = prevTimeout
+	gEventProcessor.Timeout = prevTimeout
 }
 
 func TestDeRegister(t *testing.T) {
@@ -121,7 +122,7 @@ func TestDeRegister(t *testing.T) {
 	assert.Error(t, deRegisterHandler(&peer.Interest{EventType: peer.EventType_BLOCK}, nil))
 }
 
-func TestRegister(t *testing.T) {
+func TestRegisterHandler(t *testing.T) {
 	f := func() {
 		registerHandler(nil, nil)
 	}
@@ -133,11 +134,13 @@ func TestRegister(t *testing.T) {
 	assert.Error(t, registerHandler(&peer.Interest{EventType: peer.EventType_CHAINCODE}, nil))
 
 	// attempt to register valid handler
-	recvChan := make(chan *streamEvent)
-	stream := &mockstream{c: recvChan}
-	handler, err := newEventHandler(stream)
-	assert.Nil(t, err, "error should have been nil")
+	m := newMockEventhub()
+	defer close(m.recvChan)
+	handler := newEventHandler(m)
 	assert.NoError(t, registerHandler(&peer.Interest{EventType: peer.EventType_BLOCK}, handler))
+
+	// clean up by deregistering handler
+	assert.NoError(t, deRegisterHandler(&peer.Interest{EventType: peer.EventType_BLOCK}, handler))
 }
 
 func TestProcessEvents(t *testing.T) {
@@ -148,7 +151,7 @@ func TestProcessEvents(t *testing.T) {
 		{EventType: peer.EventType_CHAINCODE, RegInfo: &peer.Interest_ChaincodeRegInfo{ChaincodeRegInfo: &peer.ChaincodeReg{ChaincodeId: "0xffffffff", EventName: "event2"}}},
 	}
 	cl.register(interests)
-	e, err := createEvent()
+	e, err := createRegisterEvent(nil, nil)
 	assert.NoError(t, err)
 	go Send(e)
 	time.Sleep(time.Second * 2)
@@ -157,10 +160,9 @@ func TestProcessEvents(t *testing.T) {
 }
 
 func TestInitializeEvents_twice(t *testing.T) {
+	config := &EventsServerConfig{BufferSize: uint(viper.GetInt("peer.events.buffersize")), Timeout: viper.GetDuration("peer.events.timeout"), TimeWindow: viper.GetDuration("peer.events.timewindow")}
 	initializeEventsTwice := func() {
-		initializeEvents(
-			uint(viper.GetInt("peer.events.buffersize")),
-			viper.GetDuration("peer.events.timeout"))
+		initializeEvents(config)
 	}
 	assert.Panics(t, initializeEventsTwice)
 }

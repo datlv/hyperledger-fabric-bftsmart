@@ -91,6 +91,7 @@ func TestBasicRW(t *testing.T, dbProvider statedb.VersionedDBProvider) {
 	sp, err = db.GetLatestSavePoint()
 	testutil.AssertNoError(t, err, "")
 	testutil.AssertEquals(t, sp, savePoint)
+
 }
 
 // TestMultiDBBasicRW tests basic read-write on multiple dbs
@@ -486,5 +487,241 @@ func TestQuery(t *testing.T, dbProvider statedb.VersionedDBProvider) {
 	queryResult2, err = itr.Next()
 	testutil.AssertNoError(t, err, "")
 	testutil.AssertNil(t, queryResult2)
+
+}
+
+// TestGetVersion tests retrieving the version by namespace and key
+func TestGetVersion(t *testing.T, dbProvider statedb.VersionedDBProvider) {
+
+	db, err := dbProvider.GetDBHandle("testgetversion")
+	testutil.AssertNoError(t, err, "")
+
+	batch := statedb.NewUpdateBatch()
+	vv1 := statedb.VersionedValue{Value: []byte("value1"), Version: version.NewHeight(1, 1)}
+	vv2 := statedb.VersionedValue{Value: []byte("value2"), Version: version.NewHeight(1, 2)}
+	vv3 := statedb.VersionedValue{Value: []byte("value1"), Version: version.NewHeight(1, 3)}
+	vv4 := statedb.VersionedValue{Value: []byte("value2"), Version: version.NewHeight(1, 4)}
+
+	batch.Put("ns", "key1", vv1.Value, vv1.Version)
+	batch.Put("ns", "key2", vv2.Value, vv2.Version)
+	batch.Put("ns", "key3", vv2.Value, vv3.Version)
+	batch.Put("ns", "key4", vv2.Value, vv4.Version)
+	savePoint := version.NewHeight(1, 5)
+	err = db.ApplyUpdates(batch, savePoint)
+	testutil.AssertNoError(t, err, "")
+
+	//check to see if the bulk optimizable interface is supported (couchdb)
+	if bulkdb, ok := db.(statedb.BulkOptimizable); ok {
+		//clear the cached versions, this will force a read when getVerion is called
+		bulkdb.ClearCachedVersions()
+	}
+
+	//retrieve a version by namespace and key
+	resp, err := db.GetVersion("ns", "key2")
+	testutil.AssertNoError(t, err, "")
+	testutil.AssertEquals(t, resp, version.NewHeight(1, 2))
+
+	//attempt to retrieve an non-existent namespace and key
+	resp, err = db.GetVersion("ns2", "key2")
+	testutil.AssertNoError(t, err, "")
+	testutil.AssertEquals(t, resp, nil)
+
+	//check to see if the bulk optimizable interface is supported (couchdb)
+	if bulkdb, ok := db.(statedb.BulkOptimizable); ok {
+
+		//clear the cached versions, this will force a read when getVerion is called
+		bulkdb.ClearCachedVersions()
+
+		// initialize a key list
+		loadKeys := []*statedb.CompositeKey{}
+		//create a composite key and add to the key list
+		compositeKey := statedb.CompositeKey{Namespace: "ns", Key: "key3"}
+		loadKeys = append(loadKeys, &compositeKey)
+		//load the committed versions
+		bulkdb.LoadCommittedVersions(loadKeys)
+
+		//retrieve a version by namespace and key
+		resp, err := db.GetVersion("ns", "key3")
+		testutil.AssertNoError(t, err, "")
+		testutil.AssertEquals(t, resp, version.NewHeight(1, 3))
+
+	}
+}
+
+// TestSmallBatchSize tests multiple update batches
+func TestSmallBatchSize(t *testing.T, dbProvider statedb.VersionedDBProvider) {
+	db, err := dbProvider.GetDBHandle("testsmallbatchsize")
+	testutil.AssertNoError(t, err, "")
+	db.Open()
+	defer db.Close()
+	batch := statedb.NewUpdateBatch()
+	jsonValue1 := []byte(`{"asset_name": "marble1","color": "blue","size": 1,"owner": "tom"}`)
+	batch.Put("ns1", "key1", jsonValue1, version.NewHeight(1, 1))
+	jsonValue2 := []byte(`"{"asset_name": "marble2","color": "blue","size": 2,"owner": \"jerry\"}`)
+	batch.Put("ns1", "key2", jsonValue2, version.NewHeight(1, 2))
+	jsonValue3 := []byte(`{"asset_name": "marble3","color": "blue","size": 3,"owner": "fred"}`)
+	batch.Put("ns1", "key3", jsonValue3, version.NewHeight(1, 3))
+	jsonValue4 := []byte(`{"asset_name": "marble4","color": "blue","size": 4,"owner": "martha"}`)
+	batch.Put("ns1", "key4", jsonValue4, version.NewHeight(1, 4))
+	jsonValue5 := []byte(`{"asset_name": "marble5","color": "blue","size": 5,"owner": "fred"}`)
+	batch.Put("ns1", "key5", jsonValue5, version.NewHeight(1, 5))
+	jsonValue6 := []byte(`{"asset_name": "marble6","color": "blue","size": 6,"owner": "elaine"}`)
+	batch.Put("ns1", "key6", jsonValue6, version.NewHeight(1, 6))
+	jsonValue7 := []byte(`{"asset_name": "marble7","color": "blue","size": 7,"owner": "fred"}`)
+	batch.Put("ns1", "key7", jsonValue7, version.NewHeight(1, 7))
+	jsonValue8 := []byte(`{"asset_name": "marble8","color": "blue","size": 8,"owner": "elaine"}`)
+	batch.Put("ns1", "key8", jsonValue8, version.NewHeight(1, 8))
+	jsonValue9 := []byte(`{"asset_name": "marble9","color": "green","size": 9,"owner": "fred"}`)
+	batch.Put("ns1", "key9", jsonValue9, version.NewHeight(1, 9))
+	jsonValue10 := []byte(`{"asset_name": "marble10","color": "green","size": 10,"owner": "mary"}`)
+	batch.Put("ns1", "key10", jsonValue10, version.NewHeight(1, 10))
+	jsonValue11 := []byte(`{"asset_name": "marble11","color": "cyan","size": 1000007,"owner": "joe"}`)
+	batch.Put("ns1", "key11", jsonValue11, version.NewHeight(1, 11))
+
+	savePoint := version.NewHeight(1, 12)
+	db.ApplyUpdates(batch, savePoint)
+
+	//Verify all marbles were added
+
+	vv, _ := db.GetState("ns1", "key1")
+	testutil.AssertEquals(t, vv.Value, jsonValue1)
+
+	vv, _ = db.GetState("ns1", "key2")
+	testutil.AssertEquals(t, vv.Value, jsonValue2)
+
+	vv, _ = db.GetState("ns1", "key3")
+	testutil.AssertEquals(t, vv.Value, jsonValue3)
+
+	vv, _ = db.GetState("ns1", "key4")
+	testutil.AssertEquals(t, vv.Value, jsonValue4)
+
+	vv, _ = db.GetState("ns1", "key5")
+	testutil.AssertEquals(t, vv.Value, jsonValue5)
+
+	vv, _ = db.GetState("ns1", "key6")
+	testutil.AssertEquals(t, vv.Value, jsonValue6)
+
+	vv, _ = db.GetState("ns1", "key7")
+	testutil.AssertEquals(t, vv.Value, jsonValue7)
+
+	vv, _ = db.GetState("ns1", "key8")
+	testutil.AssertEquals(t, vv.Value, jsonValue8)
+
+	vv, _ = db.GetState("ns1", "key9")
+	testutil.AssertEquals(t, vv.Value, jsonValue9)
+
+	vv, _ = db.GetState("ns1", "key10")
+	testutil.AssertEquals(t, vv.Value, jsonValue10)
+
+	vv, _ = db.GetState("ns1", "key11")
+	testutil.AssertEquals(t, vv.Value, jsonValue11)
+}
+
+// TestBatchWithIndividualRetry tests a single failure in a batch
+func TestBatchWithIndividualRetry(t *testing.T, dbProvider statedb.VersionedDBProvider) {
+
+	db, err := dbProvider.GetDBHandle("testbatchretry")
+	testutil.AssertNoError(t, err, "")
+
+	batch := statedb.NewUpdateBatch()
+	vv1 := statedb.VersionedValue{Value: []byte("value1"), Version: version.NewHeight(1, 1)}
+	vv2 := statedb.VersionedValue{Value: []byte("value2"), Version: version.NewHeight(1, 2)}
+	vv3 := statedb.VersionedValue{Value: []byte("value3"), Version: version.NewHeight(1, 3)}
+	vv4 := statedb.VersionedValue{Value: []byte("value4"), Version: version.NewHeight(1, 4)}
+
+	batch.Put("ns", "key1", vv1.Value, vv1.Version)
+	batch.Put("ns", "key2", vv2.Value, vv2.Version)
+	batch.Put("ns", "key3", vv3.Value, vv3.Version)
+	batch.Put("ns", "key4", vv4.Value, vv4.Version)
+	savePoint := version.NewHeight(1, 5)
+	err = db.ApplyUpdates(batch, savePoint)
+	testutil.AssertNoError(t, err, "")
+
+	// Clear the cache for the next batch, in place of simulation
+	if bulkdb, ok := db.(statedb.BulkOptimizable); ok {
+		//clear the cached versions, this will force a read when getVerion is called
+		bulkdb.ClearCachedVersions()
+	}
+
+	batch = statedb.NewUpdateBatch()
+	batch.Put("ns", "key1", vv1.Value, vv1.Version)
+	batch.Put("ns", "key2", vv2.Value, vv2.Version)
+	batch.Put("ns", "key3", vv3.Value, vv3.Version)
+	batch.Put("ns", "key4", vv4.Value, vv4.Version)
+	savePoint = version.NewHeight(1, 6)
+	err = db.ApplyUpdates(batch, savePoint)
+	testutil.AssertNoError(t, err, "")
+
+	// Update document key3
+	batch = statedb.NewUpdateBatch()
+	batch.Delete("ns", "key2", vv2.Version)
+	batch.Put("ns", "key3", vv3.Value, vv3.Version)
+	savePoint = version.NewHeight(1, 7)
+	err = db.ApplyUpdates(batch, savePoint)
+	testutil.AssertNoError(t, err, "")
+
+	// This should force a retry for couchdb revision conflict for both delete and update
+	// Retry logic should correct the update and prevent delete from throwing an error
+	batch = statedb.NewUpdateBatch()
+	batch.Delete("ns", "key2", vv2.Version)
+	batch.Put("ns", "key3", vv3.Value, vv3.Version)
+	savePoint = version.NewHeight(1, 8)
+	err = db.ApplyUpdates(batch, savePoint)
+	testutil.AssertNoError(t, err, "")
+
+	//Create a new set of values that use JSONs instead of binary
+	jsonValue5 := []byte(`{"asset_name": "marble5","color": "blue","size": 5,"owner": "fred"}`)
+	jsonValue6 := []byte(`{"asset_name": "marble6","color": "blue","size": 6,"owner": "elaine"}`)
+	jsonValue7 := []byte(`{"asset_name": "marble7","color": "blue","size": 7,"owner": "fred"}`)
+	jsonValue8 := []byte(`{"asset_name": "marble8","color": "blue","size": 8,"owner": "elaine"}`)
+
+	// Clear the cache for the next batch, in place of simulation
+	if bulkdb, ok := db.(statedb.BulkOptimizable); ok {
+		//clear the cached versions, this will force a read when getVersion is called
+		bulkdb.ClearCachedVersions()
+	}
+
+	batch = statedb.NewUpdateBatch()
+	batch.Put("ns1", "key5", jsonValue5, version.NewHeight(1, 9))
+	batch.Put("ns1", "key6", jsonValue6, version.NewHeight(1, 10))
+	batch.Put("ns1", "key7", jsonValue7, version.NewHeight(1, 11))
+	batch.Put("ns1", "key8", jsonValue8, version.NewHeight(1, 12))
+	savePoint = version.NewHeight(1, 6)
+	err = db.ApplyUpdates(batch, savePoint)
+	testutil.AssertNoError(t, err, "")
+
+	// Clear the cache for the next batch, in place of simulation
+	if bulkdb, ok := db.(statedb.BulkOptimizable); ok {
+		//clear the cached versions, this will force a read when getVersion is called
+		bulkdb.ClearCachedVersions()
+	}
+
+	//Send the batch through again to test updates
+	batch = statedb.NewUpdateBatch()
+	batch.Put("ns1", "key5", jsonValue5, version.NewHeight(1, 9))
+	batch.Put("ns1", "key6", jsonValue6, version.NewHeight(1, 10))
+	batch.Put("ns1", "key7", jsonValue7, version.NewHeight(1, 11))
+	batch.Put("ns1", "key8", jsonValue8, version.NewHeight(1, 12))
+	savePoint = version.NewHeight(1, 6)
+	err = db.ApplyUpdates(batch, savePoint)
+	testutil.AssertNoError(t, err, "")
+
+	// Update document key3
+	// this will cause an inconsistent cache entry for connection db2
+	batch = statedb.NewUpdateBatch()
+	batch.Delete("ns1", "key6", version.NewHeight(1, 13))
+	batch.Put("ns1", "key7", jsonValue7, version.NewHeight(1, 14))
+	savePoint = version.NewHeight(1, 15)
+	err = db.ApplyUpdates(batch, savePoint)
+	testutil.AssertNoError(t, err, "")
+
+	// This should force a retry for couchdb revision conflict for both delete and update
+	// Retry logic should correct the update and prevent delete from throwing an error
+	batch = statedb.NewUpdateBatch()
+	batch.Delete("ns1", "key6", version.NewHeight(1, 16))
+	batch.Put("ns1", "key7", jsonValue7, version.NewHeight(1, 17))
+	savePoint = version.NewHeight(1, 18)
+	err = db.ApplyUpdates(batch, savePoint)
+	testutil.AssertNoError(t, err, "")
 
 }

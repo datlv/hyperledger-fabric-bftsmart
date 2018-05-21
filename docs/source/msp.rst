@@ -3,7 +3,7 @@ Membership Service Providers (MSP)
 
 The document serves to provide details on the setup and best practices for MSPs.
 
-Membership service provider (MSP) is a component that aims to offer an
+Membership Service Provider (MSP) is a component that aims to offer an
 abstraction of a membership operation architecture.
 
 In particular, MSP abstracts away all cryptographic mechanisms and protocols
@@ -70,12 +70,12 @@ verification. These parameters are deduced by
 *Valid*  identities for this MSP instance are required to satisfy the following conditions:
 
 - They are in the form of X.509 certificates with a verifiable certificate path to
-  exactly one of the root of trust certificates
-- They are not included in any CRL
+  exactly one of the root of trust certificates;
+- They are not included in any CRL;
 - And they *list* one or more of the Organizational Units of the MSP configuration
   in the ``OU`` field of their X.509 certificate structure.
 
-For more information on the validity of identities in the current MSP implementation
+For more information on the validity of identities in the current MSP implementation,
 we refer the reader to :doc:`msp-identity-validity-rules`.
 
 In addition to verification related parameters, for the MSP to enable
@@ -85,7 +85,7 @@ specify:
 - The signing key used for signing by the node (currently only ECDSA keys are
   supported), and
 - The node's X.509 certificate, that is a valid identity under the
-  verification parameters of this MSP
+  verification parameters of this MSP.
 
 It is important to note that MSP identities never expire; they can only be revoked
 by adding them to the appropriate CRLs. Additionally, there is currently no
@@ -117,15 +117,8 @@ and a file:
    CA's certificate
 3. (optional) a folder ``intermediatecerts`` to include PEM files each
    corresponding to an intermediate CA's certificate
-4. (optional) a file ``config.yaml`` to include information on the
-   considered OUs; the latter are defined as pairs of
-   ``<Certificate, OrganizationalUnitIdentifier>`` entries of a yaml array
-   called ``OrganizationalUnitIdentifiers``, where ``Certificate`` represents
-   the relative path to the certificate of the certificate authority (root or
-   intermediate) that should be considered for certifying members of this
-   organizational unit (e.g. ./cacerts/cacert.pem), and
-   ``OrganizationalUnitIdentifier`` represents the actual string as
-   expected to appear in X.509 certificate OU-field (e.g. "COP")
+4. (optional) a file ``config.yaml`` to configure the supported Organizational Units
+   and identity classifications (see respective sections below).
 5. (optional) a folder ``crls`` to include the considered CRLs
 6. a folder ``keystore`` to include a PEM file with the node's signing key;
    we emphasise that currently RSA keys are not supported
@@ -143,7 +136,7 @@ mspconfig folder is expected to be relative to FABRIC_CFG_PATH and is provided
 as the value of parameter ``mspConfigPath`` for the peer, and ``LocalMSPDir``
 for the orderer. The identifier of the node's MSP is provided as a value of
 parameter ``localMspId`` for the peer and ``LocalMSPID`` for the orderer.
-These variables can be overriden via the environment using the CORE prefix for
+These variables can be overridden via the environment using the CORE prefix for
 peer (e.g. CORE_PEER_LOCALMSPID) and the ORDERER prefix for the orderer (e.g.
 ORDERER_GENERAL_LOCALMSPID). Notice that for the orderer setup, one needs to
 generate, and provide to the orderer the genesis block of the system channel.
@@ -153,6 +146,68 @@ The MSP configuration needs of this block are detailed in the next section.
 the peer or orderer process is restarted. In subsequent releases we aim to
 offer online/dynamic reconfiguration (i.e. without requiring to stop the node
 by using a node managed system chaincode).
+
+Organizational Units
+--------------------
+
+In order to configure the list of Organizational Units that valid members of this MSP should
+include in their X.509 certificate, the ``config.yaml`` file
+needs to specify the organizational unit identifiers. Here is an example:
+
+::
+
+   OrganizationalUnitIdentifiers:
+     - Certificate: "cacerts/cacert1.pem"
+       OrganizationalUnitIdentifier: "commercial"
+     - Certificate: "cacerts/cacert2.pem"
+       OrganizationalUnitIdentifier: "administrators"
+
+The above example declares two organizational unit identifiers: **commercial** and **administrators**.
+An MSP identity is valid if it carries at least one of these organizational unit identifiers.
+The ``Certificate`` field refers to the CA or intermediate CA certificate path
+under which identities, having that specific OU, should be validated.
+The path is relative to the MSP root folder and cannot be empty.
+
+Identity Classification
+-----------------------
+
+The default MSP implementation allows to further classify identities into clients and peers, based on the OUs
+of their x509 certificates.
+An identity should be classified as a **client** if it submits transactions, queries peers, etc.
+An identity should be classified as a **peer** if it endorses or commits transactions.
+In order to define clients and peers of a given MSP, the ``config.yaml`` file
+needs to be set appropriately. Here is an example:
+
+::
+
+   NodeOUs:
+     Enable: true
+     ClientOUIdentifier:
+       Certificate: "cacerts/cacert.pem"
+       OrganizationalUnitIdentifier: "client"
+     PeerOUIdentifier:
+       Certificate: "cacerts/cacert.pem"
+       OrganizationalUnitIdentifier: "peer"
+
+As shown above, the ``NodeOUs.Enable`` is set to ``true``, this enables the identify classification.
+Then, client (peer) identifiers are defined by setting the following properties
+for the ``NodeOUs.ClientOUIdentifier`` (``NodeOUs.PeerOUIdentifier``) key:
+
+a. ``OrganizationalUnitIdentifier``: Set this to the value that matches the OU that
+   the x509 certificate of a client (peer) should contain.
+b. ``Certificate``: Set this to the CA or intermediate CA under which client (peer) identities
+   should be validated. The field is relative to the MSP root folder. It can be empty, meaning
+   that the identity's x509 certificate can be validated under any CA defined in the MSP configuration.
+
+When the classification is enabled, MSP administrators need
+to be clients of that MSP, meaning that their x509 certificates need to carry
+the OU that identifies the clients.
+Notice also that, an identity can be either a client or a peer.
+The two classifications are mutually exclusive. If an identity is neither a client nor a peer,
+the validation will fail.
+
+Finally, notice that for upgraded environments the 1.1 channel capability
+needs to be enabled before identify classification can be used.
 
 Channel MSP setup
 -----------------
@@ -296,7 +351,7 @@ considered for that MSP's identity validation:
 In the current MSP implementation we only support method (1) as it is simpler
 and does not require blacklisting the no longer considered intermediate CA.
 
-**5) CAs and TLS CAs
+**6) CAs and TLS CAs**
 
 MSP identities' root CAs and MSP TLS certificates' root CAs (and relative intermediate CAs)
 need to be declared in different folders. This is to avoid confusion between

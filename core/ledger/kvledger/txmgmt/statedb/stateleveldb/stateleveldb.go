@@ -1,17 +1,6 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+Copyright IBM Corp. All Rights Reserved.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package stateleveldb
@@ -79,8 +68,8 @@ func (vdb *versionedDB) Close() {
 	// do nothing because shared db is used
 }
 
-// ValidateKey implements method in VersionedDB interface
-func (vdb *versionedDB) ValidateKey(key string) error {
+// ValidateKeyValue implements method in VersionedDB interface
+func (vdb *versionedDB) ValidateKeyValue(key string, value []byte) error {
 	return nil
 }
 
@@ -165,7 +154,8 @@ func (vdb *versionedDB) ApplyUpdates(batch *statedb.UpdateBatch, height *version
 		}
 	}
 	dbBatch.Put(savePointKey, height.ToBytes())
-	if err := vdb.db.WriteBatch(dbBatch, false); err != nil {
+	// Setting snyc to true as a precaution, false may be an ok optimization after further testing.
+	if err := vdb.db.WriteBatch(dbBatch, true); err != nil {
 		return err
 	}
 	return nil

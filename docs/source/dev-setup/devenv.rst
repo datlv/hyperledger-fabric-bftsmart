@@ -24,13 +24,13 @@ Prerequisites
 ~~~~~~~~~~~~~
 
 -  `Git client <https://git-scm.com/downloads>`__
--  `Go <https://golang.org/>`__ - 1.7 or later (for releases before
-   v1.0, 1.6 or later)
--  For macOS,
+-  `Go <https://golang.org/>`__ - 1.9 or later (for v1.0.X releases, use
+   Go 1.7.X)
+-  (macOS)
    `Xcode <https://itunes.apple.com/us/app/xcode/id497799835?mt=12>`__
    must be installed
--  `Docker <https://www.docker.com/products/overview>`__ - 1.12 or later
--  `Docker Compose <https://docs.docker.com/compose/>`__ - 1.8.1 or later
+-  `Docker <https://www.docker.com/products/overview>`__ - 17.06.2-ce or later
+-  `Docker Compose <https://docs.docker.com/compose/>`__ - 1.14.0 or later
 -  `Pip <https://pip.pypa.io/en/stable/installing/>`__
 -  (macOS) you may need to install gnutar, as macOS comes with bsdtar
    as the default, but the build uses some gnutar flags. You can use
@@ -40,8 +40,15 @@ Prerequisites
 
     brew install gnu-tar --with-default-names
 
+-  (macOS) `Libtool <https://www.gnu.org/software/libtool/>`__. You can use
+   Homebrew to install it as follows:
+
+::
+
+    brew install libtool
+
 -  (only if using Vagrant) - `Vagrant <https://www.vagrantup.com/>`__ -
-   1.7.4 or later
+   1.9 or later
 -  (only if using Vagrant) -
    `VirtualBox <https://www.virtualbox.org/>`__ - 5.0 or later
 -  BIOS Enabled Virtualization - Varies based on hardware
@@ -49,17 +56,16 @@ Prerequisites
 -  Note: The BIOS Enabled Virtualization may be within the CPU or
    Security settings of the BIOS
 
-``pip``, ``behave`` and ``docker-compose``
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``pip`` and ``behave``
+~~~~~~~~~~~~~~~~~~~~~~
 
 ::
 
     pip install --upgrade pip
-    pip install behave nose docker-compose
-    pip install -I flask==0.10.1 python-dateutil==2.2 pytz==2014.3 pyyaml==3.10 couchdb==1.0 flask-cors==2.0.1 requests==2.4.3 pyOpenSSL==16.2.0 pysha3==1.0b1 grpcio==1.0.4
 
     #PIP packages required for some behave tests
-    pip install urllib3 ndg-httpsclient pyasn1 ecdsa python-slugify grpcio-tools jinja2 b3j0f.aop six
+    pip install -r devenv/bddtests-requirements.txt
+
 
 Steps
 ~~~~~
@@ -182,6 +188,13 @@ If the ``vagrant up`` command fails it may be because you do not have
 the Microsoft Visual C++ Redistributable package installed. You can
 download the missing package at the following address:
 http://www.microsoft.com/en-us/download/details.aspx?id=8328
+
+**NOTE:** The inclusion of the miekg/pkcs11 package introduces
+an external dependency on the libtdl.h header file during
+a build of fabric. Please ensure your libtool and libtdhl-dev packages
+are installed. Otherwise, you may get a ltdl.h header missing error.
+You can download the missing package by command:
+``sudo apt-get install -y build-essential git make curl unzip g++ libtool``.
 
 .. Licensed under Creative Commons Attribution 4.0 International License
    https://creativecommons.org/licenses/by/4.0/

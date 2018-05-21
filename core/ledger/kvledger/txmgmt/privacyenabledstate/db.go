@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package privacyenabledstate
 
 import (
+	"github.com/hyperledger/fabric/core/ledger/cceventmgmt"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/version"
 )
@@ -22,12 +23,25 @@ type DBProvider interface {
 // DB extends VersionedDB interface. This interface provides additional functions for managing private data state
 type DB interface {
 	statedb.VersionedDB
+	IsBulkOptimizable() bool
+	LoadCommittedVersionsOfPubAndHashedKeys(pubKeys []*statedb.CompositeKey, hashedKeys []*HashedCompositeKey) error
+	GetCachedKeyHashVersion(namespace, collection string, keyHash []byte) (*version.Height, bool)
+	ClearCachedVersions()
+	GetChaincodeEventListener() cceventmgmt.ChaincodeLifecycleEventListener
 	GetPrivateData(namespace, collection, key string) (*statedb.VersionedValue, error)
 	GetValueHash(namespace, collection string, keyHash []byte) (*statedb.VersionedValue, error)
+	GetKeyHashVersion(namespace, collection string, keyHash []byte) (*version.Height, error)
 	GetPrivateDataMultipleKeys(namespace, collection string, keys []string) ([]*statedb.VersionedValue, error)
 	GetPrivateDataRangeScanIterator(namespace, collection, startKey, endKey string) (statedb.ResultsIterator, error)
 	ExecuteQueryOnPrivateData(namespace, collection, query string) (statedb.ResultsIterator, error)
 	ApplyPrivacyAwareUpdates(updates *UpdateBatch, height *version.Height) error
+}
+
+// HashedCompositeKey encloses Namespace, CollectionName and KeyHash components
+type HashedCompositeKey struct {
+	Namespace      string
+	CollectionName string
+	KeyHash        string
 }
 
 // UpdateBatch encapsulates the updates to Public, Private, and Hashed data.

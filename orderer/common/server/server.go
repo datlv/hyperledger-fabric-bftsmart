@@ -15,12 +15,15 @@ import (
 
 	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric/common/crypto"
+	"github.com/hyperledger/fabric/common/deliver"
+	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/orderer/common/broadcast"
-	"github.com/hyperledger/fabric/orderer/common/deliver"
 	localconfig "github.com/hyperledger/fabric/orderer/common/localconfig"
+	"github.com/hyperledger/fabric/orderer/common/msgprocessor"
 	"github.com/hyperledger/fabric/orderer/common/multichannel"
 	cb "github.com/hyperledger/fabric/protos/common"
 	ab "github.com/hyperledger/fabric/protos/orderer"
+	"github.com/pkg/errors"
 )
 
 type broadcastSupport struct {
@@ -35,22 +38,42 @@ type deliverSupport struct {
 	*multichannel.Registrar
 }
 
-func (bs deliverSupport) GetChain(chainID string) (deliver.Support, bool) {
-	return bs.Registrar.GetChain(chainID)
+func (ds deliverSupport) GetChain(chainID string) (deliver.Support, bool) {
+	return ds.Registrar.GetChain(chainID)
 }
 
 type server struct {
 	bh    broadcast.Handler
 	dh    deliver.Handler
 	debug *localconfig.Debug
+	*multichannel.Registrar
+}
+
+type deliverHandlerSupport struct {
+	ab.AtomicBroadcast_DeliverServer
+}
+
+// CreateStatusReply generates status reply proto message
+func (*deliverHandlerSupport) CreateStatusReply(status cb.Status) proto.Message {
+	return &ab.DeliverResponse{
+		Type: &ab.DeliverResponse_Status{Status: status},
+	}
+}
+
+// CreateBlockReply generates deliver response with block message
+func (*deliverHandlerSupport) CreateBlockReply(block *cb.Block) proto.Message {
+	return &ab.DeliverResponse{
+		Type: &ab.DeliverResponse_Block{Block: block},
+	}
 }
 
 // NewServer creates an ab.AtomicBroadcastServer based on the broadcast target and ledger Reader
-func NewServer(r *multichannel.Registrar, _ crypto.LocalSigner, debug *localconfig.Debug) ab.AtomicBroadcastServer {
+func NewServer(r *multichannel.Registrar, _ crypto.LocalSigner, debug *localconfig.Debug, timeWindow time.Duration, mutualTLS bool) ab.AtomicBroadcastServer {
 	s := &server{
-		dh:    deliver.NewHandlerImpl(deliverSupport{Registrar: r}),
-		bh:    broadcast.NewHandlerImpl(broadcastSupport{Registrar: r}),
-		debug: debug,
+		dh:        deliver.NewHandlerImpl(deliverSupport{Registrar: r}, timeWindow, mutualTLS),
+		bh:        broadcast.NewHandlerImpl(broadcastSupport{Registrar: r}),
+		debug:     debug,
+		Registrar: r,
 	}
 	return s
 }
@@ -95,12 +118,12 @@ func (bmt *broadcastMsgTracer) Recv() (*cb.Envelope, error) {
 }
 
 type deliverMsgTracer struct {
-	ab.AtomicBroadcast_DeliverServer
+	deliver.DeliverSupport
 	msgTracer
 }
 
 func (dmt *deliverMsgTracer) Recv() (*cb.Envelope, error) {
-	msg, err := dmt.AtomicBroadcast_DeliverServer.Recv()
+	msg, err := dmt.DeliverSupport.Recv()
 	if traceDir := dmt.debug.DeliverTraceDir; traceDir != "" {
 		dmt.trace(traceDir, msg, err)
 	}
@@ -134,11 +157,31 @@ func (s *server) Deliver(srv ab.AtomicBroadcast_DeliverServer) error {
 		}
 		logger.Debugf("Closing Deliver stream")
 	}()
-	return s.dh.Handle(&deliverMsgTracer{
-		AtomicBroadcast_DeliverServer: srv,
+	policyChecker := func(env *cb.Envelope, channelID string) error {
+		chain, ok := s.GetChain(channelID)
+		if !ok {
+			return errors.Errorf("channel %s not found", channelID)
+		}
+		sf := msgprocessor.NewSigFilter(policies.ChannelReaders, chain)
+		return sf.Apply(env)
+	}
+	server := &deliverMsgTracer{
+		DeliverSupport: &deliverHandlerSupport{AtomicBroadcast_DeliverServer: srv},
 		msgTracer: msgTracer{
 			debug:    s.debug,
 			function: "Deliver",
 		},
-	})
+	}
+	return s.dh.Handle(deliver.NewDeliverServer(server, policyChecker, s.sendProducer(srv)))
+}
+
+func (s *server) sendProducer(srv ab.AtomicBroadcast_DeliverServer) func(msg proto.Message) error {
+	return func(msg proto.Message) error {
+		response, ok := msg.(*ab.DeliverResponse)
+		if !ok {
+			logger.Errorf("received wrong response type, expected response type ab.DeliverResponse")
+			return errors.New("expected response type ab.DeliverResponse")
+		}
+		return srv.Send(response)
+	}
 }

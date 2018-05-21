@@ -27,6 +27,7 @@ import (
 	"github.com/hyperledger/fabric/msp"
 	"github.com/hyperledger/fabric/protos/common"
 	mspproto "github.com/hyperledger/fabric/protos/msp"
+	"github.com/stretchr/testify/mock"
 )
 
 type ChannelPolicyManagerGetter struct{}
@@ -91,9 +92,24 @@ func (m *DeserializersManager) GetChannelDeserializers() map[string]msp.Identity
 	return m.ChannelDeserializers
 }
 
+type IdentityDeserializerWithExpiration struct {
+	*IdentityDeserializer
+	Expiration time.Time
+}
+
+func (d *IdentityDeserializerWithExpiration) DeserializeIdentity(serializedIdentity []byte) (msp.Identity, error) {
+	id, err := d.IdentityDeserializer.DeserializeIdentity(serializedIdentity)
+	if err != nil {
+		return nil, err
+	}
+	id.(*Identity).expirationDate = d.Expiration
+	return id, nil
+}
+
 type IdentityDeserializer struct {
 	Identity []byte
 	Msg      []byte
+	mock.Mock
 }
 
 func (d *IdentityDeserializer) DeserializeIdentity(serializedIdentity []byte) (msp.Identity, error) {
@@ -106,12 +122,20 @@ func (d *IdentityDeserializer) DeserializeIdentity(serializedIdentity []byte) (m
 	return nil, errors.New("Invalid Identity")
 }
 
+func (d *IdentityDeserializer) IsWellFormed(identity *mspproto.SerializedIdentity) error {
+	if len(d.ExpectedCalls) == 0 {
+		return nil
+	}
+	return d.Called(identity).Error(0)
+}
+
 type Identity struct {
-	Msg []byte
+	expirationDate time.Time
+	Msg            []byte
 }
 
 func (id *Identity) ExpiresAt() time.Time {
-	return time.Time{}
+	return id.expirationDate
 }
 
 func (id *Identity) SatisfiesPrincipal(*mspproto.MSPPrincipal) error {

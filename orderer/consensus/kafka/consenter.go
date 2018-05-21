@@ -8,29 +8,24 @@ package kafka
 
 import (
 	"github.com/Shopify/sarama"
-	"github.com/hyperledger/fabric/common/flogging"
 	localconfig "github.com/hyperledger/fabric/orderer/common/localconfig"
 	"github.com/hyperledger/fabric/orderer/consensus"
 	cb "github.com/hyperledger/fabric/protos/common"
 	logging "github.com/op/go-logging"
 )
 
-const pkgLogID = "orderer/kafka"
-
-var logger *logging.Logger
-
-func init() {
-	logger = flogging.MustGetLogger(pkgLogID)
-}
-
 // New creates a Kafka-based consenter. Called by orderer's main.go.
-func New(tlsConfig localconfig.TLS, retryOptions localconfig.Retry, kafkaVersion sarama.KafkaVersion) consensus.Consenter {
-	brokerConfig := newBrokerConfig(tlsConfig, retryOptions, kafkaVersion, defaultPartition)
+func New(config localconfig.Kafka) consensus.Consenter {
+	if config.Verbose {
+		logging.SetLevel(logging.DEBUG, saramaLogID)
+	}
+	brokerConfig := newBrokerConfig(config.TLS, config.Retry, config.Version, defaultPartition)
 	return &consenterImpl{
 		brokerConfigVal: brokerConfig,
-		tlsConfigVal:    tlsConfig,
-		retryOptionsVal: retryOptions,
-		kafkaVersionVal: kafkaVersion}
+		tlsConfigVal:    config.TLS,
+		retryOptionsVal: config.Retry,
+		kafkaVersionVal: config.Version,
+	}
 }
 
 // consenterImpl holds the implementation of type that satisfies the
@@ -49,8 +44,8 @@ type consenterImpl struct {
 // multichannel.NewManagerImpl() when ranging over the ledgerFactory's
 // existingChains.
 func (consenter *consenterImpl) HandleChain(support consensus.ConsenterSupport, metadata *cb.Metadata) (consensus.Chain, error) {
-	lastOffsetPersisted := getLastOffsetPersisted(metadata.Value, support.ChainID())
-	return newChain(consenter, support, lastOffsetPersisted)
+	lastOffsetPersisted, lastOriginalOffsetProcessed, lastResubmittedConfigOffset := getOffsets(metadata.Value, support.ChainID())
+	return newChain(consenter, support, lastOffsetPersisted, lastOriginalOffsetProcessed, lastResubmittedConfigOffset)
 }
 
 // commonConsenter allows us to retrieve the configuration options set on the

@@ -32,46 +32,55 @@ func IsCouchDBEnabled() bool {
 	return false
 }
 
+const confPeerFileSystemPath = "peer.fileSystemPath"
+const confLedgersData = "ledgersData"
+const confLedgerProvider = "ledgerProvider"
+const confStateleveldb = "stateLeveldb"
+const confHistoryLeveldb = "historyLeveldb"
+const confPvtWritesetStore = "pvtWritesetStore"
+const confChains = "chains"
+const confPvtdataStore = "pvtdataStore"
+const confQueryLimit = "ledger.state.couchDBConfig.queryLimit"
+const confEnableHistoryDatabase = "ledger.history.enableHistoryDatabase"
+const confMaxBatchSize = "ledger.state.couchDBConfig.maxBatchUpdateSize"
+const confAutoWarmIndexes = "ledger.state.couchDBConfig.autoWarmIndexes"
+const confWarmIndexesAfterNBlocks = "ledger.state.couchDBConfig.warmIndexesAfterNBlocks"
+
 // GetRootPath returns the filesystem path.
 // All ledger related contents are expected to be stored under this path
 func GetRootPath() string {
-	sysPath := config.GetPath("peer.fileSystemPath")
-	return filepath.Join(sysPath, "ledgersData")
+	sysPath := config.GetPath(confPeerFileSystemPath)
+	return filepath.Join(sysPath, confLedgersData)
 }
 
 // GetLedgerProviderPath returns the filesystem path for storing ledger ledgerProvider contents
 func GetLedgerProviderPath() string {
-	return filepath.Join(GetRootPath(), "ledgerProvider")
+	return filepath.Join(GetRootPath(), confLedgerProvider)
 }
 
 // GetStateLevelDBPath returns the filesystem path that is used to maintain the state level db
 func GetStateLevelDBPath() string {
-	return filepath.Join(GetRootPath(), "stateLeveldb")
+	return filepath.Join(GetRootPath(), confStateleveldb)
 }
 
 // GetHistoryLevelDBPath returns the filesystem path that is used to maintain the history level db
 func GetHistoryLevelDBPath() string {
-	return filepath.Join(GetRootPath(), "historyLeveldb")
-}
-
-// GetTransientStorePath returns the filesystem path that is used to temporarily store the private rwset
-func GetTransientStorePath() string {
-	return filepath.Join(GetRootPath(), "transientStore")
+	return filepath.Join(GetRootPath(), confHistoryLeveldb)
 }
 
 // GetPvtWritesetStorePath returns the filesystem path that is used for permanent storage of privare write-sets
 func GetPvtWritesetStorePath() string {
-	return filepath.Join(GetRootPath(), "pvtWritesetStore")
+	return filepath.Join(GetRootPath(), confPvtWritesetStore)
 }
 
 // GetBlockStorePath returns the filesystem path that is used for the chain block stores
 func GetBlockStorePath() string {
-	return filepath.Join(GetRootPath(), "chains")
+	return filepath.Join(GetRootPath(), confChains)
 }
 
 // GetPvtdataStorePath returns the filesystem path that is used for permanent storage of private write-sets
 func GetPvtdataStorePath() string {
-	return filepath.Join(GetRootPath(), "pvtdataStore")
+	return filepath.Join(GetRootPath(), confPvtdataStore)
 }
 
 // GetMaxBlockfileSize returns maximum size of the block file
@@ -81,17 +90,27 @@ func GetMaxBlockfileSize() int {
 
 //GetQueryLimit exposes the queryLimit variable
 func GetQueryLimit() int {
-	queryLimit := viper.GetInt("ledger.state.couchDBConfig.queryLimit")
+	queryLimit := viper.GetInt(confQueryLimit)
 	// if queryLimit was unset, default to 10000
-	if !viper.IsSet("ledger.state.couchDBConfig.queryLimit") {
+	if !viper.IsSet(confQueryLimit) {
 		queryLimit = 10000
 	}
 	return queryLimit
 }
 
+//GetMaxBatchUpdateSize exposes the maxBatchUpdateSize variable
+func GetMaxBatchUpdateSize() int {
+	maxBatchUpdateSize := viper.GetInt(confMaxBatchSize)
+	// if maxBatchUpdateSize was unset, default to 500
+	if !viper.IsSet(confMaxBatchSize) {
+		maxBatchUpdateSize = 500
+	}
+	return maxBatchUpdateSize
+}
+
 //IsHistoryDBEnabled exposes the historyDatabase variable
 func IsHistoryDBEnabled() bool {
-	return viper.GetBool("ledger.history.enableHistoryDatabase")
+	return viper.GetBool(confEnableHistoryDatabase)
 }
 
 // IsQueryReadsHashingEnabled enables or disables computing of hash
@@ -105,4 +124,24 @@ func IsQueryReadsHashingEnabled() bool {
 // For more details - see description in kvledger/txmgmt/rwset/query_results_helper.go
 func GetMaxDegreeQueryReadsHashing() uint32 {
 	return 50
+}
+
+//IsAutoWarmIndexesEnabled exposes the autoWarmIndexes variable
+func IsAutoWarmIndexesEnabled() bool {
+	//Return the value set in core.yaml, if not set, the return true
+	if viper.IsSet(confAutoWarmIndexes) {
+		return viper.GetBool(confAutoWarmIndexes)
+	}
+	return true
+
+}
+
+//GetWarmIndexesAfterNBlocks exposes the warmIndexesAfterNBlocks variable
+func GetWarmIndexesAfterNBlocks() int {
+	warmAfterNBlocks := viper.GetInt(confWarmIndexesAfterNBlocks)
+	// if warmIndexesAfterNBlocks was unset, default to 1
+	if !viper.IsSet(confWarmIndexesAfterNBlocks) {
+		warmAfterNBlocks = 1
+	}
+	return warmAfterNBlocks
 }

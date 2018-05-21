@@ -22,13 +22,14 @@ limitations under the License.
 package cscc
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/hyperledger/fabric/common/config/channel"
+	"github.com/hyperledger/fabric/common/channelconfig"
+	"github.com/hyperledger/fabric/common/config"
 	"github.com/hyperledger/fabric/common/flogging"
-	"github.com/hyperledger/fabric/common/policies"
+	"github.com/hyperledger/fabric/core/aclmgmt"
+	"github.com/hyperledger/fabric/core/aclmgmt/resources"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	"github.com/hyperledger/fabric/core/peer"
 	"github.com/hyperledger/fabric/core/policy"
@@ -37,6 +38,7 @@ import (
 	"github.com/hyperledger/fabric/protos/common"
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/pkg/errors"
 )
 
 // PeerConfiger implements the configuration handler for the peer. For every
@@ -44,15 +46,18 @@ import (
 // committer calls this system chaincode to process the transaction.
 type PeerConfiger struct {
 	policyChecker policy.PolicyChecker
+	configMgr     config.Manager
 }
 
 var cnflogger = flogging.MustGetLogger("cscc")
 
 // These are function names from Invoke first parameter
 const (
-	JoinChain      string = "JoinChain"
-	GetConfigBlock string = "GetConfigBlock"
-	GetChannels    string = "GetChannels"
+	JoinChain                string = "JoinChain"
+	GetConfigBlock           string = "GetConfigBlock"
+	GetChannels              string = "GetChannels"
+	GetConfigTree            string = "GetConfigTree"
+	SimulateConfigTreeUpdate string = "SimulateConfigTreeUpdate"
 )
 
 // Init is called once per chain when the chain is created.
@@ -67,7 +72,7 @@ func (e *PeerConfiger) Init(stub shim.ChaincodeStubInterface) pb.Response {
 		mgmt.GetLocalMSP(),
 		mgmt.NewLocalMSPPrincipalGetter(),
 	)
-
+	e.configMgr = peer.NewConfigSupport()
 	return shim.Success(nil)
 }
 
@@ -126,6 +131,7 @@ func (e *PeerConfiger) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 		}
 
 		// 2. check local MSP Admins policy
+		// TODO: move to ACLProvider once it will support chainless ACLs
 		if err = e.policyChecker.CheckPolicyNoChannel(mgmt.Admins, sp); err != nil {
 			return shim.Error(fmt.Sprintf("\"JoinChain\" request failed authorization check "+
 				"for channel [%s]: [%s]", cid, err))
@@ -133,13 +139,28 @@ func (e *PeerConfiger) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 
 		return joinChain(cid, block)
 	case GetConfigBlock:
-		// 2. check the channel reader policy
-		if err = e.policyChecker.CheckPolicy(string(args[1]), policies.ChannelApplicationReaders, sp); err != nil {
+		// 2. check policy
+		if err = aclmgmt.GetACLProvider().CheckACL(resources.CSCC_GetConfigBlock, string(args[1]), sp); err != nil {
 			return shim.Error(fmt.Sprintf("\"GetConfigBlock\" request failed authorization check for channel [%s]: [%s]", args[1], err))
 		}
+
 		return getConfigBlock(args[1])
+	case GetConfigTree:
+		// 2. check policy
+		if err = aclmgmt.GetACLProvider().CheckACL(resources.CSCC_GetConfigTree, string(args[1]), sp); err != nil {
+			return shim.Error(fmt.Sprintf("\"GetConfigTree\" request failed authorization check for channel [%s]: [%s]", args[1], err))
+		}
+
+		return e.getConfigTree(args[1])
+	case SimulateConfigTreeUpdate:
+		// Check policy
+		if err = aclmgmt.GetACLProvider().CheckACL(resources.CSCC_SimulateConfigTreeUpdate, string(args[1]), sp); err != nil {
+			return shim.Error(fmt.Sprintf("\"SimulateConfigTreeUpdate\" request failed authorization check for channel [%s]: [%s]", args[1], err))
+		}
+		return e.simulateConfigTreeUpdate(args[1], args[2])
 	case GetChannels:
 		// 2. check local MSP Members policy
+		// TODO: move to ACLProvider once it will support chainless ACLs
 		if err = e.policyChecker.CheckPolicyNoChannel(mgmt.Members, sp); err != nil {
 			return shim.Error(fmt.Sprintf("\"GetChannels\" request failed authorization check: [%s]", err))
 		}
@@ -154,13 +175,13 @@ func (e *PeerConfiger) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 func validateConfigBlock(block *common.Block) error {
 	envelopeConfig, err := utils.ExtractEnvelope(block, 0)
 	if err != nil {
-		return errors.New(fmt.Sprintf("Failed to %s", err))
+		return errors.Errorf("Failed to %s", err)
 	}
 
 	configEnv := &common.ConfigEnvelope{}
 	_, err = utils.UnmarshalEnvelopeOfType(envelopeConfig, common.HeaderType_CONFIG, configEnv)
 	if err != nil {
-		return errors.New(fmt.Sprintf("Bad configuration envelope: %s", err))
+		return errors.Errorf("Bad configuration envelope: %s", err)
 	}
 
 	if configEnv.Config == nil {
@@ -175,10 +196,10 @@ func validateConfigBlock(block *common.Block) error {
 		return errors.New("No channel configuration groups are available")
 	}
 
-	_, exists := configEnv.Config.ChannelGroup.Groups[config.ApplicationGroupKey]
+	_, exists := configEnv.Config.ChannelGroup.Groups[channelconfig.ApplicationGroupKey]
 	if !exists {
-		return errors.New(fmt.Sprintf("Invalid configuration block, missing %s "+
-			"configuration group", config.ApplicationGroupKey))
+		return errors.Errorf("Invalid configuration block, missing %s "+
+			"configuration group", channelconfig.ApplicationGroupKey)
 	}
 
 	return nil
@@ -194,8 +215,13 @@ func joinChain(chainID string, block *common.Block) pb.Response {
 
 	peer.InitChain(chainID)
 
-	if err := producer.SendProducerBlockEvent(block); err != nil {
-		cnflogger.Errorf("Error sending block event %s", err)
+	bevent, _, _, err := producer.CreateBlockEvents(block)
+	if err != nil {
+		cnflogger.Errorf("Error processing block events for block number [%d]: %s", block.Header.Number, err)
+	} else {
+		if err := producer.Send(bevent); err != nil {
+			cnflogger.Errorf("Channel [%s] Error sending block event for block number [%d]: %s", chainID, block.Header.Number, err)
+		}
 	}
 
 	return shim.Success(nil)
@@ -217,6 +243,72 @@ func getConfigBlock(chainID []byte) pb.Response {
 	}
 
 	return shim.Success(blockBytes)
+}
+
+// getConfigTree returns the current channel and resources configuration for the specified chainID.
+// If the peer doesn't belong to the chain, returns error
+func (e *PeerConfiger) getConfigTree(chainID []byte) pb.Response {
+	if chainID == nil {
+		return shim.Error("Chain ID must not be nil")
+	}
+	channelCfg := e.configMgr.GetChannelConfig(string(chainID)).ConfigProto()
+	if channelCfg == nil {
+		return shim.Error(fmt.Sprintf("Unknown chain ID, %s", string(chainID)))
+	}
+	resCfg := e.configMgr.GetResourceConfig(string(chainID)).ConfigProto()
+	if resCfg == nil {
+		return shim.Error(fmt.Sprintf("Unknown chain ID, %s", string(chainID)))
+	}
+	agCfg := &pb.ConfigTree{ChannelConfig: channelCfg, ResourcesConfig: resCfg}
+	configBytes, err := utils.Marshal(agCfg)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	return shim.Success(configBytes)
+}
+
+func (e *PeerConfiger) simulateConfigTreeUpdate(chainID []byte, envb []byte) pb.Response {
+	if chainID == nil {
+		return shim.Error("Chain ID must not be nil")
+	}
+	if envb == nil {
+		return shim.Error("Config delta bytes must not be nil")
+	}
+	env := &common.Envelope{}
+	err := proto.Unmarshal(envb, env)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	cfg, err := supportByType(e, chainID, env)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	_, err = cfg.ProposeConfigUpdate(env)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	return shim.Success([]byte("Simulation is successful"))
+}
+
+func supportByType(pc *PeerConfiger, chainID []byte, env *common.Envelope) (config.Config, error) {
+	payload := &common.Payload{}
+
+	if err := proto.Unmarshal(env.Payload, payload); err != nil {
+		return nil, errors.Errorf("failed unmarshaling payload: %v", err)
+	}
+
+	channelHdr := &common.ChannelHeader{}
+	if err := proto.Unmarshal(payload.Header.ChannelHeader, channelHdr); err != nil {
+		return nil, errors.Errorf("failed unmarshaling payload header: %v", err)
+	}
+
+	switch common.HeaderType(channelHdr.Type) {
+	case common.HeaderType_CONFIG_UPDATE:
+		return pc.configMgr.GetChannelConfig(string(chainID)), nil
+	case common.HeaderType_PEER_RESOURCE_UPDATE:
+		return pc.configMgr.GetResourceConfig(string(chainID)), nil
+	}
+	return nil, errors.Errorf("invalid payload header type: %d", channelHdr.Type)
 }
 
 // getChannels returns information about all channels for this peer

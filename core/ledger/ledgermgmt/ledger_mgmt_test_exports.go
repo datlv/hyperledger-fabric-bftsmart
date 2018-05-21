@@ -19,8 +19,9 @@ package ledgermgmt
 import (
 	"os"
 
+	"github.com/hyperledger/fabric/core/ledger/customtx"
+
 	"github.com/hyperledger/fabric/core/ledger/ledgerconfig"
-	"github.com/hyperledger/fabric/core/transientstore"
 
 	"fmt"
 )
@@ -29,6 +30,13 @@ import (
 func InitializeTestEnv() {
 	remove()
 	initialize(nil)
+}
+
+// InitializeTestEnvWithCustomProcessors initializes ledgermgmt for tests with the supplied custom tx processors
+func InitializeTestEnvWithCustomProcessors(customTxProcessors customtx.Processors) {
+	remove()
+	customtx.InitializeTestEnv(customTxProcessors)
+	initialize(customTxProcessors)
 }
 
 // CleanupTestEnv closes the ledgermagmt and removes the store directory
@@ -44,6 +52,4 @@ func remove() {
 	if err != nil {
 		logger.Errorf("Error: %s", err)
 	}
-	transientStorePath := transientstore.GetTransientStorePath()
-	os.RemoveAll(transientStorePath)
 }

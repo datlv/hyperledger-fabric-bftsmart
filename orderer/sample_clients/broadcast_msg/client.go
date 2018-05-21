@@ -14,7 +14,7 @@ import (
 
 	"github.com/hyperledger/fabric/common/crypto"
 	"github.com/hyperledger/fabric/common/localmsp"
-	"github.com/hyperledger/fabric/common/tools/configtxgen/provisional"
+	genesisconfig "github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
 	mspmgmt "github.com/hyperledger/fabric/msp/mgmt"
 	"github.com/hyperledger/fabric/orderer/common/localconfig"
 	cb "github.com/hyperledger/fabric/protos/common"
@@ -23,6 +23,7 @@ import (
 
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
+	"gopkg.in/cheggaaa/pb.v1"
 )
 
 type broadcastClient struct {
@@ -56,10 +57,14 @@ func (s *broadcastClient) getAck() error {
 }
 
 func main() {
-	config := config.Load()
+	config, err := config.Load()
+	if err != nil {
+		fmt.Println("failed to load config:", err)
+		os.Exit(1)
+	}
 
 	// Load local MSP
-	err := mspmgmt.LoadLocalMsp(config.General.LocalMSPDir, config.General.BCCSP, config.General.LocalMSPID)
+	err = mspmgmt.LoadLocalMsp(config.General.LocalMSPDir, config.General.BCCSP, config.General.LocalMSPID)
 	if err != nil { // Handle errors reading the config file
 		fmt.Println("Failed to initialize local MSP:", err)
 		os.Exit(0)
@@ -72,9 +77,10 @@ func main() {
 	var messages uint64
 	var goroutines uint64
 	var msgSize uint64
+	var bar *pb.ProgressBar
 
 	flag.StringVar(&serverAddr, "server", fmt.Sprintf("%s:%d", config.General.ListenAddress, config.General.ListenPort), "The RPC server to connect to.")
-	flag.StringVar(&channelID, "channelID", provisional.TestChainID, "The channel ID to broadcast to.")
+	flag.StringVar(&channelID, "channelID", genesisconfig.TestChainID, "The channel ID to broadcast to.")
 	flag.Uint64Var(&messages, "messages", 1, "The number of messages to broadcast.")
 	flag.Uint64Var(&goroutines, "goroutines", 1, "The number of concurrent go routines to broadcast the messages on")
 	flag.Uint64Var(&msgSize, "size", 1024, "The size in bytes of the data section for the payload")
@@ -94,13 +100,17 @@ func main() {
 	if roundMsgs != messages {
 		fmt.Println("Rounding messages to", roundMsgs)
 	}
+	bar = pb.New64(int64(roundMsgs))
+	bar.ShowPercent = true
+	bar.ShowSpeed = true
+	bar = bar.Start()
 
 	msgData := make([]byte, msgSize)
 
 	var wg sync.WaitGroup
 	wg.Add(int(goroutines))
 	for i := uint64(0); i < goroutines; i++ {
-		go func(i uint64) {
+		go func(i uint64, pb *pb.ProgressBar) {
 			client, err := ab.NewAtomicBroadcastClient(conn).Broadcast(context.TODO())
 			if err != nil {
 				fmt.Println("Error connecting:", err)
@@ -112,6 +122,9 @@ func main() {
 			go func() {
 				for i := uint64(0); i < msgsPerGo; i++ {
 					err = s.getAck()
+					if err == nil && bar != nil {
+						bar.Increment()
+					}
 				}
 				if err != nil {
 					fmt.Printf("\nError: %v\n", err)
@@ -126,9 +139,9 @@ func main() {
 			<-done
 			wg.Done()
 			client.CloseSend()
-			fmt.Println("Go routine", i, "exiting")
-		}(i)
+		}(i, bar)
 	}
 
 	wg.Wait()
+	bar.FinishPrint("----------------------broadcast message finish-------------------------------")
 }

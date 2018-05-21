@@ -1,23 +1,28 @@
 /*
-Copyright IBM Corp. All Rights Reserved.
+Copyright IBM Corp. 2017 All Rights Reserved.
 
 SPDX-License-Identifier: Apache-2.0
 */
-
 package config
 
-type ValueProposer interface {
-	// BeginValueProposals called when a config proposal is begun
-	BeginValueProposals(tx interface{}, groups []string) (ValueDeserializer, []ValueProposer, error)
+import (
+	cb "github.com/hyperledger/fabric/protos/common"
+)
 
-	// RollbackProposals called when a config proposal is abandoned
-	RollbackProposals(tx interface{})
+// Config encapsulates config (channel or resource) tree
+type Config interface {
+	// ConfigProto returns the current config
+	ConfigProto() *cb.Config
 
-	// PreCommit is invoked before committing the config to catch
-	// any errors which cannot be caught on a per proposal basis
-	// TODO, rename other methods to remove Value/Proposal references
-	PreCommit(tx interface{}) error
+	// ProposeConfigUpdate attempts to validate a new configtx against the current config state
+	ProposeConfigUpdate(configtx *cb.Envelope) (*cb.ConfigEnvelope, error)
+}
 
-	// CommitProposals called when a config proposal is committed
-	CommitProposals(tx interface{})
+// Manager provides access to the resource config
+type Manager interface {
+	// GetChannelConfig defines methods that are related to channel configuration
+	GetChannelConfig(channel string) Config
+
+	// GetResourceConfig defines methods that are related to resource configuration
+	GetResourceConfig(channel string) Config
 }

@@ -17,19 +17,50 @@ import (
 	"time"
 
 	"github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
-	"github.com/hyperledger/fabric/common/tools/configtxgen/provisional"
 	"github.com/hyperledger/fabric/orderer/common/localconfig"
 	perf "github.com/hyperledger/fabric/orderer/common/performance"
 	cb "github.com/hyperledger/fabric/protos/common"
 	"github.com/stretchr/testify/assert"
 )
 
-// Usage: BENCHMARK=true go test -run=TestOrdererBenchmark[Solo|Kafka][Broadcast|Deliver]
+// USAGE
 //
-// Benchmark test makes [ch] channels, creates [bc] clients per client per orderer. There are
-// [ord] orderer instances in total. A client ONLY interacts with ONE channel and ONE
-// orderer, so the number of client in total is [ch * bc * ord]. Note that all clients are
-// concurrent.
+//  BENCHMARK=true go test -run=TestOrdererBenchmark[Solo|Kafka][Broadcast|Deliver]
+//
+// You can specify a specific test permutation by specifying the complete subtest
+// name corresponding to the permutation you would like to run. e.g:
+//
+//  TestOrdererBenchmark[Solo|Kafka][Broadcast|Deliver]/10ch/10000tx/10kb/10bc/0dc/10ord
+//
+// (The permutation has to be valid as defined in the source code)
+//
+// RUNNING KAFKA ORDERER BENCHMARKS
+//
+// A Kafka cluster is required to run the Kafka-based benchmark. The benchmark
+// expects to find a seed broker is listening on localhost:9092.
+//
+// A suitable Kafka cluster is provided as a docker compose application defined
+// in the docker-compose.yml file provided with this package. To run the Kafka
+// benchmarks with the provided Kafaka cluster:
+//
+//    From this package's directory, first run:
+//
+//       docker-compose up -d
+//
+//    Then execute:
+//
+//       BENCHMARK=true go test -run TestOrdererBenchmarkKafkaBroadcast
+//
+// If you are not using the Kafka cluster provided in the docker-compose.yml,
+// the list of seed brokers can be adjusted by setting the value of
+// x_ORDERERS_KAFKA_BROKERS in the `envvars` map below.
+//
+// DESCRIPTION
+//
+// Benchmark test makes [ch] channels, creates [bc] clients per channel per orderer. There
+// are [ord] orderer instances in total. A client ONLY interacts with ONE channel and ONE
+// orderer, so the number of client in total is [ch * bc * ord]. Note that all clients
+// execute concurrently.
 //
 // The test sends [tx] transactions of size [kb] in total. These tx are evenly distributed
 // among all clients, which gives us [tx / (ch * bc * ord)] tx per client.
@@ -56,7 +87,7 @@ import (
 // ordered. This is important for evaluating elapsed time of async broadcast operations.
 //
 // Again, each deliver client only interacts with one channel and one orderer, which
-// results in [a * f * e] deliver clients in total.
+// results in [ch * dc * ord] deliver clients in total.
 //
 // ch  -> channelCounts
 // bc  -> broadcastClientPerChannel
@@ -70,8 +101,6 @@ import (
 // as deliver is effectively retrieving pre-generated blocks, so it shouldn't be choked
 // by slower broadcast.
 //
-// Note: a Kafka broker listening on localhost:9092 is required to run Kafka based benchmark
-// TODO(jay_guo) use ephemeral kafka container for test
 
 const (
 	MaxMessageCount = 10
@@ -81,12 +110,14 @@ const (
 	// be less than 13 KB.
 	AbsoluteMaxBytes  = 15 // KB
 	PreferredMaxBytes = 10 // KB
+	ChannelProfile    = localconfig.SampleSingleMSPChannelV11Profile
 )
 
 var envvars = map[string]string{
-	"ORDERER_GENERAL_GENESISPROFILE":                            localconfig.SampleDevModeSolo,
+	"ORDERER_GENERAL_GENESISPROFILE":                            localconfig.SampleDevModeSoloV11Profile,
 	"ORDERER_GENERAL_LEDGERTYPE":                                "file",
 	"ORDERER_GENERAL_LOGLEVEL":                                  "error",
+	"ORDERER_KAFKA_VERBOSE":                                     "false",
 	localconfig.Prefix + "_ORDERER_BATCHSIZE_MAXMESSAGECOUNT":   strconv.Itoa(MaxMessageCount),
 	localconfig.Prefix + "_ORDERER_BATCHSIZE_ABSOLUTEMAXBYTES":  strconv.Itoa(AbsoluteMaxBytes) + " KB",
 	localconfig.Prefix + "_ORDERER_BATCHSIZE_PREFERREDMAXBYTES": strconv.Itoa(PreferredMaxBytes) + " KB",
@@ -119,16 +150,13 @@ func (f factors) String() string {
 // As benchmark tests are skipped by default, we put this test here to catch
 // potential code changes that might break benchmark tests. If this test fails,
 // it is likely that benchmark tests need to be updated.
-func TestOrdererBenchmark(t *testing.T) {
-	os.Setenv(localconfig.Prefix+"_ORDERER_ORDERERTYPE", provisional.ConsensusTypeSolo)
-	defer os.Unsetenv(localconfig.Prefix + "_ORDERER_ORDERERTYPE")
-
+func TestOrdererBenchmarkSolo(t *testing.T) {
 	for key, value := range envvars {
 		os.Setenv(key, value)
 		defer os.Unsetenv(key)
 	}
 
-	t.Run("Benchmark Sample Test", func(t *testing.T) {
+	t.Run("Benchmark Sample Test (Solo)", func(t *testing.T) {
 		benchmarkOrderer(t, 1, 5, PreferredMaxBytes, 1, 0, 1, true)
 	})
 }
@@ -138,9 +166,6 @@ func TestOrdererBenchmarkSoloBroadcast(t *testing.T) {
 	if os.Getenv("BENCHMARK") == "" {
 		t.Skip("Skipping benchmark test")
 	}
-
-	os.Setenv(localconfig.Prefix+"_ORDERER_ORDERERTYPE", provisional.ConsensusTypeSolo)
-	defer os.Unsetenv(localconfig.Prefix + "_ORDERER_ORDERERTYPE")
 
 	for key, value := range envvars {
 		os.Setenv(key, value)
@@ -187,9 +212,6 @@ func TestOrdererBenchmarkSoloDeliver(t *testing.T) {
 		t.Skip("Skipping benchmark test")
 	}
 
-	os.Setenv(localconfig.Prefix+"_ORDERER_ORDERERTYPE", provisional.ConsensusTypeSolo)
-	defer os.Unsetenv(localconfig.Prefix + "_ORDERER_ORDERERTYPE")
-
 	for key, value := range envvars {
 		os.Setenv(key, value)
 		defer os.Unsetenv(key)
@@ -235,13 +257,13 @@ func TestOrdererBenchmarkKafkaBroadcast(t *testing.T) {
 		t.Skip("Skipping benchmark test")
 	}
 
-	os.Setenv(localconfig.Prefix+"_ORDERER_ORDERERTYPE", provisional.ConsensusTypeKafka)
-	defer os.Unsetenv(localconfig.Prefix + "_ORDERER_ORDERERTYPE")
-
 	for key, value := range envvars {
 		os.Setenv(key, value)
 		defer os.Unsetenv(key)
 	}
+
+	os.Setenv("ORDERER_GENERAL_GENESISPROFILE", localconfig.SampleDevModeKafkaProfile)
+	defer os.Unsetenv("ORDERER_GENERAL_GENESISPROFILE")
 
 	var (
 		channelCounts             = []int{1, 10}
@@ -283,13 +305,13 @@ func TestOrdererBenchmarkKafkaDeliver(t *testing.T) {
 		t.Skip("Skipping benchmark test")
 	}
 
-	os.Setenv(localconfig.Prefix+"_ORDERER_ORDERERTYPE", provisional.ConsensusTypeKafka)
-	defer os.Unsetenv(localconfig.Prefix + "_ORDERER_ORDERERTYPE")
-
 	for key, value := range envvars {
 		os.Setenv(key, value)
 		defer os.Unsetenv(key)
 	}
+
+	os.Setenv("ORDERER_GENERAL_GENESISPROFILE", localconfig.SampleDevModeKafkaProfile)
+	defer os.Unsetenv("ORDERER_GENERAL_GENESISPROFILE")
 
 	var (
 		channelCounts             = []int{1, 10}
@@ -335,6 +357,19 @@ func benchmarkOrderer(
 	numOfOrderer int,
 	multiplex bool,
 ) {
+	// Initialization shared by all orderers
+	conf, err := config.Load()
+	if err != nil {
+		t.Fatal("failed to load config")
+	}
+
+	initializeLoggingLevel(conf)
+	initializeLocalMsp(conf)
+	perf.InitializeServerPool(numOfOrderer)
+
+	// Load sample channel profile
+	channelProfile := localconfig.Load(ChannelProfile)
+
 	// Calculate intermediate variables used internally. See the comment at the beginning
 	// of this file for the purpose of these vars.
 	txPerClient := totalTx / (broadcastClientPerChannel * numOfChannels * numOfOrderer)
@@ -354,12 +389,6 @@ func benchmarkOrderer(
 	blkPerChannel := txPerChannel / txPerBlk
 
 	var txCount uint64 // Atomic counter to keep track of actual tx sent
-
-	// Initialization shared by all orderers
-	conf := config.Load()
-	initializeLoggingLevel(conf)
-	initializeLocalMsp(conf)
-	perf.InitializeServerPool(numOfOrderer)
 
 	// Generate a random system channel id for each test run,
 	// so it does not recover ledgers from previous run.
@@ -398,7 +427,7 @@ func benchmarkOrderer(
 	channelIDs := make([]string, numOfChannels)
 	txs := make(map[string]*cb.Envelope)
 	for i := 0; i < numOfChannels; i++ {
-		id := perf.CreateChannel(benchmarkServers[0]) // We only need to create channel on one orderer
+		id := perf.CreateChannel(benchmarkServers[0], channelProfile) // We only need to create channel on one orderer
 		channelIDs[i] = id
 		txs[id] = perf.MakeNormalTx(id, msgSize)
 	}
@@ -512,16 +541,16 @@ func benchmarkOrderer(
 	// Experiment shows that atomic counter is not bottleneck.
 	assert.Equal(t, uint64(totalTx), txCount, "Expected to send %d msg, but actually sent %d", uint64(totalTx), txCount)
 
-	ordererType := os.Getenv(localconfig.Prefix + "_ORDERER_ORDERERTYPE")
+	ordererProfile := os.Getenv("ORDERER_GENERAL_GENESISPROFILE")
 
 	fmt.Printf(
-		"Message: %6d  Message Size: %3dKB  Channels: %3d Orderer(%s): %2d | "+
+		"Messages: %6d  Message Size: %3dKB  Channels: %3d Orderer (%s): %2d | "+
 			"Broadcast Clients: %3d  Write tps: %5.1f tx/s Elapsed Time: %0.2fs | "+
 			"Deliver clients: %3d  Read tps: %8.1f blk/s Elapsed Time: %0.2fs\n",
 		totalTx,
 		msgSize,
 		numOfChannels,
-		ordererType,
+		ordererProfile,
 		numOfOrderer,
 		broadcastClientPerChannel*numOfChannels*numOfOrderer,
 		float64(totalTx)/btime.Seconds(),

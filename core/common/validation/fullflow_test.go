@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hyperledger/fabric/common/mocks/config"
 	mmsp "github.com/hyperledger/fabric/common/mocks/msp"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/msp"
@@ -34,13 +35,13 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func getProposal() (*peer.Proposal, error) {
+func getProposal(channel string) (*peer.Proposal, error) {
 	cis := &peer.ChaincodeInvocationSpec{
 		ChaincodeSpec: &peer.ChaincodeSpec{
 			ChaincodeId: getChaincodeID(),
 			Type:        peer.ChaincodeSpec_GOLANG}}
 
-	proposal, _, err := utils.CreateProposalFromCIS(common.HeaderType_ENDORSER_TRANSACTION, util.GetTestChainID(), cis, signerSerialized)
+	proposal, _, err := utils.CreateProposalFromCIS(common.HeaderType_ENDORSER_TRANSACTION, channel, cis, signerSerialized)
 	return proposal, err
 }
 
@@ -119,7 +120,7 @@ func createSignedTxTwoActions(proposal *peer.Proposal, signer msp.SigningIdentit
 
 func TestGoodPath(t *testing.T) {
 	// get a toy proposal
-	prop, err := getProposal()
+	prop, err := getProposal(util.GetTestChainID())
 	if err != nil {
 		t.Fatalf("getProposal failed, err %s", err)
 		return
@@ -157,7 +158,7 @@ func TestGoodPath(t *testing.T) {
 	}
 
 	// validate the transaction
-	payl, txResult := ValidateTransaction(tx)
+	payl, txResult := ValidateTransaction(tx, &config.MockApplicationCapabilities{})
 	if txResult != peer.TxValidationCode_VALID {
 		t.Fatalf("ValidateTransaction failed, err %s", err)
 		return
@@ -193,7 +194,7 @@ func TestGoodPath(t *testing.T) {
 
 func TestTXWithTwoActionsRejected(t *testing.T) {
 	// get a toy proposal
-	prop, err := getProposal()
+	prop, err := getProposal(util.GetTestChainID())
 	if err != nil {
 		t.Fatalf("getProposal failed, err %s", err)
 		return
@@ -217,7 +218,7 @@ func TestTXWithTwoActionsRejected(t *testing.T) {
 	}
 
 	// validate the transaction
-	_, txResult := ValidateTransaction(tx)
+	_, txResult := ValidateTransaction(tx, &config.MockApplicationCapabilities{})
 	if txResult == peer.TxValidationCode_VALID {
 		t.Fatalf("ValidateTransaction should have failed")
 		return
@@ -226,7 +227,7 @@ func TestTXWithTwoActionsRejected(t *testing.T) {
 
 func TestBadProp(t *testing.T) {
 	// get a toy proposal
-	prop, err := getProposal()
+	prop, err := getProposal(util.GetTestChainID())
 	if err != nil {
 		t.Fatalf("getProposal failed, err %s", err)
 		return
@@ -303,7 +304,7 @@ func corrupt(bytes []byte) {
 
 func TestBadTx(t *testing.T) {
 	// get a toy proposal
-	prop, err := getProposal()
+	prop, err := getProposal(util.GetTestChainID())
 	if err != nil {
 		t.Fatalf("getProposal failed, err %s", err)
 		return
@@ -333,7 +334,7 @@ func TestBadTx(t *testing.T) {
 		copy(paylCopy, paylOrig)
 		paylCopy[i] = byte(int(paylCopy[i]+1) % 255)
 		// validate the transaction it should fail
-		_, txResult := ValidateTransaction(&common.Envelope{Signature: tx.Signature, Payload: paylCopy})
+		_, txResult := ValidateTransaction(&common.Envelope{Signature: tx.Signature, Payload: paylCopy}, &config.MockApplicationCapabilities{})
 		if txResult == peer.TxValidationCode_VALID {
 			t.Fatal("ValidateTransaction should have failed")
 			return
@@ -351,7 +352,7 @@ func TestBadTx(t *testing.T) {
 	corrupt(tx.Signature)
 
 	// validate the transaction it should fail
-	_, txResult := ValidateTransaction(tx)
+	_, txResult := ValidateTransaction(tx, &config.MockApplicationCapabilities{})
 	if txResult == peer.TxValidationCode_VALID {
 		t.Fatal("ValidateTransaction should have failed")
 		return
@@ -360,7 +361,7 @@ func TestBadTx(t *testing.T) {
 
 func Test2EndorsersAgree(t *testing.T) {
 	// get a toy proposal
-	prop, err := getProposal()
+	prop, err := getProposal(util.GetTestChainID())
 	if err != nil {
 		t.Fatalf("getProposal failed, err %s", err)
 		return
@@ -394,7 +395,7 @@ func Test2EndorsersAgree(t *testing.T) {
 	}
 
 	// validate the transaction
-	_, txResult := ValidateTransaction(tx)
+	_, txResult := ValidateTransaction(tx, &config.MockApplicationCapabilities{})
 	if txResult != peer.TxValidationCode_VALID {
 		t.Fatalf("ValidateTransaction failed, err %s", err)
 		return
@@ -403,7 +404,7 @@ func Test2EndorsersAgree(t *testing.T) {
 
 func Test2EndorsersDisagree(t *testing.T) {
 	// get a toy proposal
-	prop, err := getProposal()
+	prop, err := getProposal(util.GetTestChainID())
 	if err != nil {
 		t.Fatalf("getProposal failed, err %s", err)
 		return
@@ -438,7 +439,7 @@ func Test2EndorsersDisagree(t *testing.T) {
 }
 
 func TestInvocationsBadArgs(t *testing.T) {
-	_, code := ValidateTransaction(nil)
+	_, code := ValidateTransaction(nil, &config.MockApplicationCapabilities{})
 	assert.Equal(t, code, peer.TxValidationCode_NIL_ENVELOPE)
 	err := validateEndorserTransaction(nil, nil)
 	assert.Error(t, err)
@@ -462,12 +463,13 @@ func TestInvocationsBadArgs(t *testing.T) {
 	assert.Error(t, err)
 	_, err = validateChaincodeProposalMessage(nil, nil)
 	assert.Error(t, err)
-	_, err = validateChaincodeProposalMessage(&peer.Proposal{}, &common.Header{[]byte("a"), []byte("a")})
+	_, err = validateChaincodeProposalMessage(&peer.Proposal{}, &common.Header{ChannelHeader: []byte("a"), SignatureHeader: []byte("a")})
 	assert.Error(t, err)
 }
 
 var signer msp.SigningIdentity
 var signerSerialized []byte
+var signerMSPId string
 
 func TestMain(m *testing.M) {
 	// setup crypto algorithms
@@ -485,6 +487,7 @@ func TestMain(m *testing.M) {
 		os.Exit(-1)
 		return
 	}
+	signerMSPId = signer.GetMSPIdentifier()
 
 	signerSerialized, err = signer.Serialize()
 	if err != nil {

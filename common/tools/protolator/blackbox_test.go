@@ -20,9 +20,12 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/hyperledger/fabric/common/tools/configtxgen/encoder"
 	genesisconfig "github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
-	"github.com/hyperledger/fabric/common/tools/configtxgen/provisional"
 	. "github.com/hyperledger/fabric/common/tools/protolator"
+	cb "github.com/hyperledger/fabric/protos/common"
+	pb "github.com/hyperledger/fabric/protos/peer"
+	"github.com/hyperledger/fabric/protos/utils"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/stretchr/testify/assert"
@@ -53,18 +56,71 @@ func bidirectionalMarshal(t *testing.T, doc proto.Message) {
 }
 
 func TestConfigUpdate(t *testing.T) {
-	p := provisional.New(genesisconfig.Load(genesisconfig.SampleSingleMSPSoloProfile))
-	ct := p.ChannelTemplate()
-	cue, err := ct.Envelope("Foo")
+	cg, err := encoder.NewChannelGroup(genesisconfig.Load(genesisconfig.SampleSingleMSPSoloProfile))
 	assert.NoError(t, err)
 
-	bidirectionalMarshal(t, cue)
+	bidirectionalMarshal(t, &cb.ConfigUpdateEnvelope{
+		ConfigUpdate: utils.MarshalOrPanic(&cb.ConfigUpdate{
+			ReadSet:  cg,
+			WriteSet: cg,
+		}),
+	})
 }
 
 func TestGenesisBlock(t *testing.T) {
-	p := provisional.New(genesisconfig.Load(genesisconfig.SampleSingleMSPSoloProfile))
+	p := encoder.New(genesisconfig.Load(genesisconfig.SampleSingleMSPSoloProfile))
 	gb := p.GenesisBlockForChannel("foo")
 
 	bidirectionalMarshal(t, gb)
+}
 
+func TestResourcesConfig(t *testing.T) {
+	p := &cb.Config{
+		Type: int32(cb.ConfigType_RESOURCE),
+		ChannelGroup: &cb.ConfigGroup{
+			Groups: map[string]*cb.ConfigGroup{
+				"Chaincodes": {
+					Groups: map[string]*cb.ConfigGroup{
+						"cc1": {
+							Values: map[string]*cb.ConfigValue{
+								"ChaincodeIdentifier": {
+									Value: utils.MarshalOrPanic(&pb.ChaincodeIdentifier{
+										Hash:    []byte("somehashvalue"),
+										Version: "aversionstring",
+									}),
+								},
+								"ChaincodeValidation": {
+									Value: utils.MarshalOrPanic(
+										&pb.ChaincodeValidation{
+											Name: "vscc",
+											Argument: utils.MarshalOrPanic(&pb.VSCCArgs{
+												EndorsementPolicyRef: "foo",
+											}),
+										}),
+								},
+								"ChaincodeEndorsement": {
+									Value: utils.MarshalOrPanic(&pb.ChaincodeEndorsement{
+										Name: "escc",
+									}),
+								},
+							},
+						},
+					},
+				},
+				"APIs": {
+					Values: map[string]*cb.ConfigValue{
+						"Test": {
+							Value: utils.MarshalOrPanic(&pb.APIResource{PolicyRef: "Foo"}),
+						},
+						"Another": {
+							Value: utils.MarshalOrPanic(&pb.APIResource{PolicyRef: "Bar"}),
+						},
+					},
+				},
+				"PeerPolicies": {},
+			},
+		},
+	}
+
+	bidirectionalMarshal(t, p)
 }

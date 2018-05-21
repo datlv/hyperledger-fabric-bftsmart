@@ -34,8 +34,20 @@ General:
         Certificate: tls/server.crt
         RootCAs:
           - tls/ca.crt
-        ClientAuthEnabled: false
+        ClientAuthRequired: false
         ClientRootCAs:
+
+    # Keepalive settings for the GRPC server.
+    Keepalive:
+        # ServerMinInterval is the minimum permitted time between client pings.
+        # If clients send pings more frequently, the server will
+        # disconnect them.
+        ServerMinInterval: 60s
+        # ServerInterval is the time between pings to clients.
+        ServerInterval: 7200s
+        # ServerTimeout is the duration the server waits for a response from
+        # a client before closing the connection.
+        ServerTimeout: 20s
 
     # Log Level: The level at which to log. This accepts logging specifications
     # per: fabric/docs/Setup/logging-control.md
@@ -102,6 +114,13 @@ General:
             # chosen using: 'LocalMSPDir'/keystore
             FileKeyStore:
                 KeyStore:
+
+    # Authentication contains configuration parameters related to authenticating
+    # client messages
+    Authentication:
+        # the acceptable difference between the current server time and the
+        # client's time as specified in a client request message
+        TimeWindow: 15m
 
 ################################################################################
 #
@@ -224,9 +243,10 @@ Kafka:
         # following "File" key and specify the file name from which to load the
         # value of RootCAs.
         #File: path/to/RootCAs
-    # Kafka version of the Kafka cluster brokers (defaults to 0.9.0.1)
+
+    # Kafka protocol version used to communicate with the Kafka cluster brokers
+    # (defaults to 0.10.2.0 if not specified)
     Version:
-        #
 
 # JCS: new section for bftsmart
 ################################################################################
@@ -253,7 +273,7 @@ BFTsmart:
 ################################################################################
 Debug:
 
-    # BroadcasTraceDir when set will cause each request to the Broadcast service
+    # BroadcastTraceDir when set will cause each request to the Broadcast service
     # for this orderer to be written to a file in this directory
     BroadcastTraceDir:
 

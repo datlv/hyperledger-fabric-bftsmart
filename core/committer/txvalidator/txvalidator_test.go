@@ -22,8 +22,10 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric/common/configtx/test"
 	"github.com/hyperledger/fabric/common/ledger/testutil"
+	"github.com/hyperledger/fabric/common/mocks/config"
 	util2 "github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/common/sysccprovider"
+	ledger2 "github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/ledgermgmt"
 	"github.com/hyperledger/fabric/core/ledger/util"
 	ledgerUtil "github.com/hyperledger/fabric/core/ledger/util"
@@ -37,9 +39,96 @@ import (
 	"github.com/hyperledger/fabric/protos/utils"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
+	"golang.org/x/sync/semaphore"
 )
 
-func TestBlockValidation(t *testing.T) {
+func testValidationWithNTXes(t *testing.T, ledger ledger2.PeerLedger, gbHash []byte, nBlocks int) {
+	txid := util2.GenerateUUID()
+	simulator, _ := ledger.NewTxSimulator(txid)
+	simulator.SetState("ns1", "key1", []byte("value1"))
+	simulator.SetState("ns1", "key2", []byte("value2"))
+	simulator.SetState("ns1", "key3", []byte("value3"))
+	simulator.Done()
+
+	simRes, _ := simulator.GetTxSimulationResults()
+	pubSimulationResBytes, _ := simRes.GetPubSimulationBytes()
+	_, err := testutil.ConstructBytesProposalResponsePayload("v1", pubSimulationResBytes)
+	if err != nil {
+		t.Fatalf("Could not construct ProposalResponsePayload bytes, err: %s", err)
+	}
+
+	mockVsccValidator := &validator.MockVsccValidator{}
+	vcs := struct {
+		*mocktxvalidator.Support
+		*semaphore.Weighted
+	}{&mocktxvalidator.Support{LedgerVal: ledger, ACVal: &config.MockApplicationCapabilities{}}, semaphore.NewWeighted(10)}
+	tValidator := &txValidator{vcs, mockVsccValidator}
+
+	bcInfo, _ := ledger.GetBlockchainInfo()
+	testutil.AssertEquals(t, bcInfo, &common.BlockchainInfo{
+		Height: 1, CurrentBlockHash: gbHash, PreviousBlockHash: nil})
+
+	sr := [][]byte{}
+	for i := 0; i < nBlocks; i++ {
+		sr = append(sr, pubSimulationResBytes)
+	}
+	block := testutil.ConstructBlock(t, 1, gbHash, sr, true)
+
+	tValidator.Validate(block)
+
+	txsfltr := util.TxValidationFlags(block.Metadata.Metadata[common.BlockMetadataIndex_TRANSACTIONS_FILTER])
+
+	for i := 0; i < nBlocks; i++ {
+		assert.True(t, txsfltr.IsSetTo(i, peer.TxValidationCode_VALID))
+	}
+
+	/*
+
+		a better way of testing this without all of the mocking was
+		implemented in validator_test.go
+
+		newMockVsccValidator := &validator.MockVsccValidator{
+			CIns:     upgradeChaincodeIns,
+			RespPayl: prespPaylBytes,
+		}
+		newTxValidator := &txValidator{&mocktxvalidator.Support{LedgerVal: ledger}, newMockVsccValidator}
+
+		// generate new block
+		newBlock := testutil.ConstructBlock(t, 2, block.Header.Hash(), [][]byte{simRes}, true) // contains one tx with chaincode version v1
+
+		newTxValidator.Validate(newBlock)
+
+		// tx should be invalided because of chaincode upgrade
+		txsfltr = util.TxValidationFlags(newBlock.Metadata.Metadata[common.BlockMetadataIndex_TRANSACTIONS_FILTER])
+		assert.True(t, txsfltr.IsSetTo(0, peer.TxValidationCode_EXPIRED_CHAINCODE))
+	*/
+}
+
+func TestDetectTXIdDuplicates(t *testing.T) {
+	txids := []string{"", "1", "2", "3", "", "2", ""}
+	txsfltr := ledgerUtil.NewTxValidationFlags(len(txids))
+	markTXIdDuplicates(txids, txsfltr)
+	assert.True(t, txsfltr.IsSetTo(0, peer.TxValidationCode_VALID))
+	assert.True(t, txsfltr.IsSetTo(1, peer.TxValidationCode_VALID))
+	assert.True(t, txsfltr.IsSetTo(2, peer.TxValidationCode_VALID))
+	assert.True(t, txsfltr.IsSetTo(3, peer.TxValidationCode_VALID))
+	assert.True(t, txsfltr.IsSetTo(4, peer.TxValidationCode_VALID))
+	assert.True(t, txsfltr.IsSetTo(5, peer.TxValidationCode_DUPLICATE_TXID))
+	assert.True(t, txsfltr.IsSetTo(6, peer.TxValidationCode_VALID))
+
+	txids = []string{"", "1", "2", "3", "", "21", ""}
+	txsfltr = ledgerUtil.NewTxValidationFlags(len(txids))
+	markTXIdDuplicates(txids, txsfltr)
+	assert.True(t, txsfltr.IsSetTo(0, peer.TxValidationCode_VALID))
+	assert.True(t, txsfltr.IsSetTo(1, peer.TxValidationCode_VALID))
+	assert.True(t, txsfltr.IsSetTo(2, peer.TxValidationCode_VALID))
+	assert.True(t, txsfltr.IsSetTo(3, peer.TxValidationCode_VALID))
+	assert.True(t, txsfltr.IsSetTo(4, peer.TxValidationCode_VALID))
+	assert.True(t, txsfltr.IsSetTo(5, peer.TxValidationCode_VALID))
+	assert.True(t, txsfltr.IsSetTo(6, peer.TxValidationCode_VALID))
+}
+
+func TestBlockValidationDuplicateTXId(t *testing.T) {
 	viper.Set("peer.fileSystemPath", "/tmp/fabric/txvalidatortest")
 	ledgermgmt.InitializeTestEnv()
 	defer ledgermgmt.CleanupTestEnv()
@@ -64,39 +153,82 @@ func TestBlockValidation(t *testing.T) {
 	}
 
 	mockVsccValidator := &validator.MockVsccValidator{}
-	tValidator := &txValidator{&mocktxvalidator.Support{LedgerVal: ledger}, mockVsccValidator}
+	acv := &config.MockApplicationCapabilities{}
+	vcs := struct {
+		*mocktxvalidator.Support
+		*semaphore.Weighted
+	}{&mocktxvalidator.Support{LedgerVal: ledger, ACVal: acv}, semaphore.NewWeighted(10)}
+	tValidator := &txValidator{vcs, mockVsccValidator}
 
 	bcInfo, _ := ledger.GetBlockchainInfo()
 	testutil.AssertEquals(t, bcInfo, &common.BlockchainInfo{
 		Height: 1, CurrentBlockHash: gbHash, PreviousBlockHash: nil})
 
-	block := testutil.ConstructBlock(t, 1, gbHash, [][]byte{pubSimulationResBytes}, true)
+	envs := []*common.Envelope{}
+	env, _, err := testutil.ConstructTransaction(t, pubSimulationResBytes, "", true)
+	envs = append(envs, env)
+	envs = append(envs, env)
+	block := testutil.NewBlock(envs, 1, gbHash)
 
 	tValidator.Validate(block)
 
 	txsfltr := util.TxValidationFlags(block.Metadata.Metadata[common.BlockMetadataIndex_TRANSACTIONS_FILTER])
+
 	assert.True(t, txsfltr.IsSetTo(0, peer.TxValidationCode_VALID))
+	assert.True(t, txsfltr.IsSetTo(1, peer.TxValidationCode_VALID))
 
-	/*
+	acv.ForbidDuplicateTXIdInBlockRv = true
 
-		a better way of testing this without all of the mocking was
-		implemented in validator_test.go
+	tValidator.Validate(block)
 
-		newMockVsccValidator := &validator.MockVsccValidator{
-			CIns:     upgradeChaincodeIns,
-			RespPayl: prespPaylBytes,
-		}
-		newTxValidator := &txValidator{&mocktxvalidator.Support{LedgerVal: ledger}, newMockVsccValidator}
+	txsfltr = util.TxValidationFlags(block.Metadata.Metadata[common.BlockMetadataIndex_TRANSACTIONS_FILTER])
 
-		// generate new block
-		newBlock := testutil.ConstructBlock(t, 2, block.Header.Hash(), [][]byte{simRes}, true) // contains one tx with chaincode version v1
+	assert.True(t, txsfltr.IsSetTo(0, peer.TxValidationCode_VALID))
+	assert.True(t, txsfltr.IsSetTo(1, peer.TxValidationCode_DUPLICATE_TXID))
+}
 
-		newTxValidator.Validate(newBlock)
+func TestBlockValidation(t *testing.T) {
+	viper.Set("peer.fileSystemPath", "/tmp/fabric/txvalidatortest")
+	ledgermgmt.InitializeTestEnv()
+	defer ledgermgmt.CleanupTestEnv()
 
-		// tx should be invalided because of chaincode upgrade
-		txsfltr = util.TxValidationFlags(newBlock.Metadata.Metadata[common.BlockMetadataIndex_TRANSACTIONS_FILTER])
-		assert.True(t, txsfltr.IsSetTo(0, peer.TxValidationCode_EXPIRED_CHAINCODE))
-	*/
+	gb, _ := test.MakeGenesisBlock("TestLedger")
+	gbHash := gb.Header.Hash()
+	ledger, _ := ledgermgmt.CreateLedger(gb)
+	defer ledger.Close()
+
+	// here we test validation of a block with a single tx
+	testValidationWithNTXes(t, ledger, gbHash, 1)
+}
+
+func TestParallelBlockValidation(t *testing.T) {
+	viper.Set("peer.fileSystemPath", "/tmp/fabric/txvalidatortest")
+	ledgermgmt.InitializeTestEnv()
+	defer ledgermgmt.CleanupTestEnv()
+
+	gb, _ := test.MakeGenesisBlock("TestLedger")
+	gbHash := gb.Header.Hash()
+	ledger, _ := ledgermgmt.CreateLedger(gb)
+	defer ledger.Close()
+
+	// here we test validation of a block with 128 txes
+	testValidationWithNTXes(t, ledger, gbHash, 128)
+}
+
+func TestVeryLargeParallelBlockValidation(t *testing.T) {
+	viper.Set("peer.fileSystemPath", "/tmp/fabric/txvalidatortest")
+	ledgermgmt.InitializeTestEnv()
+	defer ledgermgmt.CleanupTestEnv()
+
+	gb, _ := test.MakeGenesisBlock("TestLedger")
+	gbHash := gb.Header.Hash()
+	ledger, _ := ledgermgmt.CreateLedger(gb)
+	defer ledger.Close()
+
+	// here we test validation of a block with 4096 txes,
+	// which is larger than both the number of workers in
+	// the pool and the buffer in the channels
+	testValidationWithNTXes(t, ledger, gbHash, 4096)
 }
 
 func TestNewTxValidator_DuplicateTransactions(t *testing.T) {
@@ -109,7 +241,11 @@ func TestNewTxValidator_DuplicateTransactions(t *testing.T) {
 
 	defer ledger.Close()
 
-	tValidator := &txValidator{&mocktxvalidator.Support{LedgerVal: ledger}, &validator.MockVsccValidator{}}
+	vcs := struct {
+		*mocktxvalidator.Support
+		*semaphore.Weighted
+	}{&mocktxvalidator.Support{LedgerVal: ledger, ACVal: &config.MockApplicationCapabilities{}}, semaphore.NewWeighted(10)}
+	tValidator := &txValidator{vcs, &validator.MockVsccValidator{}}
 
 	// Create simple endorsement transaction
 	payload := &common.Payload{
@@ -153,7 +289,9 @@ func TestNewTxValidator_DuplicateTransactions(t *testing.T) {
 	// Initialize metadata
 	utils.InitBlockMetadata(block)
 	// Commit block to the ledger
-	ledger.Commit(block)
+	ledger.CommitWithPvtData(&ledger2.BlockAndPvtData{
+		Block: block,
+	})
 
 	// Validation should invalidate transaction,
 	// because it's already committed
@@ -238,19 +376,19 @@ func TestGetTxCCInstance(t *testing.T) {
 
 func TestInvalidTXsForUpgradeCC(t *testing.T) {
 	txsChaincodeNames := map[int]*sysccprovider.ChaincodeInstance{
-		0: &sysccprovider.ChaincodeInstance{"chain0", "cc0", "v0"}, // invoke cc0/chain0:v0, should not be affected by upgrade tx in other chain
-		1: &sysccprovider.ChaincodeInstance{"chain1", "cc0", "v0"}, // invoke cc0/chain1:v0, should be invalided by cc1/chain1 upgrade tx
-		2: &sysccprovider.ChaincodeInstance{"chain1", "lscc", ""},  // upgrade cc0/chain1 to v1, should be invalided by latter cc0/chain1 upgtade tx
-		3: &sysccprovider.ChaincodeInstance{"chain1", "cc0", "v0"}, // invoke cc0/chain1:v0, should be invalided by cc1/chain1 upgrade tx
-		4: &sysccprovider.ChaincodeInstance{"chain1", "cc0", "v1"}, // invoke cc0/chain1:v1, should be invalided by cc1/chain1 upgrade tx
-		5: &sysccprovider.ChaincodeInstance{"chain1", "cc1", "v0"}, // invoke cc1/chain1:v0, should not be affected by other chaincode upgrade tx
-		6: &sysccprovider.ChaincodeInstance{"chain1", "lscc", ""},  // upgrade cc0/chain1 to v2, should be invalided by latter cc0/chain1 upgtade tx
-		7: &sysccprovider.ChaincodeInstance{"chain1", "lscc", ""},  // upgrade cc0/chain1 to v3
+		0: {"chain0", "cc0", "v0"}, // invoke cc0/chain0:v0, should not be affected by upgrade tx in other chain
+		1: {"chain1", "cc0", "v0"}, // invoke cc0/chain1:v0, should be invalided by cc1/chain1 upgrade tx
+		2: {"chain1", "lscc", ""},  // upgrade cc0/chain1 to v1, should be invalided by latter cc0/chain1 upgtade tx
+		3: {"chain1", "cc0", "v0"}, // invoke cc0/chain1:v0, should be invalided by cc1/chain1 upgrade tx
+		4: {"chain1", "cc0", "v1"}, // invoke cc0/chain1:v1, should be invalided by cc1/chain1 upgrade tx
+		5: {"chain1", "cc1", "v0"}, // invoke cc1/chain1:v0, should not be affected by other chaincode upgrade tx
+		6: {"chain1", "lscc", ""},  // upgrade cc0/chain1 to v2, should be invalided by latter cc0/chain1 upgtade tx
+		7: {"chain1", "lscc", ""},  // upgrade cc0/chain1 to v3
 	}
 	upgradedChaincodes := map[int]*sysccprovider.ChaincodeInstance{
-		2: &sysccprovider.ChaincodeInstance{"chain1", "cc0", "v1"},
-		6: &sysccprovider.ChaincodeInstance{"chain1", "cc0", "v2"},
-		7: &sysccprovider.ChaincodeInstance{"chain1", "cc0", "v3"},
+		2: {"chain1", "cc0", "v1"},
+		6: {"chain1", "cc0", "v2"},
+		7: {"chain1", "cc0", "v3"},
 	}
 
 	txsfltr := ledgerUtil.NewTxValidationFlags(8)

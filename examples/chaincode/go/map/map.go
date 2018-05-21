@@ -1,17 +1,9 @@
+// +build !experimental
+
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package main
@@ -50,9 +42,10 @@ func (t *SimpleChaincode) Init(stub shim.ChaincodeStubInterface) pb.Response {
 func (t *SimpleChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 	function, args := stub.GetFunctionAndParameters()
 	switch function {
+
 	case "put":
 		if len(args) < 2 {
-			return shim.Error("put operation must include two arguments, a key and value")
+			return shim.Error("put operation must include two arguments: [key, value]")
 		}
 		key := args[0]
 		value := args[1]
@@ -78,7 +71,7 @@ func (t *SimpleChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 
 	case "remove":
 		if len(args) < 1 {
-			return shim.Error("remove operation must include one argument, a key")
+			return shim.Error("remove operation must include one argument: [key]")
 		}
 		key := args[0]
 
@@ -97,7 +90,8 @@ func (t *SimpleChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 		if err != nil {
 			return shim.Error(fmt.Sprintf("get operation failed. Error accessing state: %s", err))
 		}
-		return shim.Success(value)
+		jsonVal, err := json.Marshal(string(value))
+		return shim.Success(jsonVal)
 
 	case "keys":
 		if len(args) < 2 {

@@ -16,7 +16,7 @@ import (
 
 	"github.com/hyperledger/fabric/common/crypto"
 	"github.com/hyperledger/fabric/common/localmsp"
-	"github.com/hyperledger/fabric/common/tools/configtxgen/provisional"
+	genesisconfig "github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
 	"github.com/hyperledger/fabric/common/tools/protolator"
 	mspmgmt "github.com/hyperledger/fabric/msp/mgmt"
 	"github.com/hyperledger/fabric/orderer/common/localconfig"
@@ -95,7 +95,7 @@ func (r *deliverClient) readUntilClose() {
 				fmt.Println("Received block: ")
 				err := protolator.DeepMarshalJSON(os.Stdout, t.Block)
 				if err != nil {
-					fmt.Println("  Error pretty printing block: %s", err)
+					fmt.Printf("  Error pretty printing block: %s", err)
 				}
 
 				if t.Block.Header.Number > 0 { //JCS: check orderer signatures
@@ -126,10 +126,14 @@ func (r *deliverClient) readUntilClose() {
 }
 
 func main() {
-	config := config.Load()
+	config, err := config.Load()
+	if err != nil {
+		fmt.Println("failed to load config:", err)
+		os.Exit(1)
+	}
 
 	// Load local MSP
-	err := mspmgmt.LoadLocalMsp(config.General.LocalMSPDir, config.General.BCCSP, config.General.LocalMSPID)
+	err = mspmgmt.LoadLocalMsp(config.General.LocalMSPDir, config.General.BCCSP, config.General.LocalMSPID)
 	if err != nil { // Handle errors reading the config file
 		fmt.Println("Failed to initialize local MSP:", err)
 		os.Exit(0)
@@ -143,7 +147,7 @@ func main() {
 	var quiet bool
 
 	flag.StringVar(&serverAddr, "server", fmt.Sprintf("%s:%d", config.General.ListenAddress, config.General.ListenPort), "The RPC server to connect to.")
-	flag.StringVar(&channelID, "channelID", provisional.TestChainID, "The channel ID to deliver from.")
+	flag.StringVar(&channelID, "channelID", genesisconfig.TestChainID, "The channel ID to deliver from.")
 	flag.BoolVar(&quiet, "quiet", false, "Only print the block number, will not attempt to print its block contents.")
 	flag.IntVar(&seek, "seek", -2, "Specify the range of requested blocks."+
 		"Acceptable values:"+

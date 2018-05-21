@@ -152,5 +152,17 @@ of native currency is that some amount will get transacted (the chaincode
 defining that currency will get called) every time a transaction is processed
 on its chain.
 
+Differences in Most Recent Releases
+-----------------------------------
+Q. Where can I find what  are the highlighted differences between releases?
+
+A. The differences between any subsequent releases are provided together with
+the :doc:`releases`.
+
+Q. Where to get help for the technical questions not answered above?
+
+A. Please use `StackOverflow <https://stackoverflow.com/questions/tagged/hyperledger>`__.
+
+
 .. Licensed under Creative Commons Attribution 4.0 International License
    https://creativecommons.org/licenses/by/4.0/

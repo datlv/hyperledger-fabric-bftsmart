@@ -12,7 +12,7 @@ import (
 
 	"github.com/hyperledger/fabric/common/crypto"
 	cb "github.com/hyperledger/fabric/protos/common"
-
+	"github.com/hyperledger/fabric/protos/utils"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -42,24 +42,20 @@ func (ms *mockSystemChannelFilterSupport) ChainID() string {
 
 func TestClassifyMsg(t *testing.T) {
 	t.Run("ConfigUpdate", func(t *testing.T) {
-		class, err := (&StandardChannel{}).ClassifyMsg(&cb.ChannelHeader{Type: int32(cb.HeaderType_CONFIG_UPDATE)})
+		class := (&StandardChannel{}).ClassifyMsg(&cb.ChannelHeader{Type: int32(cb.HeaderType_CONFIG_UPDATE)})
 		assert.Equal(t, class, ConfigUpdateMsg)
-		assert.Nil(t, err)
 	})
 	t.Run("OrdererTx", func(t *testing.T) {
-		class, err := (&StandardChannel{}).ClassifyMsg(&cb.ChannelHeader{Type: int32(cb.HeaderType_ORDERER_TRANSACTION)})
-		assert.Equal(t, class, ConfigUpdateMsg)
-		assert.Nil(t, err)
+		class := (&StandardChannel{}).ClassifyMsg(&cb.ChannelHeader{Type: int32(cb.HeaderType_ORDERER_TRANSACTION)})
+		assert.Equal(t, class, ConfigMsg)
 	})
 	t.Run("ConfigTx", func(t *testing.T) {
-		class, err := (&StandardChannel{}).ClassifyMsg(&cb.ChannelHeader{Type: int32(cb.HeaderType_CONFIG)})
-		assert.Equal(t, class, ConfigUpdateMsg)
-		assert.Nil(t, err)
+		class := (&StandardChannel{}).ClassifyMsg(&cb.ChannelHeader{Type: int32(cb.HeaderType_CONFIG)})
+		assert.Equal(t, class, ConfigMsg)
 	})
 	t.Run("EndorserTx", func(t *testing.T) {
-		class, err := (&StandardChannel{}).ClassifyMsg(&cb.ChannelHeader{Type: int32(cb.HeaderType_ENDORSER_TRANSACTION)})
+		class := (&StandardChannel{}).ClassifyMsg(&cb.ChannelHeader{Type: int32(cb.HeaderType_ENDORSER_TRANSACTION)})
 		assert.Equal(t, class, NormalMsg)
-		assert.Nil(t, err)
 	})
 }
 
@@ -100,5 +96,51 @@ func TestConfigUpdateMsg(t *testing.T) {
 		assert.NotNil(t, config)
 		assert.Equal(t, cs, ms.SequenceVal)
 		assert.Nil(t, err)
+	})
+}
+
+func TestProcessConfigMsg(t *testing.T) {
+	t.Run("WrongType", func(t *testing.T) {
+		ms := &mockSystemChannelFilterSupport{
+			SequenceVal:            7,
+			ProposeConfigUpdateVal: &cb.ConfigEnvelope{},
+		}
+		_, _, err := NewStandardChannel(ms, NewRuleSet([]Rule{AcceptRule})).ProcessConfigMsg(&cb.Envelope{
+			Payload: utils.MarshalOrPanic(&cb.Payload{
+				Header: &cb.Header{
+					ChannelHeader: utils.MarshalOrPanic(&cb.ChannelHeader{
+						ChannelId: testChannelID,
+						Type:      int32(cb.HeaderType_ORDERER_TRANSACTION),
+					}),
+				},
+			}),
+		})
+		assert.Error(t, err)
+	})
+
+	t.Run("Success", func(t *testing.T) {
+		ms := &mockSystemChannelFilterSupport{
+			SequenceVal:            7,
+			ProposeConfigUpdateVal: &cb.ConfigEnvelope{},
+		}
+		config, cs, err := NewStandardChannel(ms, NewRuleSet([]Rule{AcceptRule})).ProcessConfigMsg(&cb.Envelope{
+			Payload: utils.MarshalOrPanic(&cb.Payload{
+				Header: &cb.Header{
+					ChannelHeader: utils.MarshalOrPanic(&cb.ChannelHeader{
+						ChannelId: testChannelID,
+						Type:      int32(cb.HeaderType_CONFIG),
+					}),
+				},
+			}),
+		})
+		assert.NotNil(t, config)
+		assert.Equal(t, cs, ms.SequenceVal)
+		assert.Nil(t, err)
+		hdr, err := utils.ChannelHeader(config)
+		assert.Equal(
+			t,
+			int32(cb.HeaderType_CONFIG),
+			hdr.Type,
+			"Expect type of returned envelope to be %d, but got %d", cb.HeaderType_CONFIG, hdr.Type)
 	})
 }

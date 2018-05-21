@@ -1,17 +1,6 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+Copyright IBM Corp. All Rights Reserved.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package lockbasedtxmgr
@@ -25,8 +14,11 @@ import (
 
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/ledger/testutil"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/privacyenabledstate"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/txmgr"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/version"
 	ledgertestutil "github.com/hyperledger/fabric/core/ledger/testutil"
+	"github.com/hyperledger/fabric/core/ledger/util"
 	"github.com/hyperledger/fabric/protos/ledger/queryresult"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
@@ -36,6 +28,8 @@ func TestMain(m *testing.M) {
 	ledgertestutil.SetupCoreYAMLConfig()
 	flogging.SetModuleLevel("lockbasedtxmgr", "debug")
 	flogging.SetModuleLevel("statevalidator", "debug")
+	flogging.SetModuleLevel("statebasedval", "debug")
+	flogging.SetModuleLevel("statecouchdb", "debug")
 	flogging.SetModuleLevel("valimpl", "debug")
 	viper.Set("peer.fileSystemPath", "/tmp/fabric/ledgertests/kvledger/txmgmt/txmgr/lockbasedtxmgr")
 	os.Exit(m.Run())
@@ -314,7 +308,7 @@ func TestIterator(t *testing.T) {
 }
 
 func testIterator(t *testing.T, env testEnv, numKeys int, startKeyNum int, endKeyNum int) {
-	cID := "cID"
+	cID := "cid"
 	txMgr := env.getTxMgr()
 	txMgrHelper := newTxMgrTestHelper(t, txMgr)
 	s, _ := txMgr.NewTxSimulator("test_tx1")
@@ -382,7 +376,7 @@ func TestIteratorWithDeletes(t *testing.T) {
 }
 
 func testIteratorWithDeletes(t *testing.T, env testEnv) {
-	cID := "cID"
+	cID := "cid"
 	txMgr := env.getTxMgr()
 	txMgrHelper := newTxMgrTestHelper(t, txMgr)
 	s, _ := txMgr.NewTxSimulator("test_tx1")
@@ -424,7 +418,7 @@ func TestTxValidationWithItr(t *testing.T) {
 }
 
 func testTxValidationWithItr(t *testing.T, env testEnv) {
-	cID := "cID"
+	cID := "cid"
 	txMgr := env.getTxMgr()
 	txMgrHelper := newTxMgrTestHelper(t, txMgr)
 
@@ -489,7 +483,7 @@ func TestGetSetMultipeKeys(t *testing.T) {
 }
 
 func testGetSetMultipeKeys(t *testing.T, env testEnv) {
-	cID := "cID"
+	cID := "cid"
 	txMgr := env.getTxMgr()
 	txMgrHelper := newTxMgrTestHelper(t, txMgr)
 	// simulate tx1
@@ -628,4 +622,117 @@ func TestValidateKey(t *testing.T) {
 		}
 		testEnv.cleanup()
 	}
+}
+
+// TestTxSimulatorUnsupportedTx verifies that a simulation must throw an error when an unsupported transaction
+// is perfromed - queries on private data are supported in a read-only tran
+func TestTxSimulatorUnsupportedTx(t *testing.T) {
+	testEnv := testEnvs[0]
+	testEnv.init(t, "TestTxSimulatorUnsupportedTxQueries")
+	defer testEnv.cleanup()
+	txMgr := testEnv.getTxMgr()
+
+	simulator, _ := txMgr.NewTxSimulator("txid1")
+	err := simulator.SetState("ns", "key", []byte("value"))
+	testutil.AssertNoError(t, err, "")
+	_, err = simulator.GetPrivateDataRangeScanIterator("ns1", "coll1", "startKey", "endKey")
+	_, ok := err.(*txmgr.ErrUnsupportedTransaction)
+	testutil.AssertEquals(t, ok, true)
+
+	simulator, _ = txMgr.NewTxSimulator("txid2")
+	_, err = simulator.GetPrivateDataRangeScanIterator("ns1", "coll1", "startKey", "endKey")
+	testutil.AssertNoError(t, err, "")
+	err = simulator.SetState("ns", "key", []byte("value"))
+	_, ok = err.(*txmgr.ErrUnsupportedTransaction)
+	testutil.AssertEquals(t, ok, true)
+}
+
+func TestTxSimulatorMissingPvtdata(t *testing.T) {
+	testEnv := testEnvs[0]
+	testEnv.init(t, "TestTxSimulatorUnsupportedTxQueries")
+	defer testEnv.cleanup()
+
+	db := testEnv.getVDB()
+	updateBatch := privacyenabledstate.NewUpdateBatch()
+	updateBatch.HashUpdates.Put("ns1", "coll1", util.ComputeStringHash("key1"), util.ComputeStringHash("value1"), version.NewHeight(1, 1))
+	updateBatch.PvtUpdates.Put("ns1", "coll1", "key1", []byte("value1"), version.NewHeight(1, 1))
+	db.ApplyPrivacyAwareUpdates(updateBatch, version.NewHeight(1, 1))
+
+	txMgr := testEnv.getTxMgr()
+	simulator, _ := txMgr.NewTxSimulator("testTxid1")
+	val, _ := simulator.GetPrivateData("ns1", "coll1", "key1")
+	testutil.AssertEquals(t, val, []byte("value1"))
+	simulator.Done()
+
+	updateBatch = privacyenabledstate.NewUpdateBatch()
+	updateBatch.HashUpdates.Put("ns1", "coll1", util.ComputeStringHash("key1"), util.ComputeStringHash("value1"), version.NewHeight(2, 1))
+	updateBatch.HashUpdates.Put("ns1", "coll2", util.ComputeStringHash("key2"), util.ComputeStringHash("value2"), version.NewHeight(2, 1))
+	updateBatch.HashUpdates.Put("ns1", "coll3", util.ComputeStringHash("key3"), util.ComputeStringHash("value3"), version.NewHeight(2, 1))
+	updateBatch.PvtUpdates.Put("ns1", "coll3", "key3", []byte("value3"), version.NewHeight(2, 1))
+	db.ApplyPrivacyAwareUpdates(updateBatch, version.NewHeight(2, 1))
+	simulator, _ = txMgr.NewTxSimulator("testTxid2")
+	defer simulator.Done()
+
+	val, err := simulator.GetPrivateData("ns1", "coll1", "key1")
+	_, ok := err.(*txmgr.ErrPvtdataNotAvailable)
+	testutil.AssertEquals(t, ok, true)
+
+	val, err = simulator.GetPrivateData("ns1", "coll2", "key2")
+	_, ok = err.(*txmgr.ErrPvtdataNotAvailable)
+	testutil.AssertEquals(t, ok, true)
+
+	val, err = simulator.GetPrivateData("ns1", "coll3", "key3")
+	testutil.AssertEquals(t, val, []byte("value3"))
+
+	val, err = simulator.GetPrivateData("ns1", "coll4", "key4")
+	testutil.AssertNoError(t, err, "")
+	testutil.AssertNil(t, val)
+}
+
+func TestDeleteOnCursor(t *testing.T) {
+	cID := "cid"
+	env := testEnvs[0]
+	env.init(t, "TestDeleteOnCursor")
+	defer env.cleanup()
+
+	txMgr := env.getTxMgr()
+	txMgrHelper := newTxMgrTestHelper(t, txMgr)
+
+	// Simulate and commit tx1 to populate sample data (key_001 through key_010)
+	s, _ := txMgr.NewTxSimulator("test_tx1")
+	for i := 1; i <= 10; i++ {
+		k := createTestKey(i)
+		v := createTestValue(i)
+		t.Logf("Adding k=[%s], v=[%s]", k, v)
+		s.SetState(cID, k, v)
+	}
+	s.Done()
+	txRWSet1, _ := s.GetTxSimulationResults()
+	txMgrHelper.validateAndCommitRWSet(txRWSet1.PubSimulationResults)
+
+	// simulate and commit tx2 that reads keys key_001 through key_004 and deletes them one by one (in a loop - itr.Next() followed by Delete())
+	s2, _ := txMgr.NewTxSimulator("test_tx2")
+	itr2, _ := s2.GetStateRangeScanIterator(cID, createTestKey(1), createTestKey(5))
+	for i := 1; i <= 4; i++ {
+		kv, err := itr2.Next()
+		testutil.AssertNoError(t, err, "")
+		testutil.AssertNotNil(t, kv)
+		key := kv.(*queryresult.KV).Key
+		s2.DeleteState(cID, key)
+	}
+	itr2.Close()
+	s2.Done()
+	txRWSet2, _ := s2.GetTxSimulationResults()
+	txMgrHelper.validateAndCommitRWSet(txRWSet2.PubSimulationResults)
+
+	// simulate tx3 to verify that the keys key_001 through key_004 got deleted
+	s3, _ := txMgr.NewTxSimulator("test_tx3")
+	itr3, _ := s3.GetStateRangeScanIterator(cID, createTestKey(1), createTestKey(10))
+	kv, err := itr3.Next()
+	testutil.AssertNoError(t, err, "")
+	testutil.AssertNotNil(t, kv)
+	key := kv.(*queryresult.KV).Key
+	testutil.AssertEquals(t, key, "key_005")
+	itr3.Close()
+	s3.Done()
 }

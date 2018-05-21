@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/orderer/common/msgprocessor"
 	cb "github.com/hyperledger/fabric/protos/common"
 	ab "github.com/hyperledger/fabric/protos/orderer"
-	logging "github.com/op/go-logging"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"golang.org/x/net/context"
@@ -24,7 +24,7 @@ import (
 )
 
 func init() {
-	logging.SetLevel(logging.DEBUG, "")
+	flogging.SetModuleLevel(pkgLogID, "DEBUG")
 }
 
 type mockStream struct {
@@ -98,10 +98,11 @@ type mockSupportManager struct {
 	MsgProcessorIsConfig bool
 	MsgProcessorVal      *mockSupport
 	MsgProcessorErr      error
+	ChdrVal              *cb.ChannelHeader
 }
 
 func (mm *mockSupportManager) BroadcastChannelSupport(msg *cb.Envelope) (*cb.ChannelHeader, bool, ChannelSupport, error) {
-	return &cb.ChannelHeader{}, mm.MsgProcessorIsConfig, mm.MsgProcessorVal, mm.MsgProcessorErr
+	return mm.ChdrVal, mm.MsgProcessorIsConfig, mm.MsgProcessorVal, mm.MsgProcessorErr
 }
 
 type mockSupport struct {
@@ -109,6 +110,10 @@ type mockSupport struct {
 	ProcessConfigSeq uint64
 	ProcessErr       error
 	rejectEnqueue    bool
+}
+
+func (ms *mockSupport) WaitReady() error {
+	return nil
 }
 
 // Order sends a message for ordering
@@ -120,11 +125,11 @@ func (ms *mockSupport) Order(env *cb.Envelope, configSeq uint64) error {
 }
 
 // Configure sends a reconfiguration message for ordering
-func (ms *mockSupport) Configure(configUpdate *cb.Envelope, config *cb.Envelope, configSeq uint64) error {
+func (ms *mockSupport) Configure(config *cb.Envelope, configSeq uint64) error {
 	return ms.Order(config, configSeq)
 }
 
-func (ms *mockSupport) ClassifyMsg(chdr *cb.ChannelHeader) (msgprocessor.Classification, error) {
+func (ms *mockSupport) ClassifyMsg(chdr *cb.ChannelHeader) msgprocessor.Classification {
 	panic("UNIMPLMENTED")
 }
 
@@ -136,9 +141,14 @@ func (ms *mockSupport) ProcessConfigUpdateMsg(msg *cb.Envelope) (*cb.Envelope, u
 	return ms.ProcessConfigEnv, ms.ProcessConfigSeq, ms.ProcessErr
 }
 
+func (ms *mockSupport) ProcessConfigMsg(msg *cb.Envelope) (*cb.Envelope, uint64, error) {
+	return ms.ProcessConfigEnv, ms.ProcessConfigSeq, ms.ProcessErr
+}
+
 func getMockSupportManager() *mockSupportManager {
 	return &mockSupportManager{
 		MsgProcessorVal: &mockSupport{},
+		ChdrVal:         &cb.ChannelHeader{},
 	}
 }
 
@@ -252,6 +262,7 @@ func TestGracefulShutdown(t *testing.T) {
 func TestRejected(t *testing.T) {
 	mm := &mockSupportManager{
 		MsgProcessorVal: &mockSupport{ProcessErr: fmt.Errorf("Reject")},
+		ChdrVal:         &cb.ChannelHeader{},
 	}
 	bh := NewHandlerImpl(mm)
 	m := newMockB()
@@ -274,4 +285,30 @@ func TestBadStreamSend(t *testing.T) {
 	bh := NewHandlerImpl(mm)
 	m := &erroneousSendMockB{recvVal: nil}
 	assert.Error(t, bh.Handle(m), "Should catch unexpected stream error")
+}
+
+func TestMalformedHeader(t *testing.T) {
+	mm := getMockSupportManager()
+	mm.ChdrVal = nil
+	mm.MsgProcessorErr = errors.New("Mocked Error")
+	bh := NewHandlerImpl(mm)
+	m := newMockB()
+	defer close(m.recvChan)
+	done := make(chan struct{})
+	go func() {
+		bh.Handle(m)
+		close(done)
+	}()
+
+	m.recvChan <- nil
+	reply := <-m.sendChan
+	if reply.Status != cb.Status_BAD_REQUEST {
+		t.Fatalf("Should have rejected message for malformed header")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("Should have terminated the stream")
+	}
 }

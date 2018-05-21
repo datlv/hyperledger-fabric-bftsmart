@@ -35,10 +35,12 @@ type ConnectionProducer interface {
 	UpdateEndpoints(endpoints []string)
 	// DisableEndpoint remove endpoint from endpoint for some time
 	DisableEndpoint(endpoint string)
+	// GetEndpoints return ordering service endpoints
+	GetEndpoints() []string
 }
 
 type connProducer struct {
-	sync.Mutex
+	sync.RWMutex
 	endpoints         []string
 	disabledEndpoints map[string]time.Time
 	connect           ConnectionFactory
@@ -106,8 +108,13 @@ func (cp *connProducer) DisableEndpoint(endpoint string) {
 	cp.Lock()
 	defer cp.Unlock()
 
-	for i := range cp.endpoints {
-		if cp.endpoints[i] == endpoint {
+	if len(cp.endpoints)-len(cp.disabledEndpoints) == 1 {
+		logger.Warning("Only 1 endpoint remained, will not black-list it")
+		return
+	}
+
+	for _, currEndpoint := range cp.endpoints {
+		if currEndpoint == endpoint {
 			cp.disabledEndpoints[endpoint] = time.Now()
 			break
 		}
@@ -123,4 +130,11 @@ func shuffle(a []string) []string {
 		returnedSlice[i] = a[idx]
 	}
 	return returnedSlice
+}
+
+// GetEndpoints returns configured endpoints for ordering service
+func (cp *connProducer) GetEndpoints() []string {
+	cp.RLock()
+	defer cp.RUnlock()
+	return cp.endpoints
 }

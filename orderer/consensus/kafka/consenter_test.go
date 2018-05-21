@@ -8,8 +8,6 @@ package kafka
 
 import (
 	"fmt"
-	"log"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +18,6 @@ import (
 	mockconfig "github.com/hyperledger/fabric/common/mocks/config"
 	localconfig "github.com/hyperledger/fabric/orderer/common/localconfig"
 	"github.com/hyperledger/fabric/orderer/consensus"
-	mockblockcutter "github.com/hyperledger/fabric/orderer/mocks/common/blockcutter"
 	mockmultichannel "github.com/hyperledger/fabric/orderer/mocks/common/multichannel"
 	cb "github.com/hyperledger/fabric/protos/common"
 	ab "github.com/hyperledger/fabric/protos/orderer"
@@ -55,15 +52,15 @@ func init() {
 	mockLocalConfig = newMockLocalConfig(false, mockRetryOptions, false)
 	mockBrokerConfig = newMockBrokerConfig(mockLocalConfig.General.TLS, mockLocalConfig.Kafka.Retry, mockLocalConfig.Kafka.Version, defaultPartition)
 	mockConsenter = newMockConsenter(mockBrokerConfig, mockLocalConfig.General.TLS, mockLocalConfig.Kafka.Retry, mockLocalConfig.Kafka.Version)
-	setupTestLogging("ERROR", mockLocalConfig.Kafka.Verbose)
+	setupTestLogging("ERROR")
 }
 
 func TestNew(t *testing.T) {
-	_ = consensus.Consenter(New(mockLocalConfig.General.TLS, mockLocalConfig.Kafka.Retry, mockLocalConfig.Kafka.Version))
+	_ = consensus.Consenter(New(mockLocalConfig.Kafka))
 }
 
 func TestHandleChain(t *testing.T) {
-	consenter := consensus.Consenter(New(mockLocalConfig.General.TLS, mockLocalConfig.Kafka.Retry, mockLocalConfig.Kafka.Version))
+	consenter := consensus.Consenter(New(mockLocalConfig.Kafka))
 
 	oldestOffset := int64(0)
 	newestOffset := int64(5)
@@ -148,28 +145,22 @@ func newMockLocalConfig(enableTLS bool, retryOptions localconfig.Retry, verboseL
 			},
 		},
 		Kafka: localconfig.Kafka{
+			TLS: localconfig.TLS{
+				Enabled: enableTLS,
+			},
 			Retry:   retryOptions,
 			Verbose: verboseLog,
-			Version: sarama.V0_9_0_1,
+			Version: sarama.V0_9_0_1, // sarama.MockBroker only produces messages compatible with version < 0.10
 		},
 	}
 }
 
-func setupTestLogging(logLevel string, verbose bool) {
+func setupTestLogging(logLevel string) {
 	// This call allows us to (a) get the logging backend initialization that
 	// takes place in the `flogging` package, and (b) adjust the verbosity of
 	// the logs when running tests on this package.
 	flogging.SetModuleLevel(pkgLogID, logLevel)
-
-	if verbose {
-		sarama.Logger = log.New(os.Stdout, "[sarama] ", log.Ldate|log.Lmicroseconds|log.Lshortfile)
-	}
-}
-
-// Taken from orderer/solo/consensus_test.go
-func syncQueueMessage(message *cb.Envelope, chain *chainImpl, mockBlockcutter *mockblockcutter.Receiver) {
-	chain.enqueue(message)
-	mockBlockcutter.Block <- struct{}{} // We'll move past this line (and the function will return) only when the mock blockcutter is about to return
+	flogging.SetModuleLevel(saramaLogID, logLevel)
 }
 
 func tamperBytes(original []byte) []byte {

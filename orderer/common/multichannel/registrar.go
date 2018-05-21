@@ -12,61 +12,107 @@ package multichannel
 import (
 	"fmt"
 
-	channelconfig "github.com/hyperledger/fabric/common/config/channel"
-	configtxapi "github.com/hyperledger/fabric/common/configtx/api"
-	"github.com/hyperledger/fabric/orderer/common/ledger"
+	"github.com/hyperledger/fabric/common/channelconfig"
+	"github.com/hyperledger/fabric/common/configtx"
+	"github.com/hyperledger/fabric/common/crypto"
+	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric/common/ledger/blockledger"
 	"github.com/hyperledger/fabric/orderer/common/msgprocessor"
 	"github.com/hyperledger/fabric/orderer/consensus"
 	cb "github.com/hyperledger/fabric/protos/common"
 	ab "github.com/hyperledger/fabric/protos/orderer"
 	"github.com/hyperledger/fabric/protos/utils"
-	"github.com/op/go-logging"
 
-	"github.com/hyperledger/fabric/common/crypto"
+	"github.com/op/go-logging"
+	"github.com/pkg/errors"
 )
 
-var logger = logging.MustGetLogger("orderer/multichannel")
-
 const (
+	pkgLogID = "orderer/commmon/multichannel"
+
 	msgVersion = int32(0)
 	epoch      = 0
 )
 
-type configResources struct {
+var logger *logging.Logger
+
+func init() {
+	logger = flogging.MustGetLogger(pkgLogID)
+}
+
+// checkResources makes sure that the channel config is compatible with this binary and logs sanity checks
+func checkResources(res channelconfig.Resources) error {
+	channelconfig.LogSanityChecks(res)
+	oc, ok := res.OrdererConfig()
+	if !ok {
+		return errors.New("config does not contain orderer config")
+	}
+	if err := oc.Capabilities().Supported(); err != nil {
+		return errors.Wrapf(err, "config requires unsupported orderer capabilities: %s", err)
+	}
+	if err := res.ChannelConfig().Capabilities().Supported(); err != nil {
+		return errors.Wrapf(err, "config requires unsupported channel capabilities: %s", err)
+	}
+	return nil
+}
+
+// checkResourcesOrPanic invokes checkResources and panics if an error is returned
+func checkResourcesOrPanic(res channelconfig.Resources) {
+	if err := checkResources(res); err != nil {
+		logger.Panicf("[channel %s] %s", res.ConfigtxValidator().ChainID(), err)
+	}
+}
+
+type mutableResources interface {
 	channelconfig.Resources
+	Update(*channelconfig.Bundle)
+}
+
+type configResources struct {
+	mutableResources
+}
+
+func (cr *configResources) CreateBundle(channelID string, config *cb.Config) (*channelconfig.Bundle, error) {
+	return channelconfig.NewBundle(channelID, config)
+}
+
+func (cr *configResources) Update(bndl *channelconfig.Bundle) {
+	checkResourcesOrPanic(bndl)
+	cr.mutableResources.Update(bndl)
 }
 
 func (cr *configResources) SharedConfig() channelconfig.Orderer {
 	oc, ok := cr.OrdererConfig()
 	if !ok {
-		logger.Panicf("[channel %s] has no orderer configuration", cr.ConfigtxManager().ChainID())
+		logger.Panicf("[channel %s] has no orderer configuration", cr.ConfigtxValidator().ChainID())
 	}
 	return oc
 }
 
 type ledgerResources struct {
 	*configResources
-	ledger.ReadWriter
+	blockledger.ReadWriter
 }
 
 // Registrar serves as a point of access and control for the individual channel resources.
 type Registrar struct {
 	chains          map[string]*ChainSupport
 	consenters      map[string]consensus.Consenter
-	ledgerFactory   ledger.Factory
+	ledgerFactory   blockledger.Factory
 	signer          crypto.LocalSigner
 	systemChannelID string
 	systemChannel   *ChainSupport
 	templator       msgprocessor.ChannelConfigTemplator
+	callbacks       []func(bundle *channelconfig.Bundle)
 }
 
-func getConfigTx(reader ledger.Reader) *cb.Envelope {
-	lastBlock := ledger.GetBlock(reader, reader.Height()-1)
+func getConfigTx(reader blockledger.Reader) *cb.Envelope {
+	lastBlock := blockledger.GetBlock(reader, reader.Height()-1)
 	index, err := utils.GetLastConfigIndexFromBlock(lastBlock)
 	if err != nil {
 		logger.Panicf("Chain did not have appropriately encoded last config in its latest block: %s", err)
 	}
-	configBlock := ledger.GetBlock(reader, index)
+	configBlock := blockledger.GetBlock(reader, index)
 	if configBlock == nil {
 		logger.Panicf("Config block does not exist")
 	}
@@ -75,12 +121,14 @@ func getConfigTx(reader ledger.Reader) *cb.Envelope {
 }
 
 // NewRegistrar produces an instance of a *Registrar.
-func NewRegistrar(ledgerFactory ledger.Factory, consenters map[string]consensus.Consenter, signer crypto.LocalSigner) *Registrar {
+func NewRegistrar(ledgerFactory blockledger.Factory, consenters map[string]consensus.Consenter,
+	signer crypto.LocalSigner, callbacks ...func(bundle *channelconfig.Bundle)) *Registrar {
 	r := &Registrar{
 		chains:        make(map[string]*ChainSupport),
 		ledgerFactory: ledgerFactory,
 		consenters:    consenters,
 		signer:        signer,
+		callbacks:     callbacks,
 	}
 
 	existingChains := ledgerFactory.ChainIDs()
@@ -94,7 +142,7 @@ func NewRegistrar(ledgerFactory ledger.Factory, consenters map[string]consensus.
 			logger.Panic("Programming error, configTx should never be nil here")
 		}
 		ledgerResources := r.newLedgerResources(configTx)
-		chainID := ledgerResources.ConfigtxManager().ChainID()
+		chainID := ledgerResources.ConfigtxValidator().ChainID()
 
 		if _, ok := ledgerResources.ConsortiumsConfig(); ok {
 			if r.systemChannelID != "" {
@@ -164,13 +212,8 @@ func (r *Registrar) BroadcastChannelSupport(msg *cb.Envelope) (*cb.ChannelHeader
 		cs = r.systemChannel
 	}
 
-	class, err := cs.ClassifyMsg(chdr)
-	if err != nil {
-		return nil, false, nil, fmt.Errorf("could not classify message: %s", err)
-	}
-
 	isConfig := false
-	switch class {
+	switch cs.ClassifyMsg(chdr) {
 	case msgprocessor.ConfigUpdateMsg:
 		isConfig = true
 	default:
@@ -186,27 +229,48 @@ func (r *Registrar) GetChain(chainID string) (*ChainSupport, bool) {
 }
 
 func (r *Registrar) newLedgerResources(configTx *cb.Envelope) *ledgerResources {
-	configManager, err := channelconfig.New(configTx, nil)
+	payload, err := utils.UnmarshalPayload(configTx.Payload)
 	if err != nil {
-		logger.Panicf("Error creating configtx manager and handlers: %s", err)
+		logger.Panicf("Error umarshaling envelope to payload: %s", err)
 	}
 
-	chainID := configManager.ChainID()
+	if payload.Header == nil {
+		logger.Panicf("Missing channel header: %s", err)
+	}
 
-	ledger, err := r.ledgerFactory.GetOrCreate(chainID)
+	chdr, err := utils.UnmarshalChannelHeader(payload.Header.ChannelHeader)
 	if err != nil {
-		logger.Panicf("Error getting ledger for %s", chainID)
+		logger.Panicf("Error unmarshaling channel header: %s", err)
+	}
+
+	configEnvelope, err := configtx.UnmarshalConfigEnvelope(payload.Data)
+	if err != nil {
+		logger.Panicf("Error umarshaling config envelope from payload data: %s", err)
+	}
+
+	bundle, err := channelconfig.NewBundle(chdr.ChannelId, configEnvelope.Config)
+	if err != nil {
+		logger.Panicf("Error creating channelconfig bundle: %s", err)
+	}
+
+	checkResourcesOrPanic(bundle)
+
+	ledger, err := r.ledgerFactory.GetOrCreate(chdr.ChannelId)
+	if err != nil {
+		logger.Panicf("Error getting ledger for %s", chdr.ChannelId)
 	}
 
 	return &ledgerResources{
-		configResources: &configResources{Resources: configManager},
-		ReadWriter:      ledger,
+		configResources: &configResources{
+			mutableResources: channelconfig.NewBundleSource(bundle, r.callbacks...),
+		},
+		ReadWriter: ledger,
 	}
 }
 
 func (r *Registrar) newChain(configtx *cb.Envelope) {
 	ledgerResources := r.newLedgerResources(configtx)
-	ledgerResources.Append(ledger.CreateNextBlock(ledgerResources, []*cb.Envelope{configtx}))
+	ledgerResources.Append(blockledger.CreateNextBlock(ledgerResources, []*cb.Envelope{configtx}))
 
 	// Copy the map to allow concurrent reads from broadcast/deliver while the new chainSupport is
 	newChains := make(map[string]*ChainSupport)
@@ -215,7 +279,7 @@ func (r *Registrar) newChain(configtx *cb.Envelope) {
 	}
 
 	cs := newChainSupport(r, ledgerResources, r.consenters, r.signer)
-	chainID := ledgerResources.ConfigtxManager().ChainID()
+	chainID := ledgerResources.ConfigtxValidator().ChainID()
 
 	logger.Infof("Created and starting new chain %s", chainID)
 
@@ -231,6 +295,11 @@ func (r *Registrar) ChannelsCount() int {
 }
 
 // NewChannelConfig produces a new template channel configuration based on the system channel's current config.
-func (r *Registrar) NewChannelConfig(envConfigUpdate *cb.Envelope) (configtxapi.Manager, error) {
+func (r *Registrar) NewChannelConfig(envConfigUpdate *cb.Envelope) (channelconfig.Resources, error) {
 	return r.templator.NewChannelConfig(envConfigUpdate)
+}
+
+// CreateBundle calls channelconfig.NewBundle
+func (r *Registrar) CreateBundle(channelID string, config *cb.Config) (channelconfig.Resources, error) {
+	return channelconfig.NewBundle(channelID, config)
 }

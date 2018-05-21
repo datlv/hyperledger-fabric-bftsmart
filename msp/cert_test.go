@@ -28,7 +28,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hyperledger/fabric/bccsp/sw"
+	"github.com/hyperledger/fabric/bccsp/utils"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -46,17 +46,17 @@ func TestSanitizeCertWithRSA(t *testing.T) {
 func TestSanitizeCertInvalidInput(t *testing.T) {
 	_, err := sanitizeECDSASignedCert(nil, nil)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "Certificate must be different from nil.")
+	assert.Contains(t, err.Error(), "certificate must be different from nil")
 
 	_, err = sanitizeECDSASignedCert(&x509.Certificate{}, nil)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "Parent certificate must be different from nil")
+	assert.Contains(t, err.Error(), "parent certificate must be different from nil")
 
 	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	assert.NoError(t, err)
 	cert := &x509.Certificate{}
 	cert.PublicKey = &k.PublicKey
-	sigma, err := sw.MarshalECDSASignature(big.NewInt(1), elliptic.P256().Params().N)
+	sigma, err := utils.MarshalECDSASignature(big.NewInt(1), elliptic.P256().Params().N)
 	assert.NoError(t, err)
 	cert.Signature = sigma
 	cert.PublicKeyAlgorithm = x509.ECDSA
@@ -72,10 +72,10 @@ func TestSanitizeCert(t *testing.T) {
 	for {
 		k, cert = generateSelfSignedCert(t, time.Now())
 
-		_, s, err := sw.UnmarshalECDSASignature(cert.Signature)
+		_, s, err := utils.UnmarshalECDSASignature(cert.Signature)
 		assert.NoError(t, err)
 
-		lowS, err := sw.IsLowS(&k.PublicKey, s)
+		lowS, err := utils.IsLowS(&k.PublicKey, s)
 		assert.NoError(t, err)
 
 		if !lowS {
@@ -87,10 +87,10 @@ func TestSanitizeCert(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEqual(t, cert.Signature, sanitizedCert.Signature)
 
-	_, s, err := sw.UnmarshalECDSASignature(sanitizedCert.Signature)
+	_, s, err := utils.UnmarshalECDSASignature(sanitizedCert.Signature)
 	assert.NoError(t, err)
 
-	lowS, err := sw.IsLowS(&k.PublicKey, s)
+	lowS, err := utils.IsLowS(&k.PublicKey, s)
 	assert.NoError(t, err)
 	assert.True(t, lowS)
 }

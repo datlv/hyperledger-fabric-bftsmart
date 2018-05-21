@@ -65,3 +65,27 @@ func SelectPeers(k int, peerPool []discovery.NetworkMember, filter RoutingFilter
 
 	return remotePeers
 }
+
+// First returns the first peer that matches the given filter
+func First(peerPool []discovery.NetworkMember, filter RoutingFilter) *comm.RemotePeer {
+	for _, p := range peerPool {
+		if filter(p) {
+			return &comm.RemotePeer{PKIID: p.PKIid, Endpoint: p.PreferredEndpoint()}
+		}
+	}
+	return nil
+}
+
+// AnyMatch filters out peers that don't match any of the given filters
+func AnyMatch(peerPool []discovery.NetworkMember, filters ...RoutingFilter) []discovery.NetworkMember {
+	var res []discovery.NetworkMember
+	for _, peer := range peerPool {
+		for _, matches := range filters {
+			if matches(peer) {
+				res = append(res, peer)
+				break
+			}
+		}
+	}
+	return res
+}

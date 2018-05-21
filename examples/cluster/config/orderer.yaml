@@ -34,7 +34,7 @@ General:
         Certificate: tls/server.crt
         RootCAs:
           - tls/ca.crt
-        ClientAuthEnabled: false
+        ClientAuthRequired: false
         ClientRootCAs:
 
     # Log Level: The level at which to log. This accepts logging specifications
@@ -222,5 +222,5 @@ Kafka:
         # value of RootCAs.
         #File: path/to/RootCAs
 
-    # Kafka version of the Kafka cluster brokers (defaults to 0.9.0.1)
-    Version:
+    # Kafka version of the Kafka cluster brokers (defaults to 0.10.2.0)
+    Version: 0.10.2.0

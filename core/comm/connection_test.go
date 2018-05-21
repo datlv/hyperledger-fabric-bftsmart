@@ -1,23 +1,14 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package comm
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -27,11 +18,10 @@ import (
 	"time"
 
 	testpb "github.com/hyperledger/fabric/core/comm/testdata/grpc"
-	"github.com/hyperledger/fabric/core/testutil"
-	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 const (
@@ -56,38 +46,92 @@ VQQLDAtIeXBlcmxlZGdlcjESMBAGA1UEAwwJbG9jYWxob3N0MFkwEwYHKoZIzj0C
 -----END CERTIFICATE-----
 `
 
-func TestConnection_Correct(t *testing.T) {
-	testutil.SetupTestConfig()
-	viper.Set("ledger.blockchain.deploy-system-chaincode", "false")
-	peerAddress := GetPeerTestingAddress("7051")
-	var tmpConn *grpc.ClientConn
-	var err error
-	if TLSEnabled() {
-		tmpConn, err = NewClientConnectionWithAddress(peerAddress, true, true, InitTLSForPeer())
-	}
-	tmpConn, err = NewClientConnectionWithAddress(peerAddress, true, false, nil)
-	if err != nil {
-		t.Fatalf("error connection to server at host:port = %s\n", peerAddress)
+func TestClientConnections(t *testing.T) {
+	t.Parallel()
+
+	//use Org1 test crypto material
+	fileBase := "Org1"
+	certPEMBlock, _ := ioutil.ReadFile(filepath.Join("testdata", "certs", fileBase+"-server1-cert.pem"))
+	keyPEMBlock, _ := ioutil.ReadFile(filepath.Join("testdata", "certs", fileBase+"-server1-key.pem"))
+	caPEMBlock, _ := ioutil.ReadFile(filepath.Join("testdata", "certs", fileBase+"-cert.pem"))
+	certPool := x509.NewCertPool()
+	certPool.AppendCertsFromPEM(caPEMBlock)
+
+	var tests = []struct {
+		name       string
+		sc         ServerConfig
+		creds      credentials.TransportCredentials
+		clientPort int
+		fail       bool
+		serverPort int
+	}{
+		{
+			name: "ValidConnection",
+			sc: ServerConfig{
+				SecOpts: &SecureOptions{
+					UseTLS: false}},
+			serverPort: 8050,
+		},
+		{
+			name: "InvalidConnection",
+			sc: ServerConfig{
+				SecOpts: &SecureOptions{
+					UseTLS: false}},
+			clientPort: 20040,
+			fail:       true,
+			serverPort: 8051,
+		},
+		{
+			name: "ValidConnectionTLS",
+			sc: ServerConfig{
+				SecOpts: &SecureOptions{
+					UseTLS:      true,
+					Certificate: certPEMBlock,
+					Key:         keyPEMBlock}},
+			creds:      credentials.NewClientTLSFromCert(certPool, ""),
+			serverPort: 8052,
+		},
+		{
+			name: "InvalidConnectionTLS",
+			sc: ServerConfig{
+				SecOpts: &SecureOptions{
+					UseTLS:      true,
+					Certificate: certPEMBlock,
+					Key:         keyPEMBlock}},
+			creds:      credentials.NewClientTLSFromCert(nil, ""),
+			fail:       true,
+			serverPort: 8053,
+		},
 	}
 
-	tmpConn.Close()
-}
-
-func TestConnection_WrongAddress(t *testing.T) {
-	testutil.SetupTestConfig()
-	viper.Set("ledger.blockchain.deploy-system-chaincode", "false")
-	//some random port
-	peerAddress := GetPeerTestingAddress("10287")
-	var tmpConn *grpc.ClientConn
-	var err error
-	if TLSEnabled() {
-		tmpConn, err = NewClientConnectionWithAddress(peerAddress, true, true, InitTLSForPeer())
-	}
-	tmpConn, err = NewClientConnectionWithAddress(peerAddress, true, false, nil)
-	if err == nil {
-		fmt.Printf("error connection to server -  at host:port = %s\n", peerAddress)
-		t.Error("error connection to server - connection should fail")
-		tmpConn.Close()
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			t.Logf("Running test %s ...", test.name)
+			serverAddress := fmt.Sprintf("localhost:%d", test.serverPort)
+			clientAddress := serverAddress
+			if test.clientPort > 0 {
+				clientAddress = fmt.Sprintf("localhost:%d", test.clientPort)
+			}
+			srv, err := NewGRPCServer(serverAddress, test.sc)
+			//check for error
+			if err != nil {
+				t.Fatalf("Error [%s] creating test server for address [%s]",
+					err, serverAddress)
+			}
+			//start the server
+			go srv.Start()
+			defer srv.Stop()
+			testConn, err := NewClientConnectionWithAddress(clientAddress,
+				true, test.sc.SecOpts.UseTLS, test.creds, nil)
+			if test.fail {
+				assert.Error(t, err)
+			} else {
+				testConn.Close()
+				assert.NoError(t, err)
+			}
+		})
 	}
 }
 
@@ -120,7 +164,10 @@ func TestCASupport(t *testing.T) {
 		t.Fatalf("failed to load root certificates")
 	}
 
-	cas := GetCASupport()
+	cas := &CASupport{
+		AppRootCAsByChain:     make(map[string][][]byte),
+		OrdererRootCAsByChain: make(map[string][][]byte),
+	}
 	cas.AppRootCAsByChain["channel1"] = [][]byte{rootCAs[0]}
 	cas.AppRootCAsByChain["channel2"] = [][]byte{rootCAs[1]}
 	cas.AppRootCAsByChain["channel3"] = [][]byte{rootCAs[2]}
@@ -140,25 +187,60 @@ func TestCASupport(t *testing.T) {
 		len(ordererClientRoots))
 	assert.Equal(t, 4, len(appClientRoots), "Expected 4 app client root CAs")
 	assert.Equal(t, 2, len(ordererClientRoots), "Expected 4 orderer client root CAs")
+}
+
+func TestCredentialSupport(t *testing.T) {
+
+	rootCAs := loadRootCAs()
+	t.Logf("loaded %d root certificates", len(rootCAs))
+	if len(rootCAs) != 6 {
+		t.Fatalf("failed to load root certificates")
+	}
+
+	cs := GetCredentialSupport()
+	cert := tls.Certificate{Certificate: [][]byte{}}
+	cs.SetClientCertificate(cert)
+	assert.Equal(t, cert, cs.clientCert)
+	assert.Equal(t, cert, cs.GetClientCertificate())
+
+	cs.AppRootCAsByChain["channel1"] = [][]byte{rootCAs[0]}
+	cs.AppRootCAsByChain["channel2"] = [][]byte{rootCAs[1]}
+	cs.AppRootCAsByChain["channel3"] = [][]byte{rootCAs[2]}
+	cs.OrdererRootCAsByChain["channel1"] = [][]byte{rootCAs[3]}
+	cs.OrdererRootCAsByChain["channel2"] = [][]byte{rootCAs[4]}
+	cs.ServerRootCAs = [][]byte{rootCAs[5]}
+	cs.ClientRootCAs = [][]byte{rootCAs[5]}
+
+	appServerRoots, ordererServerRoots := cs.GetServerRootCAs()
+	t.Logf("%d appServerRoots | %d ordererServerRoots", len(appServerRoots),
+		len(ordererServerRoots))
+	assert.Equal(t, 4, len(appServerRoots), "Expected 4 app server root CAs")
+	assert.Equal(t, 2, len(ordererServerRoots), "Expected 2 orderer server root CAs")
+
+	appClientRoots, ordererClientRoots := cs.GetClientRootCAs()
+	t.Logf("%d appClientRoots | %d ordererClientRoots", len(appClientRoots),
+		len(ordererClientRoots))
+	assert.Equal(t, 4, len(appClientRoots), "Expected 4 app client root CAs")
+	assert.Equal(t, 2, len(ordererClientRoots), "Expected 4 orderer client root CAs")
 
 	// make sure we really have a singleton
-	casClone := GetCASupport()
-	assert.Exactly(t, casClone, cas, "Expected GetCASupport to be a singleton")
+	csClone := GetCredentialSupport()
+	assert.Exactly(t, csClone, cs, "Expected GetCredentialSupport to be a singleton")
 
-	creds, _ := cas.GetDeliverServiceCredentials("channel1")
+	creds, _ := cs.GetDeliverServiceCredentials("channel1")
 	assert.Equal(t, "1.2", creds.Info().SecurityVersion,
 		"Expected Security version to be 1.2")
-	creds = cas.GetPeerCredentials(tls.Certificate{})
+	creds = cs.GetPeerCredentials()
 	assert.Equal(t, "1.2", creds.Info().SecurityVersion,
 		"Expected Security version to be 1.2")
 
 	// append some bad certs and make sure things still work
-	cas.ServerRootCAs = append(cas.ServerRootCAs, []byte("badcert"))
-	cas.ServerRootCAs = append(cas.ServerRootCAs, []byte(badPEM))
-	creds, _ = cas.GetDeliverServiceCredentials("channel1")
+	cs.ServerRootCAs = append(cs.ServerRootCAs, []byte("badcert"))
+	cs.ServerRootCAs = append(cs.ServerRootCAs, []byte(badPEM))
+	creds, _ = cs.GetDeliverServiceCredentials("channel1")
 	assert.Equal(t, "1.2", creds.Info().SecurityVersion,
 		"Expected Security version to be 1.2")
-	creds = cas.GetPeerCredentials(tls.Certificate{})
+	creds = cs.GetPeerCredentials()
 	assert.Equal(t, "1.2", creds.Info().SecurityVersion,
 		"Expected Security version to be 1.2")
 
@@ -199,10 +281,12 @@ func newServer(org string, port int) *srv {
 	if err != nil {
 		panic(fmt.Errorf("Failed listening on port %d: %v", port, err))
 	}
-	gSrv, err := NewGRPCServerFromListener(l, SecureServerConfig{
-		ServerCertificate: certs["server.crt"],
-		ServerKey:         certs["server.key"],
-		UseTLS:            true,
+	gSrv, err := NewGRPCServerFromListener(l, ServerConfig{
+		SecOpts: &SecureOptions{
+			Certificate: certs["server.crt"],
+			Key:         certs["server.key"],
+			UseTLS:      true,
+		},
 	})
 	if err != nil {
 		panic(fmt.Errorf("Failed starting gRPC server: %v", err))
@@ -235,12 +319,12 @@ func TestImpersonation(t *testing.T) {
 	defer osB.Stop()
 	time.Sleep(time.Second)
 
-	cas := GetCASupport()
-	_, err := GetCASupport().GetDeliverServiceCredentials("C")
+	cs := GetCredentialSupport()
+	_, err := GetCredentialSupport().GetDeliverServiceCredentials("C")
 	assert.Error(t, err)
 
-	cas.OrdererRootCAsByChain["A"] = [][]byte{osA.caCert}
-	cas.OrdererRootCAsByChain["B"] = [][]byte{osB.caCert}
+	cs.OrdererRootCAsByChain["A"] = [][]byte{osA.caCert}
+	cs.OrdererRootCAsByChain["B"] = [][]byte{osB.caCert}
 
 	testInvoke(t, "A", osA, true)
 	testInvoke(t, "B", osB, true)
@@ -250,10 +334,12 @@ func TestImpersonation(t *testing.T) {
 }
 
 func testInvoke(t *testing.T, channelID string, s *srv, shouldSucceed bool) {
-	creds, err := GetCASupport().GetDeliverServiceCredentials(channelID)
+	creds, err := GetCredentialSupport().GetDeliverServiceCredentials(channelID)
 	assert.NoError(t, err)
 	endpoint := fmt.Sprintf("localhost:%d", s.port)
-	conn, err := grpc.Dial(endpoint, grpc.WithTimeout(time.Second*3), grpc.WithTransportCredentials(creds), grpc.WithBlock())
+	ctx := context.Background()
+	ctx, _ = context.WithTimeout(ctx, time.Second*3)
+	conn, err := grpc.DialContext(ctx, endpoint, grpc.WithTransportCredentials(creds), grpc.WithBlock())
 	if shouldSucceed {
 		assert.NoError(t, err)
 		defer conn.Close()

@@ -17,6 +17,7 @@ limitations under the License.
 package config
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -32,11 +33,11 @@ import (
 	"path/filepath"
 
 	bccsp "github.com/hyperledger/fabric/bccsp/factory"
-	"github.com/hyperledger/fabric/common/tools/configtxgen/provisional"
+	genesisconfig "github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
 )
 
 const (
-	pkgLogID = "orderer/common/localconfig"
+	pkgLogID = "orderer/common/config"
 
 	// Prefix identifies the prefix for the orderer-related ENV vars.
 	Prefix = "ORDERER"
@@ -50,7 +51,7 @@ var (
 
 func init() {
 	logger = flogging.MustGetLogger(pkgLogID)
-	flogging.SetModuleLevel(pkgLogID, "error")
+	flogging.SetModuleLevel(pkgLogID, "ERROR")
 
 	configName = strings.ToLower(Prefix)
 }
@@ -75,6 +76,7 @@ type General struct {
 	ListenAddress  string
 	ListenPort     uint16
 	TLS            TLS
+	Keepalive      Keepalive
 	GenesisMethod  string
 	GenesisProfile string
 	SystemChannel  string
@@ -85,16 +87,30 @@ type General struct {
 	LocalMSPDir    string
 	LocalMSPID     string
 	BCCSP          *bccsp.FactoryOpts
+	Authentication Authentication
 }
 
-// TLS contains config for TLS connections.
+// Keepalive contains configuration for gRPC servers
+type Keepalive struct {
+	ServerMinInterval time.Duration
+	ServerInterval    time.Duration
+	ServerTimeout     time.Duration
+}
+
+// TLS contains configuration for TLS connections.
 type TLS struct {
-	Enabled           bool
-	PrivateKey        string
-	Certificate       string
-	RootCAs           []string
-	ClientAuthEnabled bool
-	ClientRootCAs     []string
+	Enabled            bool
+	PrivateKey         string
+	Certificate        string
+	RootCAs            []string
+	ClientAuthRequired bool
+	ClientRootCAs      []string
+}
+
+// Authentication contains configuration parameters related to authenticating
+// client messages
+type Authentication struct {
+	TimeWindow time.Duration
 }
 
 // Profile contains configuration for Go pprof profiling.
@@ -184,7 +200,7 @@ var defaults = TopLevel{
 		ListenPort:     7050,
 		GenesisMethod:  "provisional",
 		GenesisProfile: "SampleSingleMSPSolo",
-		SystemChannel:  provisional.TestChainID,
+		SystemChannel:  genesisconfig.TestChainID,
 		GenesisFile:    "genesisblock",
 		Profile: Profile{
 			Enabled: false,
@@ -195,6 +211,9 @@ var defaults = TopLevel{
 		LocalMSPDir: "msp",
 		LocalMSPID:  "DEFAULT",
 		BCCSP:       bccsp.GetDefaultOpts(),
+		Authentication: Authentication{
+			TimeWindow: time.Duration(15 * time.Minute),
+		},
 	},
 	RAMLedger: RAMLedger{
 		HistorySize: 10000,
@@ -232,7 +251,7 @@ var defaults = TopLevel{
 			},
 		},
 		Verbose: false,
-		Version: sarama.V0_9_0_1,
+		Version: sarama.V0_10_2_0,
 		TLS: TLS{
 			Enabled: false,
 		},
@@ -243,8 +262,8 @@ var defaults = TopLevel{
 	},
 }
 
-// Load parses the orderer.yaml file and environment, producing a struct suitable for config use
-func Load() *TopLevel {
+// Load parses the orderer.yaml file and environment, producing a struct suitable for config use, returning error on failure
+func Load() (*TopLevel, error) {
 	config := viper.New()
 	cf.InitViper(config, configName)
 
@@ -256,18 +275,18 @@ func Load() *TopLevel {
 
 	err := config.ReadInConfig()
 	if err != nil {
-		logger.Panic("Error reading configuration:", err)
+		return nil, fmt.Errorf("Error reading configuration: %s", err)
 	}
 
 	var uconf TopLevel
 	err = viperutil.EnhancedExactUnmarshal(config, &uconf)
 	if err != nil {
-		logger.Panic("Error unmarshaling config into struct:", err)
+		return nil, fmt.Errorf("Error unmarshaling config into struct: %s", err)
 	}
 
 	uconf.completeInitialization(filepath.Dir(config.ConfigFileUsed()))
 
-	return &uconf
+	return &uconf, nil
 }
 
 func (c *TopLevel) completeInitialization(configDir string) {
@@ -328,48 +347,52 @@ func (c *TopLevel) completeInitialization(configDir string) {
 			logger.Infof("General.LocalMSPID unset, setting to %s", defaults.General.LocalMSPID)
 			c.General.LocalMSPID = defaults.General.LocalMSPID
 
+		case c.General.Authentication.TimeWindow == 0:
+			logger.Infof("General.Authentication.TimeWindow unset, setting to %s", defaults.General.Authentication.TimeWindow)
+			c.General.Authentication.TimeWindow = defaults.General.Authentication.TimeWindow
+
 		case c.FileLedger.Prefix == "":
 			logger.Infof("FileLedger.Prefix unset, setting to %s", defaults.FileLedger.Prefix)
 			c.FileLedger.Prefix = defaults.FileLedger.Prefix
 
-		case c.Kafka.Retry.ShortInterval == 0*time.Minute:
+		case c.Kafka.Retry.ShortInterval == 0:
 			logger.Infof("Kafka.Retry.ShortInterval unset, setting to %v", defaults.Kafka.Retry.ShortInterval)
 			c.Kafka.Retry.ShortInterval = defaults.Kafka.Retry.ShortInterval
-		case c.Kafka.Retry.ShortTotal == 0*time.Minute:
+		case c.Kafka.Retry.ShortTotal == 0:
 			logger.Infof("Kafka.Retry.ShortTotal unset, setting to %v", defaults.Kafka.Retry.ShortTotal)
 			c.Kafka.Retry.ShortTotal = defaults.Kafka.Retry.ShortTotal
-		case c.Kafka.Retry.LongInterval == 0*time.Minute:
+		case c.Kafka.Retry.LongInterval == 0:
 			logger.Infof("Kafka.Retry.LongInterval unset, setting to %v", defaults.Kafka.Retry.LongInterval)
 			c.Kafka.Retry.LongInterval = defaults.Kafka.Retry.LongInterval
-		case c.Kafka.Retry.LongTotal == 0*time.Minute:
+		case c.Kafka.Retry.LongTotal == 0:
 			logger.Infof("Kafka.Retry.LongTotal unset, setting to %v", defaults.Kafka.Retry.LongTotal)
 			c.Kafka.Retry.LongTotal = defaults.Kafka.Retry.LongTotal
 
-		case c.Kafka.Retry.NetworkTimeouts.DialTimeout == 0*time.Second:
+		case c.Kafka.Retry.NetworkTimeouts.DialTimeout == 0:
 			logger.Infof("Kafka.Retry.NetworkTimeouts.DialTimeout unset, setting to %v", defaults.Kafka.Retry.NetworkTimeouts.DialTimeout)
 			c.Kafka.Retry.NetworkTimeouts.DialTimeout = defaults.Kafka.Retry.NetworkTimeouts.DialTimeout
-		case c.Kafka.Retry.NetworkTimeouts.ReadTimeout == 0*time.Second:
+		case c.Kafka.Retry.NetworkTimeouts.ReadTimeout == 0:
 			logger.Infof("Kafka.Retry.NetworkTimeouts.ReadTimeout unset, setting to %v", defaults.Kafka.Retry.NetworkTimeouts.ReadTimeout)
 			c.Kafka.Retry.NetworkTimeouts.ReadTimeout = defaults.Kafka.Retry.NetworkTimeouts.ReadTimeout
-		case c.Kafka.Retry.NetworkTimeouts.WriteTimeout == 0*time.Second:
+		case c.Kafka.Retry.NetworkTimeouts.WriteTimeout == 0:
 			logger.Infof("Kafka.Retry.NetworkTimeouts.WriteTimeout unset, setting to %v", defaults.Kafka.Retry.NetworkTimeouts.WriteTimeout)
 			c.Kafka.Retry.NetworkTimeouts.WriteTimeout = defaults.Kafka.Retry.NetworkTimeouts.WriteTimeout
 
-		case c.Kafka.Retry.Metadata.RetryBackoff == 0*time.Second:
+		case c.Kafka.Retry.Metadata.RetryBackoff == 0:
 			logger.Infof("Kafka.Retry.Metadata.RetryBackoff unset, setting to %v", defaults.Kafka.Retry.Metadata.RetryBackoff)
 			c.Kafka.Retry.Metadata.RetryBackoff = defaults.Kafka.Retry.Metadata.RetryBackoff
 		case c.Kafka.Retry.Metadata.RetryMax == 0:
 			logger.Infof("Kafka.Retry.Metadata.RetryMax unset, setting to %v", defaults.Kafka.Retry.Metadata.RetryMax)
 			c.Kafka.Retry.Metadata.RetryMax = defaults.Kafka.Retry.Metadata.RetryMax
 
-		case c.Kafka.Retry.Producer.RetryBackoff == 0*time.Second:
+		case c.Kafka.Retry.Producer.RetryBackoff == 0:
 			logger.Infof("Kafka.Retry.Producer.RetryBackoff unset, setting to %v", defaults.Kafka.Retry.Producer.RetryBackoff)
 			c.Kafka.Retry.Producer.RetryBackoff = defaults.Kafka.Retry.Producer.RetryBackoff
 		case c.Kafka.Retry.Producer.RetryMax == 0:
 			logger.Infof("Kafka.Retry.Producer.RetryMax unset, setting to %v", defaults.Kafka.Retry.Producer.RetryMax)
 			c.Kafka.Retry.Producer.RetryMax = defaults.Kafka.Retry.Producer.RetryMax
 
-		case c.Kafka.Retry.Consumer.RetryBackoff == 0*time.Second:
+		case c.Kafka.Retry.Consumer.RetryBackoff == 0:
 			logger.Infof("Kafka.Retry.Consumer.RetryBackoff unset, setting to %v", defaults.Kafka.Retry.Consumer.RetryBackoff)
 			c.Kafka.Retry.Consumer.RetryBackoff = defaults.Kafka.Retry.Consumer.RetryBackoff
 

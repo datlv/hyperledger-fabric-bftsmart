@@ -1,24 +1,19 @@
 /*
-Copyright IBM Corp. 2017 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 package peer
 
 import (
+	"crypto/tls"
+	"fmt"
 	"net"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/hyperledger/fabric/core/comm"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 )
@@ -75,6 +70,16 @@ func TestConfiguration(t *testing.T) {
 			validAddresses:   ips,
 			invalidAddresses: []string{"testing.com:7051"},
 		},
+		{
+			name: "test3",
+			settings: map[string]interface{}{
+				"peer.addressAutoDetect": false,
+				"peer.address":           "0.0.0.0:7051",
+				"peer.id":                "testPeer",
+			},
+			validAddresses:   []string{fmt.Sprintf("%s:7051", GetLocalIP())},
+			invalidAddresses: []string{"0.0.0.0:7051"},
+		},
 	}
 
 	for _, test := range tests {
@@ -122,4 +127,125 @@ func TestConfiguration(t *testing.T) {
 				"GetPeerEndpoint returned the wrong peer address")
 		})
 	}
+}
+
+func TestGetServerConfig(t *testing.T) {
+
+	// good config without TLS
+	viper.Set("peer.tls.enabled", false)
+	sc, _ := GetServerConfig()
+	assert.Equal(t, false, sc.SecOpts.UseTLS,
+		"ServerConfig.SecOpts.UseTLS should be false")
+
+	// keepalive options
+	assert.Equal(t, comm.DefaultKeepaliveOptions(), sc.KaOpts,
+		"ServerConfig.KaOpts should be set to default values")
+	viper.Set("peer.keepalive.minInterval", "2m")
+	sc, _ = GetServerConfig()
+	assert.Equal(t, time.Duration(2)*time.Minute, sc.KaOpts.ServerMinInterval,
+		"ServerConfig.KaOpts.ServerMinInterval should be set to 2 min")
+
+	// good config with TLS
+	viper.Set("peer.tls.enabled", true)
+	viper.Set("peer.tls.cert.file", filepath.Join("testdata", "Org1-server1-cert.pem"))
+	viper.Set("peer.tls.key.file", filepath.Join("testdata", "Org1-server1-key.pem"))
+	viper.Set("peer.tls.rootcert.file", filepath.Join("testdata", "Org1-cert.pem"))
+	sc, _ = GetServerConfig()
+	assert.Equal(t, true, sc.SecOpts.UseTLS, "ServerConfig.SecOpts.UseTLS should be true")
+	assert.Equal(t, false, sc.SecOpts.RequireClientCert,
+		"ServerConfig.SecOpts.RequireClientCert should be false")
+	viper.Set("peer.tls.clientAuthRequired", true)
+	viper.Set("peer.tls.clientRootCAs.files",
+		[]string{filepath.Join("testdata", "Org1-cert.pem"),
+			filepath.Join("testdata", "Org2-cert.pem")})
+	sc, _ = GetServerConfig()
+	assert.Equal(t, true, sc.SecOpts.RequireClientCert,
+		"ServerConfig.SecOpts.RequireClientCert should be true")
+	assert.Equal(t, 2, len(sc.SecOpts.ClientRootCAs),
+		"ServerConfig.SecOpts.ClientRootCAs should contain 2 entries")
+
+	// bad config with TLS
+	viper.Set("peer.tls.rootcert.file", filepath.Join("testdata", "Org11-cert.pem"))
+	_, err := GetServerConfig()
+	assert.Error(t, err, "GetServerConfig should return error with bad root cert path")
+	viper.Set("peer.tls.cert.file", filepath.Join("testdata", "Org11-cert.pem"))
+	_, err = GetServerConfig()
+	assert.Error(t, err, "GetServerConfig should return error with bad tls cert path")
+
+	// disable TLS for remaining tests
+	viper.Set("peer.tls.enabled", false)
+	viper.Set("peer.tls.clientAuthRequired", false)
+
+}
+
+func TestGetClientCertificate(t *testing.T) {
+	viper.Set("peer.tls.key.file", "")
+	viper.Set("peer.tls.cert.file", "")
+	viper.Set("peer.tls.clientKey.file", "")
+	viper.Set("peer.tls.clientCert.file", "")
+
+	// neither client nor server key pairs set - expect error
+	_, err := GetClientCertificate()
+	assert.Error(t, err)
+
+	viper.Set("peer.tls.key.file", "")
+	viper.Set("peer.tls.cert.file",
+		filepath.Join("testdata", "Org1-server1-cert.pem"))
+	// missing server key file - expect error
+	_, err = GetClientCertificate()
+	assert.Error(t, err)
+
+	viper.Set("peer.tls.key.file",
+		filepath.Join("testdata", "Org1-server1-key.pem"))
+	viper.Set("peer.tls.cert.file", "")
+	// missing server cert file - expect error
+	_, err = GetClientCertificate()
+	assert.Error(t, err)
+
+	// set server TLS settings to ensure we get the client TLS settings
+	// when they are set properly
+	viper.Set("peer.tls.key.file",
+		filepath.Join("testdata", "Org1-server1-key.pem"))
+	viper.Set("peer.tls.cert.file",
+		filepath.Join("testdata", "Org1-server1-cert.pem"))
+
+	// peer.tls.clientCert.file not set - expect error
+	viper.Set("peer.tls.clientKey.file",
+		filepath.Join("testdata", "Org2-server1-key.pem"))
+	_, err = GetClientCertificate()
+	assert.Error(t, err)
+
+	// peer.tls.clientKey.file not set - expect error
+	viper.Set("peer.tls.clientKey.file", "")
+	viper.Set("peer.tls.clientCert.file",
+		filepath.Join("testdata", "Org2-server1-cert.pem"))
+	_, err = GetClientCertificate()
+	assert.Error(t, err)
+
+	// client auth required and clientKey/clientCert set
+	expected, err := tls.LoadX509KeyPair(
+		filepath.Join("testdata", "Org2-server1-cert.pem"),
+		filepath.Join("testdata", "Org2-server1-key.pem"))
+	if err != nil {
+		t.Fatalf("Failed to load test certificate (%s)", err)
+	}
+	viper.Set("peer.tls.clientKey.file",
+		filepath.Join("testdata", "Org2-server1-key.pem"))
+	cert, err := GetClientCertificate()
+	assert.NoError(t, err)
+	assert.Equal(t, expected, cert)
+
+	// client auth required and clientKey/clientCert not set - expect
+	// client cert to be the server cert
+	viper.Set("peer.tls.clientKey.file", "")
+	viper.Set("peer.tls.clientCert.file", "")
+	expected, err = tls.LoadX509KeyPair(
+		filepath.Join("testdata", "Org1-server1-cert.pem"),
+		filepath.Join("testdata", "Org1-server1-key.pem"))
+	if err != nil {
+		t.Fatalf("Failed to load test certificate (%s)", err)
+	}
+	cert, err = GetClientCertificate()
+	assert.NoError(t, err)
+	assert.Equal(t, expected, cert)
 }

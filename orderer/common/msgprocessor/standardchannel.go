@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package msgprocessor
 
 import (
-	channelconfig "github.com/hyperledger/fabric/common/config/channel"
+	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/crypto"
 	"github.com/hyperledger/fabric/common/policies"
 	cb "github.com/hyperledger/fabric/protos/common"
@@ -52,26 +52,25 @@ func CreateStandardChannelFilters(filterSupport channelconfig.Resources) *RuleSe
 	}
 	return NewRuleSet([]Rule{
 		EmptyRejectRule,
+		NewExpirationRejectRule(filterSupport),
 		NewSizeFilter(ordererConfig),
-		NewSigFilter(policies.ChannelWriters, filterSupport.PolicyManager()),
+		NewSigFilter(policies.ChannelWriters, filterSupport),
 	})
 }
 
 // ClassifyMsg inspects the message to determine which type of processing is necessary
-func (s *StandardChannel) ClassifyMsg(chdr *cb.ChannelHeader) (Classification, error) {
+func (s *StandardChannel) ClassifyMsg(chdr *cb.ChannelHeader) Classification {
 	switch chdr.Type {
 	case int32(cb.HeaderType_CONFIG_UPDATE):
-		return ConfigUpdateMsg, nil
+		return ConfigUpdateMsg
 	case int32(cb.HeaderType_ORDERER_TRANSACTION):
-		// XXX eventually, this should return an error, but for now to allow the old message flow, return ConfigUpdateMsg
-		return ConfigUpdateMsg, nil
-		// return 0, fmt.Errorf("Transactions of type ORDERER_TRANSACTION cannot be Broadcast")
+		// In order to maintain backwards compatibility, we must classify these messages
+		return ConfigMsg
 	case int32(cb.HeaderType_CONFIG):
-		// XXX eventually, this should return an error, but for now to allow the old message flow, return ConfigUpdateMsg
-		return ConfigUpdateMsg, nil
-		// return 0, fmt.Errorf("Transactions of type CONFIG cannot be Broadcast")
+		// In order to maintain backwards compatibility, we must classify these messages
+		return ConfigMsg
 	default:
-		return NormalMsg, nil
+		return NormalMsg
 	}
 }
 
@@ -118,4 +117,18 @@ func (s *StandardChannel) ProcessConfigUpdateMsg(env *cb.Envelope) (config *cb.E
 	}
 
 	return config, seq, nil
+}
+
+// ProcessConfigMsg takes an envelope of type `HeaderType_CONFIG`, unpacks the `ConfigEnvelope` from it
+// extracts the `ConfigUpdate` from `LastUpdate` field, and calls `ProcessConfigUpdateMsg` on it.
+func (s *StandardChannel) ProcessConfigMsg(env *cb.Envelope) (config *cb.Envelope, configSeq uint64, err error) {
+	logger.Debugf("Processing config message for channel %s", s.support.ChainID())
+
+	configEnvelope := &cb.ConfigEnvelope{}
+	_, err = utils.UnmarshalEnvelopeOfType(env, cb.HeaderType_CONFIG, configEnvelope)
+	if err != nil {
+		return
+	}
+
+	return s.ProcessConfigUpdateMsg(configEnvelope.LastUpdate)
 }

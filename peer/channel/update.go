@@ -48,7 +48,7 @@ func updateCmd(cf *ChannelCmdFactory) *cobra.Command {
 
 func update(cmd *cobra.Command, args []string, cf *ChannelCmdFactory) error {
 	//the global chainID filled by the "-c" command
-	if chainID == common.UndefinedParamValue {
+	if channelID == common.UndefinedParamValue {
 		return errors.New("Must supply channel ID")
 	}
 
@@ -86,5 +86,11 @@ func update(cmd *cobra.Command, args []string, cf *ChannelCmdFactory) error {
 	}
 
 	defer broadcastClient.Close()
-	return broadcastClient.Send(sCtxEnv)
+	err = broadcastClient.Send(sCtxEnv)
+	if err != nil {
+		return err
+	}
+
+	logger.Info("Successfully submitted channel update")
+	return nil
 }

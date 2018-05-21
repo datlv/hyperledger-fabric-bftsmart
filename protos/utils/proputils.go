@@ -1,17 +1,7 @@
 /*
 Copyright IBM Corp. 2016 All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package utils
@@ -189,7 +179,7 @@ func GetResponse(resBytes []byte) (*peer.Response, error) {
 	return response, err
 }
 
-// GetChaincodeEvents gets the ChaincodeEvents given chaicnode event bytes
+// GetChaincodeEvents gets the ChaincodeEvents given chaincode event bytes
 func GetChaincodeEvents(eBytes []byte) (*peer.ChaincodeEvent, error) {
 	chaincodeEvent := &peer.ChaincodeEvent{}
 	err := proto.Unmarshal(eBytes, chaincodeEvent)
@@ -429,23 +419,58 @@ func CreateProposalFromCIS(typ common.HeaderType, chainID string, cis *peer.Chai
 	return CreateChaincodeProposal(typ, chainID, cis, creator)
 }
 
+// CreateGetChaincodesProposal returns a GETCHAINCODES proposal given a serialized identity
+func CreateGetChaincodesProposal(chainID string, creator []byte) (*peer.Proposal, string, error) {
+	ccinp := &peer.ChaincodeInput{Args: [][]byte{[]byte("getchaincodes")}}
+	lsccSpec := &peer.ChaincodeInvocationSpec{
+		ChaincodeSpec: &peer.ChaincodeSpec{
+			Type:        peer.ChaincodeSpec_GOLANG,
+			ChaincodeId: &peer.ChaincodeID{Name: "lscc"},
+			Input:       ccinp},
+	}
+	return CreateProposalFromCIS(common.HeaderType_ENDORSER_TRANSACTION, chainID, lsccSpec, creator)
+}
+
+// CreateGetChaincodesProposal returns a GETINSTALLEDCHAINCODES proposal given a serialized identity
+func CreateGetInstalledChaincodesProposal(creator []byte) (*peer.Proposal, string, error) {
+	ccinp := &peer.ChaincodeInput{Args: [][]byte{[]byte("getinstalledchaincodes")}}
+	lsccSpec := &peer.ChaincodeInvocationSpec{
+		ChaincodeSpec: &peer.ChaincodeSpec{
+			Type:        peer.ChaincodeSpec_GOLANG,
+			ChaincodeId: &peer.ChaincodeID{Name: "lscc"},
+			Input:       ccinp},
+	}
+	return CreateProposalFromCIS(common.HeaderType_ENDORSER_TRANSACTION, "", lsccSpec, creator)
+}
+
 // CreateInstallProposalFromCDS returns a install proposal given a serialized identity and a ChaincodeDeploymentSpec
 func CreateInstallProposalFromCDS(ccpack proto.Message, creator []byte) (*peer.Proposal, string, error) {
-	return createProposalFromCDS("", ccpack, creator, nil, nil, nil, "install")
+	return createProposalFromCDS("", ccpack, creator, "install")
 }
 
 // CreateDeployProposalFromCDS returns a deploy proposal given a serialized identity and a ChaincodeDeploymentSpec
-func CreateDeployProposalFromCDS(chainID string, cds *peer.ChaincodeDeploymentSpec, creator []byte, policy []byte, escc []byte, vscc []byte) (*peer.Proposal, string, error) {
-	return createProposalFromCDS(chainID, cds, creator, policy, escc, vscc, "deploy")
+func CreateDeployProposalFromCDS(
+	chainID string,
+	cds *peer.ChaincodeDeploymentSpec,
+	creator []byte,
+	policy []byte,
+	escc []byte,
+	vscc []byte,
+	collectionConfig []byte) (*peer.Proposal, string, error) {
+	if collectionConfig == nil {
+		return createProposalFromCDS(chainID, cds, creator, "deploy", policy, escc, vscc)
+	} else {
+		return createProposalFromCDS(chainID, cds, creator, "deploy", policy, escc, vscc, collectionConfig)
+	}
 }
 
 // CreateUpgradeProposalFromCDS returns a upgrade proposal given a serialized identity and a ChaincodeDeploymentSpec
 func CreateUpgradeProposalFromCDS(chainID string, cds *peer.ChaincodeDeploymentSpec, creator []byte, policy []byte, escc []byte, vscc []byte) (*peer.Proposal, string, error) {
-	return createProposalFromCDS(chainID, cds, creator, policy, escc, vscc, "upgrade")
+	return createProposalFromCDS(chainID, cds, creator, "upgrade", policy, escc, vscc)
 }
 
 // createProposalFromCDS returns a deploy or upgrade proposal given a serialized identity and a ChaincodeDeploymentSpec
-func createProposalFromCDS(chainID string, msg proto.Message, creator []byte, policy []byte, escc []byte, vscc []byte, propType string) (*peer.Proposal, string, error) {
+func createProposalFromCDS(chainID string, msg proto.Message, creator []byte, propType string, args ...[]byte) (*peer.Proposal, string, error) {
 	//in the new mode, cds will be nil, "deploy" and "upgrade" are instantiates.
 	var ccinp *peer.ChaincodeInput
 	var b []byte
@@ -464,7 +489,10 @@ func createProposalFromCDS(chainID string, msg proto.Message, creator []byte, po
 		if !ok || cds == nil {
 			return nil, "", fmt.Errorf("invalid message for creating lifecycle chaincode proposal from")
 		}
-		ccinp = &peer.ChaincodeInput{Args: [][]byte{[]byte(propType), []byte(chainID), b, policy, escc, vscc}}
+		Args := [][]byte{[]byte(propType), []byte(chainID), b}
+		Args = append(Args, args...)
+
+		ccinp = &peer.ChaincodeInput{Args: Args}
 	case "install":
 		ccinp = &peer.ChaincodeInput{Args: [][]byte{[]byte(propType), b}}
 	}

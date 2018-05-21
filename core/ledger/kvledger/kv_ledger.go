@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package kvledger
@@ -19,23 +9,21 @@ package kvledger
 import (
 	"errors"
 	"fmt"
+	"sync"
 
-	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric/common/flogging"
 	commonledger "github.com/hyperledger/fabric/common/ledger"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/ledger"
+	"github.com/hyperledger/fabric/core/ledger/cceventmgmt"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/history/historydb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/privacyenabledstate"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/txmgr"
-	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/txmgr/pvtdatatxmgr"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/txmgr/lockbasedtxmgr"
 	"github.com/hyperledger/fabric/core/ledger/ledgerconfig"
 	"github.com/hyperledger/fabric/core/ledger/ledgerstorage"
-	"github.com/hyperledger/fabric/core/transientstore"
 	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/ledger/rwset"
 	"github.com/hyperledger/fabric/protos/peer"
-	"github.com/hyperledger/fabric/protos/utils"
 )
 
 var logger = flogging.MustGetLogger("kvledger")
@@ -43,33 +31,41 @@ var logger = flogging.MustGetLogger("kvledger")
 // KVLedger provides an implementation of `ledger.PeerLedger`.
 // This implementation provides a key-value based data model
 type kvLedger struct {
-	ledgerID       string
-	blockStore     *ledgerstorage.Store
-	txtmgmt        txmgr.TxMgr
-	historyDB      historydb.HistoryDB
-	transientStore transientstore.Store
+	ledgerID        string
+	blockStore      *ledgerstorage.Store
+	txtmgmt         txmgr.TxMgr
+	historyDB       historydb.HistoryDB
+	blockAPIsRWLock *sync.RWMutex
 }
 
 // NewKVLedger constructs new `KVLedger`
 func newKVLedger(ledgerID string, blockStore *ledgerstorage.Store,
 	versionedDB privacyenabledstate.DB, historyDB historydb.HistoryDB,
-	transientStore transientstore.Store) (*kvLedger, error) {
+	stateListeners ledger.StateListeners) (*kvLedger, error) {
 
 	logger.Debugf("Creating KVLedger ledgerID=%s: ", ledgerID)
 
 	//Initialize transaction manager using state database
 	var txmgmt txmgr.TxMgr
-	txmgmt = pvtdatatxmgr.NewLockbasedTxMgr(versionedDB, transientStore)
+	txmgmt = lockbasedtxmgr.NewLockBasedTxMgr(ledgerID, versionedDB, stateListeners)
 
 	// Create a kvLedger for this chain/ledger, which encasulates the underlying
 	// id store, blockstore, txmgr (state database), history database
-	l := &kvLedger{ledgerID, blockStore, txmgmt, historyDB, transientStore}
+	l := &kvLedger{ledgerID, blockStore, txmgmt, historyDB, &sync.RWMutex{}}
+
+	// TODO Move the function `GetChaincodeEventListener` to ledger interface and
+	// this functionality of regiserting for events to ledgermgmt package so that this
+	// is reused across other future ledger implementations
+	ccEventListener := versionedDB.GetChaincodeEventListener()
+	logger.Debugf("Register state db for chaincode lifecycle events: %t", ccEventListener != nil)
+	if ccEventListener != nil {
+		cceventmgmt.GetMgr().Register(ledgerID, ccEventListener)
+	}
 
 	//Recover both state DB and history DB if they are out of sync with block storage
 	if err := l.recoverDBs(); err != nil {
 		panic(fmt.Errorf(`Error during state DB recovery:%s`, err))
 	}
-
 	return l, nil
 }
 
@@ -123,13 +119,13 @@ func (l *kvLedger) recoverDBs() error {
 //state DB or history DB or both
 func (l *kvLedger) recommitLostBlocks(firstBlockNum uint64, lastBlockNum uint64, recoverables ...recoverable) error {
 	var err error
-	var block *common.Block
+	var blockAndPvtdata *ledger.BlockAndPvtData
 	for blockNumber := firstBlockNum; blockNumber <= lastBlockNum; blockNumber++ {
-		if block, err = l.GetBlockByNumber(blockNumber); err != nil {
+		if blockAndPvtdata, err = l.GetPvtDataAndBlockByNum(blockNumber, nil); err != nil {
 			return err
 		}
 		for _, r := range recoverables {
-			if err := r.CommitLostBlock(&ledger.BlockAndPvtData{Block: block}); err != nil {
+			if err := r.CommitLostBlock(blockAndPvtdata); err != nil {
 				return err
 			}
 		}
@@ -148,41 +144,60 @@ func (l *kvLedger) GetTransactionByID(txID string) (*peer.ProcessedTransaction, 
 		return nil, err
 	}
 	processedTran := &peer.ProcessedTransaction{TransactionEnvelope: tranEnv, ValidationCode: int32(txVResult)}
+	l.blockAPIsRWLock.RLock()
+	l.blockAPIsRWLock.RUnlock()
 	return processedTran, nil
 }
 
 // GetBlockchainInfo returns basic info about blockchain
 func (l *kvLedger) GetBlockchainInfo() (*common.BlockchainInfo, error) {
-	return l.blockStore.GetBlockchainInfo()
+	bcInfo, err := l.blockStore.GetBlockchainInfo()
+	l.blockAPIsRWLock.RLock()
+	defer l.blockAPIsRWLock.RUnlock()
+	return bcInfo, err
 }
 
 // GetBlockByNumber returns block at a given height
 // blockNumber of  math.MaxUint64 will return last block
 func (l *kvLedger) GetBlockByNumber(blockNumber uint64) (*common.Block, error) {
-	return l.blockStore.RetrieveBlockByNumber(blockNumber)
-
+	block, err := l.blockStore.RetrieveBlockByNumber(blockNumber)
+	l.blockAPIsRWLock.RLock()
+	l.blockAPIsRWLock.RUnlock()
+	return block, err
 }
 
 // GetBlocksIterator returns an iterator that starts from `startBlockNumber`(inclusive).
 // The iterator is a blocking iterator i.e., it blocks till the next block gets available in the ledger
 // ResultsIterator contains type BlockHolder
 func (l *kvLedger) GetBlocksIterator(startBlockNumber uint64) (commonledger.ResultsIterator, error) {
-	return l.blockStore.RetrieveBlocks(startBlockNumber)
-
+	blkItr, err := l.blockStore.RetrieveBlocks(startBlockNumber)
+	if err != nil {
+		return nil, err
+	}
+	return &blocksItr{l.blockAPIsRWLock, blkItr}, nil
 }
 
 // GetBlockByHash returns a block given it's hash
 func (l *kvLedger) GetBlockByHash(blockHash []byte) (*common.Block, error) {
-	return l.blockStore.RetrieveBlockByHash(blockHash)
+	block, err := l.blockStore.RetrieveBlockByHash(blockHash)
+	l.blockAPIsRWLock.RLock()
+	l.blockAPIsRWLock.RUnlock()
+	return block, err
 }
 
 // GetBlockByTxID returns a block which contains a transaction
 func (l *kvLedger) GetBlockByTxID(txID string) (*common.Block, error) {
-	return l.blockStore.RetrieveBlockByTxID(txID)
+	block, err := l.blockStore.RetrieveBlockByTxID(txID)
+	l.blockAPIsRWLock.RLock()
+	l.blockAPIsRWLock.RUnlock()
+	return block, err
 }
 
 func (l *kvLedger) GetTxValidationCodeByTxID(txID string) (peer.TxValidationCode, error) {
-	return l.blockStore.RetrieveTxValidationCodeByTxID(txID)
+	txValidationCode, err := l.blockStore.RetrieveTxValidationCodeByTxID(txID)
+	l.blockAPIsRWLock.RLock()
+	l.blockAPIsRWLock.RUnlock()
+	return txValidationCode, err
 }
 
 //Prune prunes the blocks/transactions that satisfy the given policy
@@ -210,34 +225,26 @@ func (l *kvLedger) NewHistoryQueryExecutor() (ledger.HistoryQueryExecutor, error
 	return l.historyDB.NewHistoryQueryExecutor(l.blockStore)
 }
 
-// Commit commits the valid block (returned in the method RemoveInvalidTransactionsAndPrepare) and related state changes
-// TODO when we move the transient store outside the ledger, the commiter would invoke function `CommitWithPvtData` and this
-// function will be removed
-func (l *kvLedger) Commit(block *common.Block) error {
-	pvtdata, err := retrievePrivateData(l.transientStore, block)
-	if err != nil {
-		return err
-	}
-	return l.CommitWithPvtData(&ledger.BlockAndPvtData{Block: block, BlockPvtData: pvtdata})
-}
-
 // CommitWithPvtData commits the block and the corresponding pvt data in an atomic operation
 func (l *kvLedger) CommitWithPvtData(pvtdataAndBlock *ledger.BlockAndPvtData) error {
 	var err error
 	block := pvtdataAndBlock.Block
 	blockNo := pvtdataAndBlock.Block.Header.Number
 
-	logger.Debugf("Channel [%s]: Validating block [%d]", l.ledgerID, blockNo)
+	logger.Debugf("Channel [%s]: Validating state for block [%d]", l.ledgerID, blockNo)
 	err = l.txtmgmt.ValidateAndPrepare(pvtdataAndBlock, true)
 	if err != nil {
 		return err
 	}
 
 	logger.Debugf("Channel [%s]: Committing block [%d] to storage", l.ledgerID, blockNo)
+
+	l.blockAPIsRWLock.Lock()
+	defer l.blockAPIsRWLock.Unlock()
 	if err = l.blockStore.CommitWithPvtData(pvtdataAndBlock); err != nil {
 		return err
 	}
-	logger.Infof("Channel [%s]: Created block [%d] with %d transaction(s)", l.ledgerID, block.Header.Number, len(block.Data.Data))
+	logger.Infof("Channel [%s]: Committed block [%d] with %d transaction(s)", l.ledgerID, block.Header.Number, len(block.Data.Data))
 
 	logger.Debugf("Channel [%s]: Committing block [%d] transactions to state database", l.ledgerID, blockNo)
 	if err = l.txtmgmt.Commit(); err != nil {
@@ -257,13 +264,19 @@ func (l *kvLedger) CommitWithPvtData(pvtdataAndBlock *ledger.BlockAndPvtData) er
 // GetPvtDataAndBlockByNum returns the block and the corresponding pvt data.
 // The pvt data is filtered by the list of 'collections' supplied
 func (l *kvLedger) GetPvtDataAndBlockByNum(blockNum uint64, filter ledger.PvtNsCollFilter) (*ledger.BlockAndPvtData, error) {
-	return l.blockStore.GetPvtDataAndBlockByNum(blockNum, filter)
+	blockAndPvtdata, err := l.blockStore.GetPvtDataAndBlockByNum(blockNum, filter)
+	l.blockAPIsRWLock.RLock()
+	l.blockAPIsRWLock.RUnlock()
+	return blockAndPvtdata, err
 }
 
 // GetPvtDataByNum returns only the pvt data  corresponding to the given block number
 // The pvt data is filtered by the list of 'collections' supplied
 func (l *kvLedger) GetPvtDataByNum(blockNum uint64, filter ledger.PvtNsCollFilter) ([]*ledger.TxPvtData, error) {
-	return l.blockStore.GetPvtDataByNum(blockNum, filter)
+	pvtdata, err := l.blockStore.GetPvtDataByNum(blockNum, filter)
+	l.blockAPIsRWLock.RLock()
+	l.blockAPIsRWLock.RUnlock()
+	return pvtdata, err
 }
 
 // Purge removes private read-writes set generated by endorsers at block height lesser than
@@ -282,40 +295,23 @@ func (l *kvLedger) PrivateDataMinBlockNum() (uint64, error) {
 func (l *kvLedger) Close() {
 	l.blockStore.Shutdown()
 	l.txtmgmt.Shutdown()
-	l.transientStore.Shutdown()
 }
 
-// retrievePrivateData retrieves the pvt data from the transient store for committing it into the
-// pvt data store along with block commit.
-// KVLedger does this job temporarily for phase-1 and will be moved out to committer
-func retrievePrivateData(transientStore transientstore.Store, block *common.Block) (map[uint64]*ledger.TxPvtData, error) {
-	pvtdata := make(map[uint64]*ledger.TxPvtData)
-	for txIndex, envBytes := range block.Data.Data {
-		env, err := utils.GetEnvelopeFromBlock(envBytes)
-		if err != nil {
-			return nil, err
-		}
-		payload, err := utils.GetPayload(env)
-		if err != nil {
-			return nil, err
-		}
-		chdr, err := utils.UnmarshalChannelHeader(payload.Header.ChannelHeader)
-		if err != nil {
-			return nil, err
-		}
-		pvtEndorsement, err := transientStore.GetSelfSimulatedTxPvtRWSetByTxid(chdr.TxId)
-		if err != nil {
-			return nil, err
-		}
-		if pvtEndorsement == nil {
-			continue
-		}
-		txPvtRWSet := &rwset.TxPvtReadWriteSet{}
-		if err := proto.Unmarshal(pvtEndorsement.PvtSimulationResults, txPvtRWSet); err != nil {
-			return nil, err
-		}
-		seqInBlock := uint64(txIndex)
-		pvtdata[seqInBlock] = &ledger.TxPvtData{SeqInBlock: seqInBlock, WriteSet: txPvtRWSet}
+type blocksItr struct {
+	blockAPIsRWLock *sync.RWMutex
+	blocksItr       commonledger.ResultsIterator
+}
+
+func (itr *blocksItr) Next() (commonledger.QueryResult, error) {
+	block, err := itr.blocksItr.Next()
+	if err != nil {
+		return nil, err
 	}
-	return pvtdata, nil
+	itr.blockAPIsRWLock.RLock()
+	itr.blockAPIsRWLock.RUnlock()
+	return block, nil
+}
+
+func (itr *blocksItr) Close() {
+	itr.blocksItr.Close()
 }

@@ -7,19 +7,18 @@ SPDX-License-Identifier: Apache-2.0
 package idemix
 
 import (
+	"bytes"
 	"testing"
 
-	"bytes"
-
-	amcl "github.com/manudrijvers/amcl/go"
+	"github.com/milagro-crypto/amcl/version3/go/amcl/FP256BN"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestIdemix(t *testing.T) {
 	AttributeNames := []string{"Attr1", "Attr2", "Attr3", "Attr4", "Attr5"}
-	attrs := make([]*amcl.BIG, len(AttributeNames))
+	attrs := make([]*FP256BN.BIG, len(AttributeNames))
 	for i := range AttributeNames {
-		attrs[i] = amcl.NewBIGint(i)
+		attrs[i] = FP256BN.NewBIGint(i)
 	}
 
 	// Test issuer key generation
@@ -77,7 +76,7 @@ func TestIdemix(t *testing.T) {
 	assert.NoError(t, cred.Ver(sk, key.IPk), "credential should be valid")
 
 	// Issuing a credential with the incorrect amount of attributes should fail
-	_, err = NewCredential(key, m, []*amcl.BIG{}, rng)
+	_, err = NewCredential(key, m, []*FP256BN.BIG{}, rng)
 	assert.Error(t, err, "issuing a credential with the incorrect amount of attributes should fail")
 
 	// Breaking the ZK proof of the CredRequest should make it invalid
@@ -101,7 +100,8 @@ func TestIdemix(t *testing.T) {
 
 	disclosure := []byte{0, 0, 0, 0, 0}
 	msg := []byte{1, 2, 3, 4, 5}
-	sig := NewSignature(cred, sk, Nym, RandNym, key.IPk, disclosure, msg, rng)
+	sig, err := NewSignature(cred, sk, Nym, RandNym, key.IPk, disclosure, msg, rng)
+	assert.NoError(t, err)
 
 	err = sig.Ver(disclosure, key.IPk, msg, nil)
 	if err != nil {
@@ -111,11 +111,22 @@ func TestIdemix(t *testing.T) {
 
 	// Test signing selective disclosure
 	disclosure = []byte{0, 1, 1, 1, 1}
-	sig = NewSignature(cred, sk, Nym, RandNym, key.IPk, disclosure, msg, rng)
+	sig, err = NewSignature(cred, sk, Nym, RandNym, key.IPk, disclosure, msg, rng)
+	assert.NoError(t, err)
 
 	err = sig.Ver(disclosure, key.IPk, msg, attrs)
 	if err != nil {
 		t.Fatalf("Signature should be valid but verification returned error: %s", err)
+		return
+	}
+
+	// Test NymSignatures
+	nymsig, err := NewNymSignature(sk, Nym, RandNym, key.IPk, []byte("testing"), rng)
+	assert.NoError(t, err)
+
+	err = nymsig.Ver(Nym, key.IPk, []byte("testing"))
+	if err != nil {
+		t.Fatalf("NymSig should be valid but verification returned error: %s", err)
 		return
 	}
 }

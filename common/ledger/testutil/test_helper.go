@@ -96,7 +96,7 @@ func ConstructTransaction(_ *testing.T, simulationResults []byte, txid string, s
 	if sign {
 		txEnv, txID, err = ptestutils.ConstructSingedTxEnvWithDefaultSigner(util.GetTestChainID(), ccid, nil, simulationResults, txid, nil, nil)
 	} else {
-		txEnv, txID, err = ptestutils.ConstructUnsingedTxEnv(util.GetTestChainID(), ccid, nil, simulationResults, txid, nil, nil)
+		txEnv, txID, err = ptestutils.ConstructUnsignedTxEnv(util.GetTestChainID(), ccid, nil, simulationResults, txid, nil, nil)
 	}
 	return txEnv, txID, err
 }
@@ -110,7 +110,7 @@ func ConstructBlockWithTxid(t *testing.T, blockNum uint64, previousHash []byte, 
 		}
 		envs = append(envs, env)
 	}
-	return newBlock(envs, blockNum, previousHash)
+	return NewBlock(envs, blockNum, previousHash)
 }
 
 // ConstructBlock constructs a single block
@@ -123,7 +123,7 @@ func ConstructBlock(t *testing.T, blockNum uint64, previousHash []byte, simulati
 		}
 		envs = append(envs, env)
 	}
-	return newBlock(envs, blockNum, previousHash)
+	return NewBlock(envs, blockNum, previousHash)
 }
 
 //ConstructTestBlock constructs a single block with random contents
@@ -152,10 +152,10 @@ func ConstructBytesProposalResponsePayload(version string, simulationResults []b
 		Name:    "foo",
 		Version: version,
 	}
-	return ptestutils.ConstractBytesProposalResponsePayload(util.GetTestChainID(), ccid, nil, simulationResults)
+	return ptestutils.ConstructBytesProposalResponsePayload(util.GetTestChainID(), ccid, nil, simulationResults)
 }
 
-func newBlock(env []*common.Envelope, blockNum uint64, previousHash []byte) *common.Block {
+func NewBlock(env []*common.Envelope, blockNum uint64, previousHash []byte) *common.Block {
 	block := common.NewBlock(blockNum, previousHash)
 	for i := 0; i < len(env); i++ {
 		txEnvBytes, _ := proto.Marshal(env[i])

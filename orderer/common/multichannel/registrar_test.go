@@ -12,21 +12,23 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
-	channelconfig "github.com/hyperledger/fabric/common/config/channel"
 	"github.com/hyperledger/fabric/common/crypto"
+	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric/common/ledger/blockledger"
+	ramledger "github.com/hyperledger/fabric/common/ledger/blockledger/ram"
+	mockchannelconfig "github.com/hyperledger/fabric/common/mocks/config"
 	mockcrypto "github.com/hyperledger/fabric/common/mocks/crypto"
+	mockpolicies "github.com/hyperledger/fabric/common/mocks/policies"
+	"github.com/hyperledger/fabric/common/tools/configtxgen/encoder"
 	genesisconfig "github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
-	"github.com/hyperledger/fabric/common/tools/configtxgen/provisional"
 	"github.com/hyperledger/fabric/msp"
-	"github.com/hyperledger/fabric/orderer/common/ledger"
-	ramledger "github.com/hyperledger/fabric/orderer/common/ledger/ram"
 	"github.com/hyperledger/fabric/orderer/consensus"
 	cb "github.com/hyperledger/fabric/protos/common"
 	ab "github.com/hyperledger/fabric/protos/orderer"
 	"github.com/hyperledger/fabric/protos/utils"
 
 	mmsp "github.com/hyperledger/fabric/common/mocks/msp"
-	logging "github.com/op/go-logging"
+	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -37,20 +39,20 @@ var mockSigningIdentity msp.SigningIdentity
 const NoConsortiumChain = "no-consortium-chain"
 
 func init() {
-	logging.SetLevel(logging.DEBUG, "")
+	flogging.SetModuleLevel(pkgLogID, "DEBUG")
 	mockSigningIdentity, _ = mmsp.NewNoopMsp().GetDefaultSigningIdentity()
 
-	conf = genesisconfig.Load(genesisconfig.SampleInsecureProfile)
-	genesisBlock = provisional.New(conf).GenesisBlock()
+	conf = genesisconfig.Load(genesisconfig.SampleInsecureSoloProfile)
+	genesisBlock = encoder.New(conf).GenesisBlock()
 }
 
 func mockCrypto() crypto.LocalSigner {
 	return mockcrypto.FakeLocalSigner
 }
 
-func NewRAMLedgerAndFactory(maxSize int) (ledger.Factory, ledger.ReadWriter) {
+func NewRAMLedgerAndFactory(maxSize int) (blockledger.Factory, blockledger.ReadWriter) {
 	rlf := ramledger.New(10)
-	rl, err := rlf.GetOrCreate(provisional.TestChainID)
+	rl, err := rlf.GetOrCreate(genesisconfig.TestChainID)
 	if err != nil {
 		panic(err)
 	}
@@ -61,7 +63,7 @@ func NewRAMLedgerAndFactory(maxSize int) (ledger.Factory, ledger.ReadWriter) {
 	return rlf, rl
 }
 
-func NewRAMLedger(maxSize int) ledger.ReadWriter {
+func NewRAMLedger(maxSize int) blockledger.ReadWriter {
 	_, rl := NewRAMLedgerAndFactory(maxSize)
 	return rl
 }
@@ -70,13 +72,13 @@ func NewRAMLedger(maxSize int) ledger.ReadWriter {
 func TestGetConfigTx(t *testing.T) {
 	rl := NewRAMLedger(10)
 	for i := 0; i < 5; i++ {
-		rl.Append(ledger.CreateNextBlock(rl, []*cb.Envelope{makeNormalTx(provisional.TestChainID, i)}))
+		rl.Append(blockledger.CreateNextBlock(rl, []*cb.Envelope{makeNormalTx(genesisconfig.TestChainID, i)}))
 	}
-	rl.Append(ledger.CreateNextBlock(rl, []*cb.Envelope{makeConfigTx(provisional.TestChainID, 5)}))
-	ctx := makeConfigTx(provisional.TestChainID, 6)
-	rl.Append(ledger.CreateNextBlock(rl, []*cb.Envelope{ctx}))
+	rl.Append(blockledger.CreateNextBlock(rl, []*cb.Envelope{makeConfigTx(genesisconfig.TestChainID, 5)}))
+	ctx := makeConfigTx(genesisconfig.TestChainID, 6)
+	rl.Append(blockledger.CreateNextBlock(rl, []*cb.Envelope{ctx}))
 
-	block := ledger.CreateNextBlock(rl, []*cb.Envelope{makeNormalTx(provisional.TestChainID, 7)})
+	block := blockledger.CreateNextBlock(rl, []*cb.Envelope{makeNormalTx(genesisconfig.TestChainID, 7)})
 	block.Metadata.Metadata[cb.BlockMetadataIndex_LAST_CONFIG] = utils.MarshalOrPanic(&cb.Metadata{Value: utils.MarshalOrPanic(&cb.LastConfig{Index: 7})})
 	rl.Append(block)
 
@@ -88,15 +90,15 @@ func TestGetConfigTx(t *testing.T) {
 func TestGetConfigTxFailure(t *testing.T) {
 	rl := NewRAMLedger(10)
 	for i := 0; i < 10; i++ {
-		rl.Append(ledger.CreateNextBlock(rl, []*cb.Envelope{
-			makeNormalTx(provisional.TestChainID, i),
-			makeConfigTx(provisional.TestChainID, i),
+		rl.Append(blockledger.CreateNextBlock(rl, []*cb.Envelope{
+			makeNormalTx(genesisconfig.TestChainID, i),
+			makeConfigTx(genesisconfig.TestChainID, i),
 		}))
 	}
-	rl.Append(ledger.CreateNextBlock(rl, []*cb.Envelope{makeNormalTx(provisional.TestChainID, 11)}))
+	rl.Append(blockledger.CreateNextBlock(rl, []*cb.Envelope{makeNormalTx(genesisconfig.TestChainID, 11)}))
 	assert.Panics(t, func() { getConfigTx(rl) }, "Should have panicked because there was no config tx")
 
-	block := ledger.CreateNextBlock(rl, []*cb.Envelope{makeNormalTx(provisional.TestChainID, 12)})
+	block := blockledger.CreateNextBlock(rl, []*cb.Envelope{makeNormalTx(genesisconfig.TestChainID, 12)})
 	block.Metadata.Metadata[cb.BlockMetadataIndex_LAST_CONFIG] = []byte("bad metadata")
 	assert.Panics(t, func() { getConfigTx(rl) }, "Should have panicked because of bad last config metadata")
 }
@@ -119,7 +121,7 @@ func TestMultiSystemChannel(t *testing.T) {
 		rl, err := lf.GetOrCreate(id)
 		assert.NoError(t, err)
 
-		err = rl.Append(provisional.New(conf).GenesisBlockForChannel(id))
+		err = rl.Append(encoder.New(conf).GenesisBlockForChannel(id))
 		assert.NoError(t, err)
 	}
 
@@ -141,12 +143,12 @@ func TestManagerImpl(t *testing.T) {
 	_, ok := manager.GetChain("Fake")
 	assert.False(t, ok, "Should not have found a chain that was not created")
 
-	chainSupport, ok := manager.GetChain(provisional.TestChainID)
+	chainSupport, ok := manager.GetChain(genesisconfig.TestChainID)
 	assert.True(t, ok, "Should have gotten chain which was initialized by ramledger")
 
 	messages := make([]*cb.Envelope, conf.Orderer.BatchSize.MaxMessageCount)
 	for i := 0; i < int(conf.Orderer.BatchSize.MaxMessageCount); i++ {
-		messages[i] = makeNormalTx(provisional.TestChainID, i)
+		messages[i] = makeNormalTx(genesisconfig.TestChainID, i)
 	}
 
 	for _, message := range messages {
@@ -179,14 +181,15 @@ func TestNewChain(t *testing.T) {
 	consenters[conf.Orderer.OrdererType] = &mockConsenter{}
 
 	manager := NewRegistrar(lf, consenters, mockCrypto())
-
-	envConfigUpdate, err := channelconfig.MakeChainCreationTransaction(newChainID, genesisconfig.SampleConsortiumName, mockSigningIdentity)
+	orglessChannelConf := genesisconfig.Load(genesisconfig.SampleSingleMSPChannelProfile)
+	orglessChannelConf.Application.Organizations = nil
+	envConfigUpdate, err := encoder.MakeChannelCreationTransaction(newChainID, mockCrypto(), nil, orglessChannelConf)
 	assert.NoError(t, err, "Constructing chain creation tx")
 
-	cm, err := manager.NewChannelConfig(envConfigUpdate)
+	res, err := manager.NewChannelConfig(envConfigUpdate)
 	assert.NoError(t, err, "Constructing initial channel config")
 
-	configEnv, err := cm.ProposeConfigUpdate(envConfigUpdate)
+	configEnv, err := res.ConfigtxValidator().ProposeConfigUpdate(envConfigUpdate)
 	assert.NoError(t, err, "Proposing initial update")
 	assert.Equal(t, expectedLastConfigSeq, configEnv.GetConfig().Sequence, "Sequence of config envelope for new channel should always be set to %d", expectedLastConfigSeq)
 
@@ -198,7 +201,7 @@ func TestNewChain(t *testing.T) {
 	chainSupport, ok := manager.GetChain(manager.SystemChannelID())
 	assert.True(t, ok, "Could not find system channel")
 
-	chainSupport.Configure(wrapped, wrapped, 0)
+	chainSupport.Configure(wrapped, 0)
 	func() {
 		it, _ := rl.Iterator(&ab.SeekPosition{Type: &ab.SeekPosition_Specified{Specified: &ab.SeekSpecified{Number: 1}}})
 		defer it.Close()
@@ -279,4 +282,68 @@ func testLastConfigBlockNumber(t *testing.T, block *cb.Block, expectedBlockNumbe
 	err = proto.Unmarshal(metadataItem.Value, lastConfig)
 	assert.NoError(t, err, "LAST_CONFIG metadata item should carry last config value")
 	assert.Equal(t, expectedBlockNumber, lastConfig.Index, "LAST_CONFIG value should point to last config block")
+}
+
+func TestResourcesCheck(t *testing.T) {
+	t.Run("GoodResources", func(t *testing.T) {
+		err := checkResources(&mockchannelconfig.Resources{
+			PolicyManagerVal: &mockpolicies.Manager{},
+			OrdererConfigVal: &mockchannelconfig.Orderer{
+				CapabilitiesVal: &mockchannelconfig.OrdererCapabilities{},
+			},
+			ChannelConfigVal: &mockchannelconfig.Channel{
+				CapabilitiesVal: &mockchannelconfig.ChannelCapabilities{},
+			},
+		})
+
+		assert.NoError(t, err)
+	})
+
+	t.Run("MissingOrdererConfigPanic", func(t *testing.T) {
+		err := checkResources(&mockchannelconfig.Resources{
+			PolicyManagerVal: &mockpolicies.Manager{},
+		})
+
+		assert.Error(t, err)
+		assert.Regexp(t, "config does not contain orderer config", err.Error())
+	})
+
+	t.Run("MissingOrdererCapability", func(t *testing.T) {
+		err := checkResources(&mockchannelconfig.Resources{
+			PolicyManagerVal: &mockpolicies.Manager{},
+			OrdererConfigVal: &mockchannelconfig.Orderer{
+				CapabilitiesVal: &mockchannelconfig.OrdererCapabilities{
+					SupportedErr: errors.New("An error"),
+				},
+			},
+		})
+
+		assert.Error(t, err)
+		assert.Regexp(t, "config requires unsupported orderer capabilities:", err.Error())
+	})
+
+	t.Run("MissingChannelCapability", func(t *testing.T) {
+		err := checkResources(&mockchannelconfig.Resources{
+			PolicyManagerVal: &mockpolicies.Manager{},
+			OrdererConfigVal: &mockchannelconfig.Orderer{
+				CapabilitiesVal: &mockchannelconfig.OrdererCapabilities{},
+			},
+			ChannelConfigVal: &mockchannelconfig.Channel{
+				CapabilitiesVal: &mockchannelconfig.ChannelCapabilities{
+					SupportedErr: errors.New("An error"),
+				},
+			},
+		})
+
+		assert.Error(t, err)
+		assert.Regexp(t, "config requires unsupported channel capabilities:", err.Error())
+	})
+
+	t.Run("MissingOrdererConfigPanic", func(t *testing.T) {
+		assert.Panics(t, func() {
+			checkResourcesOrPanic(&mockchannelconfig.Resources{
+				PolicyManagerVal: &mockpolicies.Manager{},
+			})
+		})
+	})
 }

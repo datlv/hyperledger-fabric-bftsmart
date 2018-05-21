@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package localconfig
@@ -23,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/common/viperutil"
 	logging "github.com/op/go-logging"
 
@@ -31,6 +22,7 @@ import (
 	"path/filepath"
 
 	cf "github.com/hyperledger/fabric/core/config"
+	"github.com/hyperledger/fabric/msp"
 )
 
 const (
@@ -54,14 +46,35 @@ func init() {
 }
 
 const (
-	// SampleInsecureProfile references the sample profile which does not include any MSPs and uses solo for ordering.
-	SampleInsecureProfile = "SampleInsecureSolo"
+	// TestChainID is the channel name used for testing purposes when one is not given
+	TestChainID = "testchainid"
+
+	// SampleInsecureSoloProfile references the sample profile which does not include any MSPs and uses solo for ordering.
+	SampleInsecureSoloProfile = "SampleInsecureSolo"
+	// SampleDevModeSoloProfile references the sample profile which requires only basic membership for admin privileges and uses solo for ordering.
+	SampleDevModeSoloProfile = "SampleDevModeSolo"
+	// SampleDevModeSoloProfileV11 references the sample profile which requires only basic membership for admin privileges and uses solo for ordering, but has v1.1 capabilities enabled
+	SampleDevModeSoloV11Profile = "SampleDevModeSoloV1_1"
 	// SampleSingleMSPSoloProfile references the sample profile which includes only the sample MSP and uses solo for ordering.
 	SampleSingleMSPSoloProfile = "SampleSingleMSPSolo"
+	// SampleSingleMSPSoloV11Profile references the sample profile which includes only the sample MSP with v1.1 capabilities defined and uses solo for ordering.
+	SampleSingleMSPSoloV11Profile = "SampleSingleMSPSoloV1_1"
+
+	// SampleInsecureKafkaProfile references the sample profile which does not include any MSPs and uses Kafka for ordering.
+	SampleInsecureKafkaProfile = "SampleInsecureKafka"
+	// SampleDevModeKafkaProfile references the sample profile which requires only basic membership for admin privileges and uses Kafka for ordering.
+	SampleDevModeKafkaProfile = "SampleDevModeKafka"
+	// SampleDevModeKafkaProfileV11 references the sample profile which requires only basic membership for admin privileges and uses Kafka for ordering, but has v1.1 capabilities enabled.
+	SampleDevModeKafkaV11Profile = "SampleDevModeKafkaV1_1"
+	// SampleSingleMSPKafkaProfile references the sample profile which includes only the sample MSP and uses Kafka for ordering.
+	SampleSingleMSPKafkaProfile = "SampleSingleMSPKafka"
+	// SampleSingleMSPKafkaV11Profile references the sample profile which includes only the sample MSP with v1.1 capabilities defined and uses Kafka for ordering.
+	SampleSingleMSPKafkaV11Profile = "SampleSingleMSPKafkaV1_1"
+
 	// SampleSingleMSPChannelProfile references the sample profile which includes only the sample MSP and is used to create a channel
 	SampleSingleMSPChannelProfile = "SampleSingleMSPChannel"
-	// SampleDevModeSolo references the sample profile which requires only basic membership for admin privileges and uses solo for ordering
-	SampleDevModeSolo = "SampleDevModeSolo"
+	// SampleSingleMSPChannelV11Profile references the sample profile which includes only the sample MSP with v1.1 capabilities and is used to create a channel
+	SampleSingleMSPChannelV11Profile = "SampleSingleMSPChannelV1_1"
 
 	//JCS: my options
 	// SampleInsecureBFTsmartProfile references the sample profile which does not include any MSPs and uses BFT-SMaRt for ordering.
@@ -82,18 +95,21 @@ const (
 
 // TopLevel consists of the structs used by the configtxgen tool.
 type TopLevel struct {
-	Profiles      map[string]*Profile `yaml:"Profiles"`
-	Organizations []*Organization     `yaml:"Organizations"`
-	Application   *Application        `yaml:"Application"`
-	Orderer       *Orderer            `yaml:"Orderer"`
+	Profiles      map[string]*Profile        `yaml:"Profiles"`
+	Organizations []*Organization            `yaml:"Organizations"`
+	Application   *Application               `yaml:"Application"`
+	Orderer       *Orderer                   `yaml:"Orderer"`
+	Capabilities  map[string]map[string]bool `yaml:"Capabilities"`
+	Resources     *Resources                 `yaml:"Resources"`
 }
 
 // Profile encodes orderer/application configuration combinations for the configtxgen tool.
 type Profile struct {
-	Consortium  string                 `yaml:"Consortium"`
-	Application *Application           `yaml:"Application"`
-	Orderer     *Orderer               `yaml:"Orderer"`
-	Consortiums map[string]*Consortium `yaml:"Consortiums"`
+	Consortium   string                 `yaml:"Consortium"`
+	Application  *Application           `yaml:"Application"`
+	Orderer      *Orderer               `yaml:"Orderer"`
+	Consortiums  map[string]*Consortium `yaml:"Consortiums"`
+	Capabilities map[string]bool        `yaml:"Capabilities"`
 }
 
 // Consortium represents a group of organizations which may create channels with eachother
@@ -104,6 +120,13 @@ type Consortium struct {
 // Application encodes the application-level configuration needed in config transactions.
 type Application struct {
 	Organizations []*Organization `yaml:"Organizations"`
+	Capabilities  map[string]bool `yaml:"Capabilities"`
+	Resources     *Resources      `yaml:"Resources"`
+}
+
+// Resouces encodes the application-level resources configuration needed to seed the resource tree
+type Resources struct {
+	DefaultModPolicy string
 }
 
 // Organization encodes the organization-level configuration needed in config transactions.
@@ -111,6 +134,7 @@ type Organization struct {
 	Name           string `yaml:"Name"`
 	ID             string `yaml:"ID"`
 	MSPDir         string `yaml:"MSPDir"`
+	MSPType        string `yaml:"MSPType"`
 	AdminPrincipal string `yaml:"AdminPrincipal"`
 
 	// Note: Viper deserialization does not seem to care for
@@ -125,12 +149,6 @@ type AnchorPeer struct {
 	Port int    `yaml:"Port"`
 }
 
-// ApplicationOrganization ...
-// TODO This should probably be removed
-type ApplicationOrganization struct {
-	Organization `yaml:"Organization"`
-}
-
 // Orderer contains configuration which is used for the
 // bootstrapping of an orderer by the provisional bootstrapper.
 type Orderer struct {
@@ -142,6 +160,7 @@ type Orderer struct {
 	BFTsmart      BFTsmart        `yaml:"BFTsmart"` //JCS: my own options
 	Organizations []*Organization `yaml:"Organizations"`
 	MaxChannels   uint64          `yaml:"MaxChannels"`
+	Capabilities  map[string]bool `yaml:"Capabilities"`
 }
 
 // BatchSize contains configuration affecting the size of batches.
@@ -182,6 +201,40 @@ var genesisDefaults = TopLevel{
 	},
 }
 
+// LoadTopLevel simply loads the configtx.yaml file into the structs above
+// and completes their initialization.  Note, for environment overrides to work properly
+// within a profile, Load(profile string) should be called when attempting to work within
+// a particular profile.
+func LoadTopLevel() *TopLevel {
+	config := viper.New()
+	cf.InitViper(config, configName)
+
+	// For environment variables
+	config.SetEnvPrefix(Prefix)
+	config.AutomaticEnv()
+
+	replacer := strings.NewReplacer(".", "_")
+	config.SetEnvKeyReplacer(replacer)
+
+	err := config.ReadInConfig()
+	if err != nil {
+		logger.Panic("Error reading configuration: ", err)
+	}
+	logger.Debugf("Using config file: %s", config.ConfigFileUsed())
+
+	var uconf TopLevel
+	err = viperutil.EnhancedExactUnmarshal(config, &uconf)
+	if err != nil {
+		logger.Panic("Error unmarshaling config into struct: ", err)
+	}
+
+	(&uconf).completeInitialization(filepath.Dir(config.ConfigFileUsed()))
+
+	logger.Infof("Loaded configuration: %s", config.ConfigFileUsed())
+
+	return &uconf
+}
+
 // Load returns the orderer/application config combination that corresponds to a given profile.
 func Load(profile string) *Profile {
 	config := viper.New()
@@ -190,6 +243,7 @@ func Load(profile string) *Profile {
 	// For environment variables
 	config.SetEnvPrefix(Prefix)
 	config.AutomaticEnv()
+
 	// This replacer allows substitution within the particular profile without having to fully qualify the name
 	replacer := strings.NewReplacer(strings.ToUpper(fmt.Sprintf("profiles.%s.", profile)), "", ".", "_")
 	config.SetEnvKeyReplacer(replacer)
@@ -218,72 +272,99 @@ func Load(profile string) *Profile {
 	return result
 }
 
+func (t *TopLevel) completeInitialization(configDir string) {
+	for _, org := range t.Organizations {
+		org.completeInitialization(configDir)
+	}
+
+	if t.Orderer != nil {
+		t.Orderer.completeInitialization()
+	}
+}
+
 func (p *Profile) completeInitialization(configDir string) {
 	if p.Orderer != nil {
 		for _, org := range p.Orderer.Organizations {
-			if org.AdminPrincipal == "" {
-				org.AdminPrincipal = AdminRoleAdminPrincipal
-			}
-			translatePaths(configDir, org)
+			org.completeInitialization(configDir)
 		}
 	}
 
 	if p.Application != nil {
 		for _, org := range p.Application.Organizations {
-			if org.AdminPrincipal == "" {
-				org.AdminPrincipal = AdminRoleAdminPrincipal
-			}
-			translatePaths(configDir, org)
+			org.completeInitialization(configDir)
+		}
+		if p.Application.Resources != nil {
+			p.Application.Resources.completeInitialization()
 		}
 	}
 
 	if p.Consortiums != nil {
 		for _, consortium := range p.Consortiums {
 			for _, org := range consortium.Organizations {
-				if org.AdminPrincipal == "" {
-					org.AdminPrincipal = AdminRoleAdminPrincipal
-				}
-				translatePaths(configDir, org)
+				org.completeInitialization(configDir)
 			}
 		}
 	}
 
 	// Some profiles will not define orderer parameters
-	if p.Orderer == nil {
-		return
+	if p.Orderer != nil {
+		p.Orderer.completeInitialization()
 	}
+}
 
+func (r *Resources) completeInitialization() {
 	for {
 		switch {
-		case p.Orderer.OrdererType == "":
+		case r.DefaultModPolicy == "":
+			r.DefaultModPolicy = policies.ChannelApplicationAdmins
+		default:
+			return
+		}
+	}
+}
+
+func (org *Organization) completeInitialization(configDir string) {
+	// set the MSP type; if none is specified we assume BCCSP
+	if org.MSPType == "" {
+		org.MSPType = msp.ProviderTypeToString(msp.FABRIC)
+	}
+
+	if org.AdminPrincipal == "" {
+		org.AdminPrincipal = AdminRoleAdminPrincipal
+	}
+	translatePaths(configDir, org)
+}
+
+func (oc *Orderer) completeInitialization() {
+	for {
+		switch {
+		case oc.OrdererType == "":
 			logger.Infof("Orderer.OrdererType unset, setting to %s", genesisDefaults.Orderer.OrdererType)
-			p.Orderer.OrdererType = genesisDefaults.Orderer.OrdererType
-		case p.Orderer.Addresses == nil:
+			oc.OrdererType = genesisDefaults.Orderer.OrdererType
+		case oc.Addresses == nil:
 			logger.Infof("Orderer.Addresses unset, setting to %s", genesisDefaults.Orderer.Addresses)
-			p.Orderer.Addresses = genesisDefaults.Orderer.Addresses
-		case p.Orderer.BatchTimeout == 0:
+			oc.Addresses = genesisDefaults.Orderer.Addresses
+		case oc.BatchTimeout == 0:
 			logger.Infof("Orderer.BatchTimeout unset, setting to %s", genesisDefaults.Orderer.BatchTimeout)
-			p.Orderer.BatchTimeout = genesisDefaults.Orderer.BatchTimeout
-		case p.Orderer.BatchSize.MaxMessageCount == 0:
+			oc.BatchTimeout = genesisDefaults.Orderer.BatchTimeout
+		case oc.BatchSize.MaxMessageCount == 0:
 			logger.Infof("Orderer.BatchSize.MaxMessageCount unset, setting to %s", genesisDefaults.Orderer.BatchSize.MaxMessageCount)
-			p.Orderer.BatchSize.MaxMessageCount = genesisDefaults.Orderer.BatchSize.MaxMessageCount
-		case p.Orderer.BatchSize.AbsoluteMaxBytes == 0:
+			oc.BatchSize.MaxMessageCount = genesisDefaults.Orderer.BatchSize.MaxMessageCount
+		case oc.BatchSize.AbsoluteMaxBytes == 0:
 			logger.Infof("Orderer.BatchSize.AbsoluteMaxBytes unset, setting to %s", genesisDefaults.Orderer.BatchSize.AbsoluteMaxBytes)
-			p.Orderer.BatchSize.AbsoluteMaxBytes = genesisDefaults.Orderer.BatchSize.AbsoluteMaxBytes
-		case p.Orderer.BatchSize.PreferredMaxBytes == 0:
+			oc.BatchSize.AbsoluteMaxBytes = genesisDefaults.Orderer.BatchSize.AbsoluteMaxBytes
+		case oc.BatchSize.PreferredMaxBytes == 0:
 			logger.Infof("Orderer.BatchSize.PreferredMaxBytes unset, setting to %s", genesisDefaults.Orderer.BatchSize.PreferredMaxBytes)
-			p.Orderer.BatchSize.PreferredMaxBytes = genesisDefaults.Orderer.BatchSize.PreferredMaxBytes
-		case p.Orderer.Kafka.Brokers == nil:
+			oc.BatchSize.PreferredMaxBytes = genesisDefaults.Orderer.BatchSize.PreferredMaxBytes
+		case oc.Kafka.Brokers == nil:
 			logger.Infof("Orderer.Kafka.Brokers unset, setting to %v", genesisDefaults.Orderer.Kafka.Brokers)
-			p.Orderer.Kafka.Brokers = genesisDefaults.Orderer.Kafka.Brokers
-
-		case p.Orderer.BFTsmart.ConnectionPoolSize == 0: //JCS: my own options
+			oc.Kafka.Brokers = genesisDefaults.Orderer.Kafka.Brokers
+		case oc.BFTsmart.ConnectionPoolSize == 0: //JCS: my own options
 			logger.Infof("BFTsmart.ConnectionPoolSize unset, setting to %v", genesisDefaults.Orderer.BFTsmart.ConnectionPoolSize)
-			p.Orderer.BFTsmart.ConnectionPoolSize = genesisDefaults.Orderer.BFTsmart.ConnectionPoolSize
-		case p.Orderer.BFTsmart.RecvPort == 0: //JCS: my own options
+			oc.BFTsmart.ConnectionPoolSize = genesisDefaults.Orderer.BFTsmart.ConnectionPoolSize
+		case oc.BFTsmart.RecvPort == 0: //JCS: my own options
 			logger.Infof("BFTsmart.RecvPort unset, setting to %v", genesisDefaults.Orderer.BFTsmart.RecvPort)
-			p.Orderer.BFTsmart.RecvPort = genesisDefaults.Orderer.BFTsmart.RecvPort
-
+			oc.BFTsmart.RecvPort = genesisDefaults.Orderer.BFTsmart.RecvPort
 		default:
 			return
 		}

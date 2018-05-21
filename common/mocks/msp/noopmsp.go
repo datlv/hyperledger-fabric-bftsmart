@@ -35,6 +35,10 @@ func (msp *noopmsp) Setup(*msp.MSPConfig) error {
 	return nil
 }
 
+func (msp *noopmsp) GetVersion() m.MSPVersion {
+	return m.MSPv1_0
+}
+
 func (msp *noopmsp) GetType() m.ProviderType {
 	return 0
 }
@@ -83,6 +87,11 @@ func (msp *noopmsp) Validate(id m.Identity) error {
 }
 
 func (msp *noopmsp) SatisfiesPrincipal(id m.Identity, principal *msp.MSPPrincipal) error {
+	return nil
+}
+
+// IsWellFormed checks if the given identity can be deserialized into its provider-specific form
+func (msp *noopmsp) IsWellFormed(_ *msp.SerializedIdentity) error {
 	return nil
 }
 

@@ -109,3 +109,24 @@ func TestGetStateMultipleKeys(t *testing.T) {
 	defer env.Cleanup()
 	commontests.TestGetStateMultipleKeys(t, env.DBProvider)
 }
+
+func TestGetVersion(t *testing.T) {
+	env := NewTestVDBEnv(t)
+	defer env.Cleanup()
+	commontests.TestGetVersion(t, env.DBProvider)
+}
+
+func TestUtilityFunctions(t *testing.T) {
+	env := NewTestVDBEnv(t)
+	defer env.Cleanup()
+
+	db, err := env.DBProvider.GetDBHandle("testutilityfunctions")
+	testutil.AssertNoError(t, err, "")
+
+	// BytesKeySuppoted should be true for goleveldb
+	byteKeySupported := db.BytesKeySuppoted()
+	testutil.AssertEquals(t, byteKeySupported, true)
+
+	// ValidateKeyValue should return nil for a valid key and value
+	testutil.AssertNoError(t, db.ValidateKeyValue("testKey", []byte("testValue")), "leveldb should accept all key-values")
+}

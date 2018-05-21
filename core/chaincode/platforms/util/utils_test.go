@@ -39,6 +39,9 @@ import (
 
 // TestHashContentChange changes a random byte in a content and checks for hash change
 func TestHashContentChange(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping TestHashContentChange")
+	}
 	b := []byte("firstcontent")
 	hash := util.ComputeSHA256(b)
 
@@ -74,6 +77,9 @@ func TestHashContentChange(t *testing.T) {
 
 // TestHashLenChange changes a random length of a content and checks for hash change
 func TestHashLenChange(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping TestHashLenChange")
+	}
 	b := []byte("firstcontent")
 	hash := util.ComputeSHA256(b)
 
@@ -96,6 +102,9 @@ func TestHashLenChange(t *testing.T) {
 
 // TestHashOrderChange changes a order of hash computation over a list of lines and checks for hash change
 func TestHashOrderChange(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping TestHashOrderChange")
+	}
 	b := []byte("firstcontent")
 	hash := util.ComputeSHA256(b)
 
@@ -145,6 +154,9 @@ func TestHashOrderChange(t *testing.T) {
 
 // TestHashOverFiles computes hash over a directory and ensures it matches precomputed, hardcoded, hash
 func TestHashOverFiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping TestHashOverFiles")
+	}
 	b := []byte("firstcontent")
 	hash := util.ComputeSHA256(b)
 
@@ -166,6 +178,9 @@ func TestHashOverFiles(t *testing.T) {
 }
 
 func TestHashDiffDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping TestHashDiffDir")
+	}
 	b := []byte("firstcontent")
 	hash := util.ComputeSHA256(b)
 
@@ -183,6 +198,9 @@ func TestHashDiffDir(t *testing.T) {
 }
 
 func TestHashSameDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping TestHashSameDir")
+	}
 	assert := assert.New(t)
 
 	b := []byte("firstcontent")
@@ -207,6 +225,9 @@ func TestHashSameDir(t *testing.T) {
 }
 
 func TestHashBadWriter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping TestHashBadWriter")
+	}
 	b := []byte("firstcontent")
 	hash := util.ComputeSHA256(b)
 
@@ -227,10 +248,13 @@ func TestHashBadWriter(t *testing.T) {
 
 // TestHashNonExistentDir tests HashFilesInDir with non existant directory
 func TestHashNonExistentDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping TestHashNonExistentDir")
+	}
 	b := []byte("firstcontent")
 	hash := util.ComputeSHA256(b)
 	_, err := HashFilesInDir(".", "idontexist", hash, nil)
-	assert.Error(t, err, "Expected an error for non existent directory %s", "idontexist")
+	assert.Error(t, err, "Expected an error for non existent directory idontexist")
 }
 
 // TestIsCodeExist tests isCodeExist function
@@ -248,12 +272,12 @@ func TestIsCodeExist(t *testing.T) {
 	path = dir + "/blah"
 	err = IsCodeExist(path)
 	assert.Error(err,
-		"%s directory does not exist, IsCodeExist should have returned error", path)
+		fmt.Sprintf("%s directory does not exist, IsCodeExist should have returned error", path))
 
 	f := createTempFile(t)
 	defer os.Remove(f)
 	err = IsCodeExist(f)
-	assert.Error(err, "%s is a file, IsCodeExist should have returned error", f)
+	assert.Error(err, fmt.Sprintf("%s is a file, IsCodeExist should have returned error", f))
 }
 
 // TestDockerBuild tests DockerBuild function

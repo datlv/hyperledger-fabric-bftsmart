@@ -18,10 +18,13 @@ package producer
 
 import (
 	"fmt"
+	"math"
 	"strconv"
+	"time"
 
 	"github.com/golang/protobuf/proto"
 
+	"github.com/hyperledger/fabric/common/crypto"
 	"github.com/hyperledger/fabric/msp/mgmt"
 	pb "github.com/hyperledger/fabric/protos/peer"
 )
@@ -29,14 +32,15 @@ import (
 type handler struct {
 	ChatStream       pb.Events_ChatServer
 	interestedEvents map[string]*pb.Interest
+	sessionEndTime   time.Time
 }
 
-func newEventHandler(stream pb.Events_ChatServer) (*handler, error) {
+func newEventHandler(stream pb.Events_ChatServer) *handler {
 	d := &handler{
 		ChatStream: stream,
 	}
 	d.interestedEvents = make(map[string]*pb.Interest)
-	return d, nil
+	return d
 }
 
 // Stop stops this handler
@@ -51,6 +55,8 @@ func getInterestKey(interest pb.Interest) string {
 	switch interest.EventType {
 	case pb.EventType_BLOCK:
 		key = "/" + strconv.Itoa(int(pb.EventType_BLOCK))
+	case pb.EventType_FILTEREDBLOCK:
+		key = "/" + strconv.Itoa(int(pb.EventType_FILTEREDBLOCK))
 	case pb.EventType_REJECTION:
 		key = "/" + strconv.Itoa(int(pb.EventType_REJECTION))
 	case pb.EventType_CHAINCODE:
@@ -99,9 +105,9 @@ func (d *handler) deregisterAll() {
 
 // HandleMessage handles the Openchain messages for the Peer.
 func (d *handler) HandleMessage(msg *pb.SignedEvent) error {
-	evt, err := validateEventMessage(msg)
+	evt, err := d.validateEventMessage(msg)
 	if err != nil {
-		return fmt.Errorf("event message must be properly signed by an identity from the same organization as the peer: [%s]", err)
+		return fmt.Errorf("event message validation failed: [%s]", err)
 	}
 
 	switch evt.Event.(type) {
@@ -147,8 +153,8 @@ func (d *handler) SendMessage(msg *pb.Event) error {
 // However, this is not being done for v1.0 due to complexity concerns and the need to complex a stable,
 // minimally viable release. Eventually events will be made channel-specific, at which point this method
 // should be revisited
-func validateEventMessage(signedEvt *pb.SignedEvent) (*pb.Event, error) {
-	logger.Debugf("ValidateEventMessage starts for signed event %p", signedEvt)
+func (d *handler) validateEventMessage(signedEvt *pb.SignedEvent) (*pb.Event, error) {
+	logger.Debugf("validating for signed event %p", signedEvt)
 
 	// messages from the client for registering and unregistering must be signed
 	// and accompanied by the signing certificate in the "Creator" field
@@ -156,6 +162,27 @@ func validateEventMessage(signedEvt *pb.SignedEvent) (*pb.Event, error) {
 	err := proto.Unmarshal(signedEvt.EventBytes, evt)
 	if err != nil {
 		return nil, fmt.Errorf("error unmarshaling the event bytes in the SignedEvent: %s", err)
+	}
+
+	expirationTime := crypto.ExpiresAt(evt.Creator)
+	if !expirationTime.IsZero() && time.Now().After(expirationTime) {
+		return nil, fmt.Errorf("identity expired")
+	}
+	d.sessionEndTime = expirationTime
+
+	if evt.GetTimestamp() != nil {
+		evtTime := time.Unix(evt.GetTimestamp().Seconds, int64(evt.GetTimestamp().Nanos)).UTC()
+		peerTime := time.Now()
+
+		if math.Abs(float64(peerTime.UnixNano()-evtTime.UnixNano())) > float64(gEventProcessor.TimeWindow.Nanoseconds()) {
+			logger.Warningf("Message timestamp %s more than %s apart from current server time %s", evtTime, gEventProcessor.TimeWindow, peerTime)
+			return nil, fmt.Errorf("message timestamp out of acceptable range. must be within %s of current server time", gEventProcessor.TimeWindow)
+		}
+	}
+
+	err = gEventProcessor.BindingInspector(d.ChatStream.Context(), evt)
+	if err != nil {
+		return nil, err
 	}
 
 	localMSP := mgmt.GetLocalMSP()

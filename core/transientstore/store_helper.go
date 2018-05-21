@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2017 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package transientstore
@@ -25,59 +15,94 @@ import (
 )
 
 var (
-	prwsetPrefix     = []byte("P")[0] // key prefix for storing private read-write set in transient store.
-	purgeIndexPrefix = []byte("I")[0] // key prefix for storing index on private read-write set using endorsement block height.
-	compositeKeySep  = byte(0x00)
+	prwsetPrefix             = []byte("P")[0] // key prefix for storing private write set in transient store.
+	purgeIndexByHeightPrefix = []byte("H")[0] // key prefix for storing index on private write set using received at block height.
+	purgeIndexByTxidPrefix   = []byte("T")[0] // key prefix for storing index on private write set using txid
+	compositeKeySep          = byte(0x00)
 )
 
-// createCompositeKeyForPvtRWSet creates a key for storing private read-write set
-// in the transient store. The structure of the key is <prwsetPrefix>~txid~endorserid~endorsementBlkHt.
-func createCompositeKeyForPvtRWSet(txid string, endorserid string, endorsementBlkHt uint64) []byte {
+// createCompositeKeyForPvtRWSet creates a key for storing private write set
+// in the transient store. The structure of the key is <prwsetPrefix>~txid~uuid~blockHeight.
+func createCompositeKeyForPvtRWSet(txid string, uuid string, blockHeight uint64) []byte {
 	var compositeKey []byte
 	compositeKey = append(compositeKey, prwsetPrefix)
 	compositeKey = append(compositeKey, compositeKeySep)
-	compositeKey = append(compositeKey, []byte(txid)...)
-	compositeKey = append(compositeKey, compositeKeySep)
-	compositeKey = append(compositeKey, []byte(endorserid)...)
-	compositeKey = append(compositeKey, compositeKeySep)
-	compositeKey = append(compositeKey, util.EncodeOrderPreservingVarUint64(endorsementBlkHt)...)
+	compositeKey = append(compositeKey, createCompositeKeyWithoutPrefixForTxid(txid, uuid, blockHeight)...)
 
 	return compositeKey
 }
 
-// createCompositeKeyForPurgeIndex creates a key to index private read-write set based on
-// endorsement block height such that purge based on block height can be achieved. The structure
-// of the key is <purgeIndexPrefix>~endorsementBlkHt~txid~endorserid.
-func createCompositeKeyForPurgeIndex(endorsementBlkHt uint64, txid string, endorserid string) []byte {
+// createCompositeKeyForPurgeIndexByTxid creates a key to index private write set based on
+// txid such that purge based on txid can be achieved. The structure
+// of the key is <purgeIndexByTxidPrefix>~txid~uuid~blockHeight.
+func createCompositeKeyForPurgeIndexByTxid(txid string, uuid string, blockHeight uint64) []byte {
 	var compositeKey []byte
-	compositeKey = append(compositeKey, purgeIndexPrefix)
+	compositeKey = append(compositeKey, purgeIndexByTxidPrefix)
 	compositeKey = append(compositeKey, compositeKeySep)
-	compositeKey = append(compositeKey, util.EncodeOrderPreservingVarUint64(endorsementBlkHt)...)
-	compositeKey = append(compositeKey, compositeKeySep)
-	compositeKey = append(compositeKey, []byte(txid)...)
-	compositeKey = append(compositeKey, compositeKeySep)
-	compositeKey = append(compositeKey, []byte(endorserid)...)
+	compositeKey = append(compositeKey, createCompositeKeyWithoutPrefixForTxid(txid, uuid, blockHeight)...)
 
 	return compositeKey
 }
 
-// splitCompositeKeyOfPvtRWSet splits the compositeKey (<prwsetPrefix>~txid~endorserid~endorsementBlkHt) into endorserId and endorsementBlkHt.
-func splitCompositeKeyOfPvtRWSet(compositeKey []byte) (endorserid string, endorsementBlkHt uint64) {
-	compositeKey = compositeKey[2:]
-	firstSepIndex := bytes.IndexByte(compositeKey, compositeKeySep)
-	secondSepIndex := firstSepIndex + bytes.IndexByte(compositeKey[firstSepIndex+1:], compositeKeySep) + 1
-	endorserid = string(compositeKey[firstSepIndex+1 : secondSepIndex])
-	endorsementBlkHt, _ = util.DecodeOrderPreservingVarUint64(compositeKey[secondSepIndex+1:])
-	return endorserid, endorsementBlkHt
+// createCompositeKeyWithoutPrefixForTxid creates a composite key of structure txid~uuid~blockHeight.
+func createCompositeKeyWithoutPrefixForTxid(txid string, uuid string, blockHeight uint64) []byte {
+	var compositeKey []byte
+	compositeKey = append(compositeKey, []byte(txid)...)
+	compositeKey = append(compositeKey, compositeKeySep)
+	compositeKey = append(compositeKey, []byte(uuid)...)
+	compositeKey = append(compositeKey, compositeKeySep)
+	compositeKey = append(compositeKey, util.EncodeOrderPreservingVarUint64(blockHeight)...)
+
+	return compositeKey
 }
 
-// splitCompositeKeyOfPurgeIndex splits the compositeKey (<purgeIndexPrefix>~endorsementBlkHt~txid~endorserid) into txid, endorserid and endorsementBlkHt.
-func splitCompositeKeyOfPurgeIndex(compositeKey []byte) (txid string, endorserid string, endorsementBlkHt uint64) {
+// createCompositeKeyForPurgeIndexByHeight creates a key to index private write set based on
+// received at block height such that purge based on block height can be achieved. The structure
+// of the key is <purgeIndexByHeightPrefix>~blockHeight~txid~uuid.
+func createCompositeKeyForPurgeIndexByHeight(blockHeight uint64, txid string, uuid string) []byte {
+	var compositeKey []byte
+	compositeKey = append(compositeKey, purgeIndexByHeightPrefix)
+	compositeKey = append(compositeKey, compositeKeySep)
+	compositeKey = append(compositeKey, util.EncodeOrderPreservingVarUint64(blockHeight)...)
+	compositeKey = append(compositeKey, compositeKeySep)
+	compositeKey = append(compositeKey, []byte(txid)...)
+	compositeKey = append(compositeKey, compositeKeySep)
+	compositeKey = append(compositeKey, []byte(uuid)...)
+
+	return compositeKey
+}
+
+// splitCompositeKeyOfPvtRWSet splits the compositeKey (<prwsetPrefix>~txid~uuid~blockHeight)
+// into uuid and blockHeight.
+func splitCompositeKeyOfPvtRWSet(compositeKey []byte) (uuid string, blockHeight uint64) {
+	return splitCompositeKeyWithoutPrefixForTxid(compositeKey[2:])
+}
+
+// splitCompositeKeyOfPurgeIndexByTxid splits the compositeKey (<purgeIndexByTxidPrefix>~txid~uuid~blockHeight)
+// into uuid and blockHeight.
+func splitCompositeKeyOfPurgeIndexByTxid(compositeKey []byte) (uuid string, blockHeight uint64) {
+	return splitCompositeKeyWithoutPrefixForTxid(compositeKey[2:])
+}
+
+// splitCompositeKeyOfPurgeIndexByHeight splits the compositeKey (<purgeIndexByHeightPrefix>~blockHeight~txid~uuid)
+// into txid, uuid and blockHeight.
+func splitCompositeKeyOfPurgeIndexByHeight(compositeKey []byte) (txid string, uuid string, blockHeight uint64) {
 	var n int
-	endorsementBlkHt, n = util.DecodeOrderPreservingVarUint64(compositeKey[2:])
+	blockHeight, n = util.DecodeOrderPreservingVarUint64(compositeKey[2:])
 	splits := bytes.Split(compositeKey[n+3:], []byte{compositeKeySep})
 	txid = string(splits[0])
-	endorserid = string(splits[1])
+	uuid = string(splits[1])
+	return
+}
+
+// splitCompositeKeyWithoutPrefixForTxid splits the composite key txid~uuid~blockHeight into
+// uuid and blockHeight
+func splitCompositeKeyWithoutPrefixForTxid(compositeKey []byte) (uuid string, blockHeight uint64) {
+	// skip txid as all functions which requires split of composite key already has it
+	firstSepIndex := bytes.IndexByte(compositeKey, compositeKeySep)
+	secondSepIndex := firstSepIndex + bytes.IndexByte(compositeKey[firstSepIndex+1:], compositeKeySep) + 1
+	uuid = string(compositeKey[firstSepIndex+1 : secondSepIndex])
+	blockHeight, _ = util.DecodeOrderPreservingVarUint64(compositeKey[secondSepIndex+1:])
 	return
 }
 
@@ -97,28 +122,54 @@ func createTxidRangeEndKey(txid string) []byte {
 	endKey = append(endKey, prwsetPrefix)
 	endKey = append(endKey, compositeKeySep)
 	endKey = append(endKey, []byte(txid)...)
+	// As txid is a fixed length string (i.e., 128 bits long UUID), 0xff can be used as a stopper.
+	// Otherwise a super-string of a given txid would also fall under the end key of range query.
 	endKey = append(endKey, byte(0xff))
 	return endKey
 }
 
-// createEndorsementBlkHtRangeStartKey returns a startKey to do a range query on index stored in transient store
-// using endorsementBlkHt
-func createEndorsementBlkHtRangeStartKey(endorsementBlkHt uint64) []byte {
+// createPurgeIndexByHeightRangeStartKey returns a startKey to do a range query on index stored in transient store
+// using blockHeight
+func createPurgeIndexByHeightRangeStartKey(blockHeight uint64) []byte {
 	var startKey []byte
-	startKey = append(startKey, purgeIndexPrefix)
+	startKey = append(startKey, purgeIndexByHeightPrefix)
 	startKey = append(startKey, compositeKeySep)
-	startKey = append(startKey, util.EncodeOrderPreservingVarUint64(endorsementBlkHt)...)
+	startKey = append(startKey, util.EncodeOrderPreservingVarUint64(blockHeight)...)
 	startKey = append(startKey, compositeKeySep)
 	return startKey
 }
 
-// createEndorsementBlkHtRangeStartKey returns a endKey to do a range query on index stored in transient store
-// using endorsementBlkHt
-func createEndorsementBlkHtRangeEndKey(endorsementBlkHt uint64) []byte {
+// createPurgeIndexByHeightRangeEndKey returns a endKey to do a range query on index stored in transient store
+// using blockHeight
+func createPurgeIndexByHeightRangeEndKey(blockHeight uint64) []byte {
 	var endKey []byte
-	endKey = append(endKey, purgeIndexPrefix)
+	endKey = append(endKey, purgeIndexByHeightPrefix)
 	endKey = append(endKey, compositeKeySep)
-	endKey = append(endKey, util.EncodeOrderPreservingVarUint64(endorsementBlkHt)...)
+	endKey = append(endKey, util.EncodeOrderPreservingVarUint64(blockHeight)...)
+	endKey = append(endKey, byte(0xff))
+	return endKey
+}
+
+// createPurgeIndexByTxidRangeStartKey returns a startKey to do a range query on index stored in transient store
+// using txid
+func createPurgeIndexByTxidRangeStartKey(txid string) []byte {
+	var startKey []byte
+	startKey = append(startKey, purgeIndexByTxidPrefix)
+	startKey = append(startKey, compositeKeySep)
+	startKey = append(startKey, []byte(txid)...)
+	startKey = append(startKey, compositeKeySep)
+	return startKey
+}
+
+// createPurgeIndexByTxidRangeEndKey returns a endKey to do a range query on index stored in transient store
+// using txid
+func createPurgeIndexByTxidRangeEndKey(txid string) []byte {
+	var endKey []byte
+	endKey = append(endKey, purgeIndexByTxidPrefix)
+	endKey = append(endKey, compositeKeySep)
+	endKey = append(endKey, []byte(txid)...)
+	// As txid is a fixed length string (i.e., 128 bits long UUID), 0xff can be used as a stopper.
+	// Otherwise a super-string of a given txid would also fall under the end key of range query.
 	endKey = append(endKey, byte(0xff))
 	return endKey
 }

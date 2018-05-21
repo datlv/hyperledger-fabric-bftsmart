@@ -7,22 +7,26 @@ SPDX-License-Identifier: Apache-2.0
 package metrics
 
 import (
+	"fmt"
+	"io"
+	"io/ioutil"
+	"net"
+	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"io"
-	"net"
-	"strings"
-
-	"github.com/cactus/go-statsd-client/statsd"
 	"github.com/stretchr/testify/assert"
 	"github.com/uber-go/tally"
-	statsdreporter "github.com/uber-go/tally/statsd"
+	promreporter "github.com/uber-go/tally/prometheus"
 )
 
-const statsdAddr string = "127.0.0.1:8125"
+const (
+	statsdAddress = "127.0.0.1:8125"
+	promAddress   = "127.0.0.1:8082"
+)
 
 type testIntValue struct {
 	val      int64
@@ -166,8 +170,9 @@ func TestCounter(t *testing.T) {
 		Separator: tally.DefaultSeparator,
 		Reporter:  r}
 
-	s, c := newRootScope(opts, 1*time.Second)
-	defer c.Close()
+	s := newRootScope(opts, 1*time.Second)
+	go s.Start()
+	defer s.Close()
 	r.cg.Add(1)
 	s.Counter("foo").Inc(1)
 	r.cg.Wait()
@@ -190,8 +195,9 @@ func TestMultiCounterReport(t *testing.T) {
 		Separator: tally.DefaultSeparator,
 		Reporter:  r}
 
-	s, c := newRootScope(opts, 2*time.Second)
-	defer c.Close()
+	s := newRootScope(opts, 2*time.Second)
+	go s.Start()
+	defer s.Close()
 	r.cg.Add(1)
 	go s.Counter("foo").Inc(1)
 	go s.Counter("foo").Inc(3)
@@ -209,8 +215,9 @@ func TestGauge(t *testing.T) {
 		Separator: tally.DefaultSeparator,
 		Reporter:  r}
 
-	s, c := newRootScope(opts, 1*time.Second)
-	defer c.Close()
+	s := newRootScope(opts, 1*time.Second)
+	go s.Start()
+	defer s.Close()
 	r.gg.Add(1)
 	s.Gauge("foo").Update(float64(1.33))
 	r.gg.Wait()
@@ -226,8 +233,9 @@ func TestMultiGaugeReport(t *testing.T) {
 		Separator: tally.DefaultSeparator,
 		Reporter:  r}
 
-	s, c := newRootScope(opts, 1*time.Second)
-	defer c.Close()
+	s := newRootScope(opts, 1*time.Second)
+	go s.Start()
+	defer s.Close()
 
 	r.gg.Add(1)
 	s.Gauge("foo").Update(float64(1.33))
@@ -245,8 +253,9 @@ func TestSubScope(t *testing.T) {
 		Separator: tally.DefaultSeparator,
 		Reporter:  r}
 
-	s, c := newRootScope(opts, 1*time.Second)
-	defer c.Close()
+	s := newRootScope(opts, 1*time.Second)
+	go s.Start()
+	defer s.Close()
 	subs := s.SubScope("foo")
 
 	r.gg.Add(1)
@@ -270,8 +279,9 @@ func TestTagged(t *testing.T) {
 		Separator: tally.DefaultSeparator,
 		Reporter:  r}
 
-	s, c := newRootScope(opts, 1*time.Second)
-	defer c.Close()
+	s := newRootScope(opts, 1*time.Second)
+	go s.Start()
+	defer s.Close()
 	subs := s.Tagged(map[string]string{"env": "test"})
 
 	r.gg.Add(1)
@@ -301,8 +311,8 @@ func TestTaggedExistingReturnsSameScope(t *testing.T) {
 		nil,
 		{"env": "test"},
 	} {
-		root, c := newRootScope(tally.ScopeOptions{Prefix: "foo", Tags: initialTags, Reporter: r}, 0)
-
+		root := newRootScope(tally.ScopeOptions{Prefix: "foo", Tags: initialTags, Reporter: r}, 0)
+		go root.Start()
 		rootScope := root.(*scope)
 		fooScope := root.Tagged(map[string]string{"foo": "bar"}).(*scope)
 
@@ -313,7 +323,7 @@ func TestTaggedExistingReturnsSameScope(t *testing.T) {
 
 		assert.NotEqual(t, fooScope, fooBarScope)
 		assert.Equal(t, fooBarScope, fooScope.Tagged(map[string]string{"bar": "baz"}).(*scope))
-		c.Close()
+		root.Close()
 	}
 }
 
@@ -325,8 +335,9 @@ func TestSubScopeTagged(t *testing.T) {
 		Separator: tally.DefaultSeparator,
 		Reporter:  r}
 
-	s, c := newRootScope(opts, 1*time.Second)
-	defer c.Close()
+	s := newRootScope(opts, 1*time.Second)
+	go s.Start()
+	defer s.Close()
 	subs := s.SubScope("sub")
 	subtags := subs.Tagged(map[string]string{"env": "test"})
 
@@ -351,7 +362,7 @@ func TestSubScopeTagged(t *testing.T) {
 
 func TestMetricsByStatsdReporter(t *testing.T) {
 	t.Parallel()
-	udpAddr, err := net.ResolveUDPAddr("udp", statsdAddr)
+	udpAddr, err := net.ResolveUDPAddr("udp", statsdAddress)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,14 +373,15 @@ func TestMetricsByStatsdReporter(t *testing.T) {
 	}
 	defer server.Close()
 
-	r := newTestStatsdReporter()
+	r, _ := newTestStatsdReporter()
 	opts := tally.ScopeOptions{
 		Prefix:    namespace,
 		Separator: tally.DefaultSeparator,
 		Reporter:  r}
 
-	s, c := newRootScope(opts, 1*time.Second)
-	defer c.Close()
+	s := newRootScope(opts, 1*time.Second)
+	go s.Start()
+	defer s.Close()
 	subs := s.SubScope("peer").Tagged(map[string]string{"component": "committer", "env": "test"})
 	subs.Counter("success_total").Inc(1)
 	subs.Gauge("channel_total").Update(4)
@@ -379,8 +391,8 @@ func TestMetricsByStatsdReporter(t *testing.T) {
 	result := string(buffer[:n])
 
 	expected := []string{
-		`hyperledger.fabric.peer.success_total.component-committer.env-test:1|c`,
-		`hyperledger.fabric.peer.channel_total.component-committer.env-test:4|g`,
+		`hyperledger_fabric.peer.success_total.component-committer.env-test:1|c`,
+		`hyperledger_fabric.peer.channel_total.component-committer.env-test:4|g`,
 	}
 
 	for i, res := range strings.Split(result, "\n") {
@@ -390,10 +402,61 @@ func TestMetricsByStatsdReporter(t *testing.T) {
 	}
 }
 
-func newTestStatsdReporter() tally.StatsReporter {
-	statter, _ := statsd.NewBufferedClient(statsdAddr,
-		"", 100*time.Millisecond, 512)
+func TestMetricsByPrometheusReporter(t *testing.T) {
+	t.Parallel()
+	r, _ := newTestPrometheusReporter()
 
-	opts := statsdreporter.Options{}
-	return newStatsdReporter(statter, opts)
+	opts := tally.ScopeOptions{
+		Prefix:         namespace,
+		Separator:      promreporter.DefaultSeparator,
+		CachedReporter: r}
+
+	s := newRootScope(opts, 1*time.Second)
+	go s.Start()
+	defer s.Close()
+
+	scrape := func() string {
+		resp, _ := http.Get(fmt.Sprintf("http://%s/metrics", promAddress))
+		buf, _ := ioutil.ReadAll(resp.Body)
+		return string(buf)
+	}
+	subs := s.SubScope("peer").Tagged(map[string]string{"component": "committer", "env": "test"})
+	subs.Counter("success_total").Inc(1)
+	subs.Gauge("channel_total").Update(4)
+
+	time.Sleep(2 * time.Second)
+
+	expected := []string{
+		`# HELP hyperledger_fabric_peer_channel_total hyperledger_fabric_peer_channel_total gauge`,
+		`# TYPE hyperledger_fabric_peer_channel_total gauge`,
+		`hyperledger_fabric_peer_channel_total{component="committer",env="test"} 4`,
+		`# HELP hyperledger_fabric_peer_success_total hyperledger_fabric_peer_success_total counter`,
+		`# TYPE hyperledger_fabric_peer_success_total counter`,
+		`hyperledger_fabric_peer_success_total{component="committer",env="test"} 1`,
+		``,
+	}
+
+	result := strings.Split(scrape(), "\n")
+
+	for i, res := range result {
+		if res != expected[i] {
+			t.Errorf("Got `%s`, expected `%s`", res, expected[i])
+		}
+	}
+}
+
+func newTestStatsdReporter() (tally.StatsReporter, error) {
+	opts := StatsdReporterOpts{
+		Address:       statsdAddress,
+		FlushInterval: defaultStatsdReporterFlushInterval,
+		FlushBytes:    defaultStatsdReporterFlushBytes,
+	}
+	return newStatsdReporter(opts)
+}
+
+func newTestPrometheusReporter() (promreporter.Reporter, error) {
+	opts := PromReporterOpts{
+		ListenAddress: promAddress,
+	}
+	return newPromReporter(opts)
 }

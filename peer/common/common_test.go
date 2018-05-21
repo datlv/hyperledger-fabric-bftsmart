@@ -9,13 +9,14 @@ package common_test
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/config"
 	"github.com/hyperledger/fabric/msp"
 	"github.com/hyperledger/fabric/peer/common"
-	pb "github.com/hyperledger/fabric/protos/peer"
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -53,9 +54,9 @@ func TestInitConfig(t *testing.T) {
 	}
 }
 
-func TestINitCryptoMissingDir(t *testing.T) {
+func TestInitCryptoMissingDir(t *testing.T) {
 	dir := os.TempDir() + "/" + util.GenerateUUID()
-	err := common.InitCrypto(dir, "DEFAULT")
+	err := common.InitCrypto(dir, "DEFAULT", msp.ProviderTypeToString(msp.FABRIC))
 	assert.Error(t, err, "Should be able to initialize crypto with non-existing directory")
 	assert.Contains(t, err.Error(), fmt.Sprintf("missing %s folder", dir))
 }
@@ -64,39 +65,48 @@ func TestInitCrypto(t *testing.T) {
 
 	mspConfigPath, err := config.GetDevMspDir()
 	localMspId := "DEFAULT"
-	err = common.InitCrypto(mspConfigPath, localMspId)
+	err = common.InitCrypto(mspConfigPath, localMspId, msp.ProviderTypeToString(msp.FABRIC))
 	assert.NoError(t, err, "Unexpected error [%s] calling InitCrypto()", err)
-	err = common.InitCrypto("/etc/foobaz", localMspId)
-	assert.Error(t, err, "Expected error [%s] calling InitCrypto()", err)
+	err = common.InitCrypto("/etc/foobaz", localMspId, msp.ProviderTypeToString(msp.FABRIC))
+	assert.Error(t, err, fmt.Sprintf("Expected error [%s] calling InitCrypto()", err))
 	localMspId = ""
-	err = common.InitCrypto(mspConfigPath, localMspId)
-	assert.Error(t, err, "Expected error [%s] calling InitCrypto()", err)
+	err = common.InitCrypto(mspConfigPath, localMspId, msp.ProviderTypeToString(msp.FABRIC))
+	assert.Error(t, err, fmt.Sprintf("Expected error [%s] calling InitCrypto()", err))
 }
 
-func TestGetEndorserClient(t *testing.T) {
-	tests := []struct {
-		name    string
-		want    pb.EndorserClient
-		wantErr bool
-	}{
-		{
-			name:    "Should not return EndorserClient, there is no peer running",
-			want:    nil,
-			wantErr: true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := common.GetEndorserClient()
-			if (err != nil) != tt.wantErr {
-				t.Errorf("GetEndorserClient() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-		})
-	}
+func TestSetBCCSPKeystorePath(t *testing.T) {
+	cfgKey := "peer.BCCSP.SW.FileKeyStore.KeyStore"
+	cfgPath := "./testdata"
+	absPath, _ := filepath.Abs(cfgPath)
+	keystorePath := "/msp/keystore"
+
+	os.Setenv("FABRIC_CFG_PATH", cfgPath)
+	viper.Reset()
+	_ = common.InitConfig("notset")
+	common.SetBCCSPKeystorePath()
+	t.Log(viper.GetString(cfgKey))
+	assert.Equal(t, "", viper.GetString(cfgKey))
+
+	viper.Reset()
+	_ = common.InitConfig("absolute")
+	common.SetBCCSPKeystorePath()
+	t.Log(viper.GetString(cfgKey))
+	assert.Equal(t, keystorePath, viper.GetString(cfgKey))
+
+	viper.Reset()
+	_ = common.InitConfig("relative")
+	common.SetBCCSPKeystorePath()
+	t.Log(viper.GetString(cfgKey))
+	assert.Equal(t, filepath.Join(absPath, keystorePath),
+		viper.GetString(cfgKey))
+
+	viper.Reset()
+	os.Unsetenv("FABRIC_CFG_PATH")
 }
 
 func TestSetLogLevelFromViper(t *testing.T) {
+	viper.Reset()
+	common.InitConfig("core")
 	type args struct {
 		module string
 	}
@@ -122,7 +132,7 @@ func TestSetLogLevelFromViper(t *testing.T) {
 		},
 		{
 			name:    "Valid module name",
-			args:    args{module: "peer"},
+			args:    args{module: "level"},
 			wantErr: false,
 		},
 		{
@@ -148,6 +158,11 @@ func TestSetLogLevelFromViper(t *testing.T) {
 		{
 			name:    "Valid module name",
 			args:    args{module: "policies"},
+			wantErr: false,
+		},
+		{
+			name:    "Valid module name",
+			args:    args{module: "peer.gossip"},
 			wantErr: false,
 		},
 	}

@@ -17,6 +17,7 @@ limitations under the License.
 package consumer
 
 import (
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -26,7 +27,9 @@ import (
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 
+	"github.com/golang/protobuf/ptypes/timestamp"
 	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/comm"
 	mspmgmt "github.com/hyperledger/fabric/msp/mgmt"
 	ehpb "github.com/hyperledger/fabric/protos/peer"
@@ -44,6 +47,14 @@ type EventsClient struct {
 	adapter     EventAdapter
 }
 
+// RegistrationConfig holds the information to be used when registering for
+// events from the eventhub
+type RegistrationConfig struct {
+	InterestedEvents []*ehpb.Interest
+	Timestamp        *timestamp.Timestamp
+	TlsCert          *x509.Certificate
+}
+
 //NewEventsClient Returns a new grpc.ClientConn to the configured local PEER.
 func NewEventsClient(peerAddress string, regTimeout time.Duration, adapter EventAdapter) (*EventsClient, error) {
 	var err error
@@ -59,10 +70,8 @@ func NewEventsClient(peerAddress string, regTimeout time.Duration, adapter Event
 
 //newEventsClientConnectionWithAddress Returns a new grpc.ClientConn to the configured local PEER.
 func newEventsClientConnectionWithAddress(peerAddress string) (*grpc.ClientConn, error) {
-	if comm.TLSEnabled() {
-		return comm.NewClientConnectionWithAddress(peerAddress, true, true, comm.InitTLSForPeer())
-	}
-	return comm.NewClientConnectionWithAddress(peerAddress, true, false, nil)
+	return comm.NewClientConnectionWithAddress(peerAddress, true, false,
+		nil, nil)
 }
 
 func (ec *EventsClient) send(emsg *ehpb.Event) error {
@@ -96,13 +105,16 @@ func (ec *EventsClient) send(emsg *ehpb.Event) error {
 }
 
 // RegisterAsync - registers interest in a event and doesn't wait for a response
-func (ec *EventsClient) RegisterAsync(ies []*ehpb.Interest) error {
+func (ec *EventsClient) RegisterAsync(config *RegistrationConfig) error {
 	creator, err := getCreatorFromLocalMSP()
 	if err != nil {
 		return fmt.Errorf("error getting creator from MSP: %s", err)
 	}
-	emsg := &ehpb.Event{Event: &ehpb.Event_Register{Register: &ehpb.Register{Events: ies}}, Creator: creator}
+	emsg := &ehpb.Event{Event: &ehpb.Event_Register{Register: &ehpb.Register{Events: config.InterestedEvents}}, Creator: creator, Timestamp: config.Timestamp}
 
+	if config.TlsCert != nil {
+		emsg.TlsCertHash = util.ComputeSHA256(config.TlsCert.Raw)
+	}
 	if err = ec.send(emsg); err != nil {
 		consumerLogger.Errorf("error on Register send %s\n", err)
 	}
@@ -110,9 +122,9 @@ func (ec *EventsClient) RegisterAsync(ies []*ehpb.Interest) error {
 }
 
 // register - registers interest in a event
-func (ec *EventsClient) register(ies []*ehpb.Interest) error {
+func (ec *EventsClient) register(config *RegistrationConfig) error {
 	var err error
-	if err = ec.RegisterAsync(ies); err != nil {
+	if err = ec.RegisterAsync(config); err != nil {
 		return err
 	}
 
@@ -221,7 +233,8 @@ func (ec *EventsClient) Start() error {
 		return fmt.Errorf("could not create client conn to %s:%s", ec.peerAddress, err)
 	}
 
-	if err = ec.register(ies); err != nil {
+	regConfig := &RegistrationConfig{InterestedEvents: ies, Timestamp: util.CreateUtcTimestamp()}
+	if err = ec.register(regConfig); err != nil {
 		return err
 	}
 

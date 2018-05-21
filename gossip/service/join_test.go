@@ -11,11 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hyperledger/fabric/common/config/channel"
+	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/comm"
 	"github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/discovery"
+	"github.com/hyperledger/fabric/gossip/filter"
+	"github.com/hyperledger/fabric/gossip/gossip"
 	"github.com/hyperledger/fabric/gossip/util"
 	proto "github.com/hyperledger/fabric/protos/gossip"
 	"github.com/hyperledger/fabric/protos/peer"
@@ -36,6 +38,10 @@ func (s *secAdvMock) OrgByPeerIdentity(identity api.PeerIdentityType) api.OrgIde
 
 type gossipMock struct {
 	mock.Mock
+}
+
+func (*gossipMock) PeerFilter(channel common.ChainID, messagePredicate api.SubChannelSelectionCriteria) (filter.RoutingFilter, error) {
+	panic("implement me")
 }
 
 func (*gossipMock) SuspectPeers(s api.PeerSuspector) {
@@ -74,7 +80,15 @@ func (g *gossipMock) JoinChan(joinMsg api.JoinChannelMessage, chainID common.Cha
 	g.Called(joinMsg, chainID)
 }
 
+func (g *gossipMock) LeaveChan(chainID common.ChainID) {
+	panic("implement me")
+}
+
 func (*gossipMock) Stop() {
+	panic("implement me")
+}
+
+func (gossipMock) SendByCriteria(*proto.SignedGossipMessage, gossip.SendCriteria) error {
 	panic("implement me")
 }
 
@@ -95,14 +109,18 @@ func (ao *appOrgMock) AnchorPeers() []*peer.AnchorPeer {
 }
 
 type configMock struct {
-	orgs2AppOrgs map[string]config.ApplicationOrg
+	orgs2AppOrgs map[string]channelconfig.ApplicationOrg
+}
+
+func (c *configMock) OrdererAddresses() []string {
+	return []string{"localhost:7050"}
 }
 
 func (*configMock) ChainID() string {
 	return "A"
 }
 
-func (c *configMock) Organizations() map[string]config.ApplicationOrg {
+func (c *configMock) Organizations() map[string]channelconfig.ApplicationOrg {
 	return c.orgs2AppOrgs
 }
 
@@ -121,8 +139,8 @@ func TestJoinChannelConfig(t *testing.T) {
 		failChan <- struct{}{}
 	})
 	g1 := &gossipServiceImpl{secAdv: &secAdvMock{}, peerIdentity: api.PeerIdentityType("OrgMSP0"), gossipSvc: g1SvcMock}
-	g1.configUpdated(&configMock{
-		orgs2AppOrgs: map[string]config.ApplicationOrg{
+	g1.updateAnchors(&configMock{
+		orgs2AppOrgs: map[string]channelconfig.ApplicationOrg{
 			"Org0": &appOrgMock{id: "Org0"},
 		},
 	})
@@ -138,8 +156,8 @@ func TestJoinChannelConfig(t *testing.T) {
 		succChan <- struct{}{}
 	})
 	g2 := &gossipServiceImpl{secAdv: &secAdvMock{}, peerIdentity: api.PeerIdentityType("Org0"), gossipSvc: g2SvcMock}
-	g2.configUpdated(&configMock{
-		orgs2AppOrgs: map[string]config.ApplicationOrg{
+	g2.updateAnchors(&configMock{
+		orgs2AppOrgs: map[string]channelconfig.ApplicationOrg{
 			"Org0": &appOrgMock{id: "Org0"},
 		},
 	})
@@ -178,8 +196,8 @@ func TestJoinChannelNoAnchorPeers(t *testing.T) {
 	assert.Empty(t, appOrg0.AnchorPeers())
 	assert.Empty(t, appOrg1.AnchorPeers())
 
-	g.configUpdated(&configMock{
-		orgs2AppOrgs: map[string]config.ApplicationOrg{
+	g.updateAnchors(&configMock{
+		orgs2AppOrgs: map[string]channelconfig.ApplicationOrg{
 			"Org0": appOrg0,
 			"Org1": appOrg1,
 		},

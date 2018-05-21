@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 // The 'viper' package for configuration handling is very flexible, but has
@@ -30,15 +20,17 @@ limitations under the License.
 package peer
 
 import (
+	"crypto/tls"
 	"fmt"
 	"io/ioutil"
 	"net"
-
-	"github.com/spf13/viper"
+	"path/filepath"
 
 	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/core/config"
 	pb "github.com/hyperledger/fabric/protos/peer"
+	"github.com/pkg/errors"
+	"github.com/spf13/viper"
 )
 
 // Is the configuration cached?
@@ -57,22 +49,33 @@ var peerEndpointError error
 // computed constants as package variables. Routines which were previously
 // global have been embedded here to preserve the original abstraction.
 func CacheConfiguration() (err error) {
-
 	// getLocalAddress returns the address:port the local peer is operating on.  Affected by env:peer.addressAutoDetect
-	getLocalAddress := func() (peerAddress string, err error) {
-		if viper.GetBool("peer.addressAutoDetect") {
-			// Need to get the port from the peer.address setting, and append to the determined host IP
-			_, port, err := net.SplitHostPort(viper.GetString("peer.address"))
-			if err != nil {
-				err = fmt.Errorf("Error auto detecting Peer's address: %s", err)
-				return "", err
-			}
-			peerAddress = net.JoinHostPort(GetLocalIP(), port)
-			peerLogger.Infof("Auto detected peer address: %s", peerAddress)
-		} else {
-			peerAddress = viper.GetString("peer.address")
+	getLocalAddress := func() (string, error) {
+		peerAddress := viper.GetString("peer.address")
+		if peerAddress == "" {
+			return "", fmt.Errorf("peer.address isn't set")
 		}
-		return
+		host, port, err := net.SplitHostPort(peerAddress)
+		if err != nil {
+			return "", errors.Errorf("peer.address isn't in host:port format: %s", peerAddress)
+		}
+
+		autoDetectedIPAndPort := net.JoinHostPort(GetLocalIP(), port)
+		peerLogger.Info("Auto-detected peer address:", autoDetectedIPAndPort)
+		// If host is the IPv4 address "0.0.0.0" or the IPv6 address "::",
+		// then fallback to auto-detected address
+		if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+			peerLogger.Info("Host is", host, ", falling back to auto-detected address:", autoDetectedIPAndPort)
+			return autoDetectedIPAndPort, nil
+		}
+
+		if viper.GetBool("peer.addressAutoDetect") {
+			peerLogger.Info("Auto-detect flag is set, returning", autoDetectedIPAndPort)
+			return autoDetectedIPAndPort, nil
+		}
+		peerLogger.Info("Returning", peerAddress)
+		return peerAddress, nil
+
 	}
 
 	// getPeerEndpoint returns the PeerEndpoint for this Peer instance.  Affected by env:peer.addressAutoDetect
@@ -121,30 +124,108 @@ func GetPeerEndpoint() (*pb.PeerEndpoint, error) {
 	return peerEndpoint, peerEndpointError
 }
 
-// GetSecureConfig returns the secure server configuration for the peer
-func GetSecureConfig() (comm.SecureServerConfig, error) {
-	secureConfig := comm.SecureServerConfig{
+// GetServerConfig returns the gRPC server configuration for the peer
+func GetServerConfig() (comm.ServerConfig, error) {
+	secureOptions := &comm.SecureOptions{
 		UseTLS: viper.GetBool("peer.tls.enabled"),
 	}
-	if secureConfig.UseTLS {
+	serverConfig := comm.ServerConfig{SecOpts: secureOptions}
+	if secureOptions.UseTLS {
 		// get the certs from the file system
 		serverKey, err := ioutil.ReadFile(config.GetPath("peer.tls.key.file"))
-		serverCert, err := ioutil.ReadFile(config.GetPath("peer.tls.cert.file"))
-		// must have both key and cert file
 		if err != nil {
-			return secureConfig, fmt.Errorf("Error loading TLS key and/or certificate (%s)", err)
+			return serverConfig, fmt.Errorf("error loading TLS key (%s)", err)
 		}
-		secureConfig.ServerCertificate = serverCert
-		secureConfig.ServerKey = serverKey
+		serverCert, err := ioutil.ReadFile(config.GetPath("peer.tls.cert.file"))
+		if err != nil {
+			return serverConfig, fmt.Errorf("error loading TLS certificate (%s)", err)
+		}
+		secureOptions.Certificate = serverCert
+		secureOptions.Key = serverKey
+		secureOptions.RequireClientCert = viper.GetBool("peer.tls.clientAuthRequired")
+		if secureOptions.RequireClientCert {
+			var clientRoots [][]byte
+			for _, file := range viper.GetStringSlice("peer.tls.clientRootCAs.files") {
+				clientRoot, err := ioutil.ReadFile(
+					config.TranslatePath(filepath.Dir(viper.ConfigFileUsed()), file))
+				if err != nil {
+					return serverConfig,
+						fmt.Errorf("error loading client root CAs (%s)", err)
+				}
+				clientRoots = append(clientRoots, clientRoot)
+			}
+			secureOptions.ClientRootCAs = clientRoots
+		}
 		// check for root cert
 		if config.GetPath("peer.tls.rootcert.file") != "" {
 			rootCert, err := ioutil.ReadFile(config.GetPath("peer.tls.rootcert.file"))
 			if err != nil {
-				return secureConfig, fmt.Errorf("Error loading TLS root certificate (%s)", err)
+				return serverConfig, fmt.Errorf("error loading TLS root certificate (%s)", err)
 			}
-			secureConfig.ServerRootCAs = [][]byte{rootCert}
+			secureOptions.ServerRootCAs = [][]byte{rootCert}
 		}
-		return secureConfig, nil
 	}
-	return secureConfig, nil
+	// get the default keepalive options
+	serverConfig.KaOpts = comm.DefaultKeepaliveOptions()
+	// check to see if minInterval is set for the env
+	if viper.IsSet("peer.keepalive.minInterval") {
+		serverConfig.KaOpts.ServerMinInterval = viper.GetDuration("peer.keepalive.minInterval")
+	}
+	return serverConfig, nil
+}
+
+// GetClientCertificate returns the TLS certificate to use for gRPC client
+// connections
+func GetClientCertificate() (tls.Certificate, error) {
+	cert := tls.Certificate{}
+
+	keyPath := viper.GetString("peer.tls.clientKey.file")
+	certPath := viper.GetString("peer.tls.clientCert.file")
+
+	if keyPath != "" || certPath != "" {
+		// need both keyPath and certPath to be set
+		if keyPath == "" || certPath == "" {
+			return cert, errors.New("peer.tls.clientKey.file and " +
+				"peer.tls.clientCert.file must both be set or must both be empty")
+		}
+		keyPath = config.GetPath("peer.tls.clientKey.file")
+		certPath = config.GetPath("peer.tls.clientCert.file")
+
+	} else {
+		// use the TLS server keypair
+		keyPath = viper.GetString("peer.tls.key.file")
+		certPath = viper.GetString("peer.tls.key.file")
+
+		if keyPath != "" || certPath != "" {
+			// need both keyPath and certPath to be set
+			if keyPath == "" || certPath == "" {
+				return cert, errors.New("peer.tls.key.file and " +
+					"peer.tls.cert.file must both be set or must both be empty")
+			}
+			keyPath = config.GetPath("peer.tls.key.file")
+			certPath = config.GetPath("peer.tls.cert.file")
+		} else {
+			return cert, errors.New("must set either " +
+				"[peer.tls.key.file and peer.tls.cert.file] or " +
+				"[peer.tls.clientKey.file and peer.tls.clientCert.file]" +
+				"when peer.tls.clientAuthEnabled is set to true")
+		}
+	}
+	// get the keypair from the file system
+	clientKey, err := ioutil.ReadFile(keyPath)
+	if err != nil {
+		return cert, errors.WithMessage(err,
+			"error loading client TLS key")
+	}
+	clientCert, err := ioutil.ReadFile(certPath)
+	if err != nil {
+		return cert, errors.WithMessage(err,
+			"error loading client TLS certificate")
+	}
+	cert, err = tls.X509KeyPair(clientCert, clientKey)
+	if err != nil {
+		return cert, errors.WithMessage(err,
+			"error parsing client TLS key pair")
+	}
+	return cert, nil
 }

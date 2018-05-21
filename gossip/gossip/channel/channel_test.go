@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package channel
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"sync"
@@ -102,6 +103,10 @@ type cryptoService struct {
 	mock.Mock
 }
 
+func (cs *cryptoService) Expiration(peerIdentity api.PeerIdentityType) (time.Time, error) {
+	return time.Now().Add(time.Hour), nil
+}
+
 func (cs *cryptoService) GetPKIidOfCert(peerIdentity api.PeerIdentityType) common.PKIidType {
 	panic("Should not be called in this test")
 }
@@ -157,6 +162,11 @@ func (m *receivedMsg) Respond(msg *proto.GossipMessage) {
 	m.Called(msg)
 }
 
+// Ack returns to the sender an acknowledgement for the message
+func (m *receivedMsg) Ack(err error) {
+
+}
+
 func (m *receivedMsg) GetConnectionInfo() *proto.ConnectionInfo {
 	return &proto.ConnectionInfo{
 		ID: m.PKIID,
@@ -173,6 +183,10 @@ func (ga *gossipAdapterMock) GetConf() Config {
 }
 
 func (ga *gossipAdapterMock) Gossip(msg *proto.SignedGossipMessage) {
+	ga.Called(msg)
+}
+
+func (ga *gossipAdapterMock) Forward(msg proto.ReceivedMessage) {
 	ga.Called(msg)
 }
 
@@ -299,6 +313,7 @@ func TestMsgStoreNotExpire(t *testing.T) {
 	adapter.On("GetMembership").Return([]discovery.NetworkMember{peer2, peer3})
 	adapter.On("DeMultiplex", mock.Anything)
 	adapter.On("Gossip", mock.Anything)
+	adapter.On("Forward", mock.Anything)
 	adapter.On("GetConf").Return(conf)
 
 	gc := NewGossipChannel(pkiID1, orgInChannelA, cs, channelA, adapter, jcm)
@@ -364,6 +379,82 @@ func TestMsgStoreNotExpire(t *testing.T) {
 	assert.Len(t, c, 2)
 }
 
+func TestLeaveChannel(t *testing.T) {
+	// Scenario: Have our peer receive a stateInfo message
+	// from a peer that has left the channel, and ensure that it skips it
+	// when returning membership.
+	// Next, have our own peer leave the channel and ensure:
+	// 1) It doesn't return any members of the channel when queried
+	// 2) It doesn't send anymore pull for blocks
+	// 3) When asked for pull for blocks, it ignores the request
+	t.Parallel()
+
+	jcm := &joinChanMsg{
+		members2AnchorPeers: map[string][]api.AnchorPeer{
+			"ORG1": {},
+			"ORG2": {},
+		},
+	}
+
+	cs := &cryptoService{}
+	cs.On("VerifyBlock", mock.Anything).Return(nil)
+	adapter := new(gossipAdapterMock)
+	adapter.On("Gossip", mock.Anything)
+	adapter.On("Forward", mock.Anything)
+	adapter.On("DeMultiplex", mock.Anything)
+	members := []discovery.NetworkMember{
+		{PKIid: pkiIDInOrg1},
+		{PKIid: pkiIDinOrg2},
+	}
+	var helloPullWG sync.WaitGroup
+	helloPullWG.Add(1)
+	configureAdapter(adapter, members...)
+	gc := NewGossipChannel(common.PKIidType("p0"), orgInChannelA, cs, channelA, adapter, jcm)
+	adapter.On("Send", mock.Anything, mock.Anything).Run(func(arguments mock.Arguments) {
+		msg := arguments.Get(0).(*proto.SignedGossipMessage)
+		if msg.IsPullMsg() {
+			helloPullWG.Done()
+			assert.False(t, gc.(*gossipChannel).hasLeftChannel())
+		}
+	})
+	gc.HandleMessage(&receivedMsg{PKIID: pkiIDInOrg1, msg: createStateInfoMsg(1, pkiIDInOrg1, channelA)})
+	gc.HandleMessage(&receivedMsg{PKIID: pkiIDinOrg2, msg: createStateInfoMsg(1, pkiIDinOrg2, channelA)})
+	// Have some peer send a block to us, so we can send some peer a digest when hello is sent to us
+	gc.HandleMessage(&receivedMsg{msg: createDataMsg(2, channelA), PKIID: pkiIDInOrg1})
+	assert.Len(t, gc.GetPeers(), 2)
+	// Now, have peer in org2 "leave the channel" by publishing is an update
+	stateInfoMsg := &receivedMsg{PKIID: pkiIDinOrg2, msg: createStateInfoMsg(0, pkiIDinOrg2, channelA)}
+	stateInfoMsg.GetGossipMessage().GetStateInfo().Properties.LeftChannel = true
+	gc.HandleMessage(stateInfoMsg)
+	assert.Len(t, gc.GetPeers(), 1)
+	// Ensure peer in org1 remained and peer in org2 is skipped
+	assert.Equal(t, pkiIDInOrg1, gc.GetPeers()[0].PKIid)
+	var digestSendTime int32
+	var DigestSentWg sync.WaitGroup
+	DigestSentWg.Add(1)
+	hello := createHelloMsg(pkiIDInOrg1)
+	hello.On("Respond", mock.Anything).Run(func(arguments mock.Arguments) {
+		atomic.AddInt32(&digestSendTime, 1)
+		// Ensure we only respond with digest before we leave the channel
+		assert.Equal(t, int32(1), atomic.LoadInt32(&digestSendTime))
+		DigestSentWg.Done()
+	})
+	// Wait until we send a hello pull message
+	helloPullWG.Wait()
+	go gc.HandleMessage(hello)
+	DigestSentWg.Wait()
+	// Make the peer leave the channel
+	gc.LeaveChannel()
+	// Send another hello. Shouldn't respond
+	go gc.HandleMessage(hello)
+	// Ensure it doesn't know now any other peer
+	assert.Len(t, gc.GetPeers(), 0)
+	// Sleep 3 times the pull interval.
+	// we're not supposed to send a pull during this time.
+	time.Sleep(conf.PullInterval * 3)
+
+}
+
 func TestChannelPeriodicalPublishStateInfo(t *testing.T) {
 	t.Parallel()
 	ledgerHeight := 5
@@ -402,6 +493,7 @@ func TestChannelPeriodicalPublishStateInfo(t *testing.T) {
 	nodeMeta, err := common.FromBytes(msg.GetStateInfo().Metadata)
 	assert.NoError(t, err, "ReceivedMetadata is invalid")
 	assert.Equal(t, ledgerHeight, int(nodeMeta.LedgerHeight), "Received different ledger height than expected")
+	assert.Equal(t, ledgerHeight, int(msg.GetStateInfo().Properties.LedgerHeight))
 }
 
 func TestChannelMsgStoreEviction(t *testing.T) {
@@ -419,6 +511,7 @@ func TestChannelMsgStoreEviction(t *testing.T) {
 	adapter := new(gossipAdapterMock)
 	configureAdapter(adapter, discovery.NetworkMember{PKIid: pkiIDInOrg1})
 	adapter.On("Gossip", mock.Anything)
+	adapter.On("Forward", mock.Anything)
 	adapter.On("DeMultiplex", mock.Anything).Run(func(arg mock.Arguments) {
 	})
 
@@ -509,6 +602,7 @@ func TestChannelPull(t *testing.T) {
 	adapter := new(gossipAdapterMock)
 	configureAdapter(adapter, discovery.NetworkMember{PKIid: pkiIDInOrg1})
 	adapter.On("Gossip", mock.Anything)
+	adapter.On("Forward", mock.Anything)
 	adapter.On("DeMultiplex", mock.Anything).Run(func(arg mock.Arguments) {
 		msg := arg.Get(0).(*proto.SignedGossipMessage)
 		if !msg.IsDataMsg() {
@@ -568,6 +662,7 @@ func TestChannelPullAccessControl(t *testing.T) {
 	adapter.On("GetMembership").Return([]discovery.NetworkMember{peer1, peer2, peer3})
 	adapter.On("DeMultiplex", mock.Anything)
 	adapter.On("Gossip", mock.Anything)
+	adapter.On("Forward", mock.Anything)
 	adapter.On("GetConf").Return(conf)
 
 	sentHello := int32(0)
@@ -636,6 +731,7 @@ func TestChannelPeerNotInChannel(t *testing.T) {
 	adapter := new(gossipAdapterMock)
 	configureAdapter(adapter)
 	adapter.On("Gossip", mock.Anything)
+	adapter.On("Forward", mock.Anything)
 	adapter.On("Send", mock.Anything, mock.Anything)
 	adapter.On("DeMultiplex", mock.Anything)
 	gc := NewGossipChannel(pkiIDInOrg1, orgInChannelA, cs, channelA, adapter, &joinChanMsg{})
@@ -768,6 +864,7 @@ func TestChannelIsSubscribed(t *testing.T) {
 	configureAdapter(adapter)
 	gc := NewGossipChannel(pkiIDInOrg1, orgInChannelA, cs, channelA, adapter, &joinChanMsg{})
 	adapter.On("Gossip", mock.Anything)
+	adapter.On("Forward", mock.Anything)
 	adapter.On("Send", mock.Anything, mock.Anything)
 	adapter.On("DeMultiplex", mock.Anything)
 	gc.HandleMessage(&receivedMsg{msg: createStateInfoMsg(10, pkiIDInOrg1, channelA), PKIID: pkiIDInOrg1})
@@ -784,6 +881,7 @@ func TestChannelAddToMessageStore(t *testing.T) {
 	configureAdapter(adapter)
 	gc := NewGossipChannel(pkiIDInOrg1, orgInChannelA, cs, channelA, adapter, &joinChanMsg{})
 	adapter.On("Gossip", mock.Anything)
+	adapter.On("Forward", mock.Anything)
 	adapter.On("Send", mock.Anything, mock.Anything)
 	adapter.On("DeMultiplex", mock.Anything).Run(func(arg mock.Arguments) {
 		demuxedMsgs <- arg.Get(0).(*proto.SignedGossipMessage)
@@ -836,6 +934,7 @@ func TestChannelBlockExpiration(t *testing.T) {
 	configureAdapter(adapter)
 	gc := NewGossipChannel(pkiIDInOrg1, orgInChannelA, cs, channelA, adapter, &joinChanMsg{})
 	adapter.On("Gossip", mock.Anything)
+	adapter.On("Forward", mock.Anything)
 	adapter.On("Send", mock.Anything, mock.Anything)
 	adapter.On("DeMultiplex", mock.Anything).Run(func(arg mock.Arguments) {
 		demuxedMsgs <- arg.Get(0).(*proto.SignedGossipMessage)
@@ -926,6 +1025,7 @@ func TestChannelBadBlocks(t *testing.T) {
 	adapter := new(gossipAdapterMock)
 	configureAdapter(adapter, discovery.NetworkMember{PKIid: pkiIDInOrg1})
 	adapter.On("Gossip", mock.Anything)
+	adapter.On("Forward", mock.Anything)
 	gc := NewGossipChannel(pkiIDInOrg1, orgInChannelA, cs, channelA, adapter, &joinChanMsg{})
 
 	adapter.On("DeMultiplex", mock.Anything).Run(func(args mock.Arguments) {
@@ -964,6 +1064,7 @@ func TestChannelPulledBadBlocks(t *testing.T) {
 	configureAdapter(adapter, discovery.NetworkMember{PKIid: pkiIDInOrg1})
 	adapter.On("DeMultiplex", mock.Anything)
 	adapter.On("Gossip", mock.Anything)
+	adapter.On("Forward", mock.Anything)
 	gc := NewGossipChannel(pkiIDInOrg1, orgInChannelA, cs, channelA, adapter, &joinChanMsg{})
 	gc.HandleMessage(&receivedMsg{PKIID: pkiIDInOrg1, msg: createStateInfoMsg(1, pkiIDInOrg1, channelA)})
 
@@ -989,6 +1090,7 @@ func TestChannelPulledBadBlocks(t *testing.T) {
 	cs.On("VerifyBlock", mock.Anything).Return(errors.New("Bad block"))
 	adapter = new(gossipAdapterMock)
 	adapter.On("Gossip", mock.Anything)
+	adapter.On("Forward", mock.Anything)
 	adapter.On("DeMultiplex", mock.Anything)
 	configureAdapter(adapter, discovery.NetworkMember{PKIid: pkiIDInOrg1})
 	gc = NewGossipChannel(pkiIDInOrg1, orgInChannelA, cs, channelA, adapter, &joinChanMsg{})
@@ -1009,6 +1111,7 @@ func TestChannelPulledBadBlocks(t *testing.T) {
 	cs.On("VerifyBlock", mock.Anything).Return(nil)
 	adapter = new(gossipAdapterMock)
 	adapter.On("Gossip", mock.Anything)
+	adapter.On("Forward", mock.Anything)
 	adapter.On("DeMultiplex", mock.Anything)
 	configureAdapter(adapter, discovery.NetworkMember{PKIid: pkiIDInOrg1})
 	gc = NewGossipChannel(pkiIDInOrg1, orgInChannelA, cs, channelA, adapter, &joinChanMsg{})
@@ -1033,6 +1136,7 @@ func TestChannelPulledBadBlocks(t *testing.T) {
 
 	adapter = new(gossipAdapterMock)
 	adapter.On("Gossip", mock.Anything)
+	adapter.On("Forward", mock.Anything)
 	adapter.On("DeMultiplex", mock.Anything)
 	configureAdapter(adapter, discovery.NetworkMember{PKIid: pkiIDInOrg1})
 	gc = NewGossipChannel(pkiIDInOrg1, orgInChannelA, cs, channelA, adapter, &joinChanMsg{})
@@ -1062,6 +1166,7 @@ func TestChannelStateInfoSnapshot(t *testing.T) {
 	configureAdapter(adapter, discovery.NetworkMember{PKIid: pkiIDInOrg1})
 	gc := NewGossipChannel(pkiIDInOrg1, orgInChannelA, cs, channelA, adapter, &joinChanMsg{})
 	adapter.On("Gossip", mock.Anything)
+	adapter.On("Forward", mock.Anything)
 	sentMessages := make(chan *proto.GossipMessage, 10)
 	adapter.On("Send", mock.Anything, mock.Anything)
 	adapter.On("ValidateStateInfoMessage", mock.Anything).Return(nil)
@@ -1178,6 +1283,7 @@ func TestInterOrgExternalEndpointDisclosure(t *testing.T) {
 	adapter.On("GetOrgOfPeer", pkiID2).Return(orgInChannelA)
 	adapter.On("GetOrgOfPeer", pkiID3).Return(api.OrgIdentityType("ORG2"))
 	adapter.On("Gossip", mock.Anything)
+	adapter.On("Forward", mock.Anything)
 	adapter.On("DeMultiplex", mock.Anything)
 	configureAdapter(adapter)
 	jcm := &joinChanMsg{
@@ -1343,6 +1449,7 @@ func TestChannelReconfigureChannel(t *testing.T) {
 	gc.ConfigureChannel(api.JoinChannelMessage(newJoinChanMsg))
 
 	adapter.On("Gossip", mock.Anything)
+	adapter.On("Forward", mock.Anything)
 	adapter.On("Send", mock.Anything, mock.Anything)
 	adapter.On("DeMultiplex", mock.Anything)
 
@@ -1427,9 +1534,11 @@ func TestGossipChannelEligibility(t *testing.T) {
 		{PKIid: pkiIDInOrg1},
 		{PKIid: pkiIDInOrg1ButNotEligible},
 		{PKIid: pkiIDinOrg2},
+		{PKIid: pkiIDinOrg3},
 	}
 	adapter.On("GetMembership").Return(members)
 	adapter.On("Gossip", mock.Anything)
+	adapter.On("Forward", mock.Anything)
 	adapter.On("Send", mock.Anything, mock.Anything)
 	adapter.On("DeMultiplex", mock.Anything)
 	adapter.On("GetConf").Return(conf)
@@ -1453,14 +1562,35 @@ func TestGossipChannelEligibility(t *testing.T) {
 	})
 	// Every peer sends a StateInfo message
 	gc.HandleMessage(&receivedMsg{PKIID: pkiIDInOrg1, msg: createStateInfoMsg(1, pkiIDInOrg1, channelA)})
-	gc.HandleMessage(&receivedMsg{PKIID: pkiIDInOrg1, msg: createStateInfoMsg(1, pkiIDinOrg2, channelA)})
-	gc.HandleMessage(&receivedMsg{PKIID: pkiIDInOrg1, msg: createStateInfoMsg(1, pkiIDInOrg1ButNotEligible, channelA)})
-	gc.HandleMessage(&receivedMsg{PKIID: pkiIDInOrg1, msg: createStateInfoMsg(1, pkiIDinOrg3, channelA)})
+	gc.HandleMessage(&receivedMsg{PKIID: pkiIDinOrg2, msg: createStateInfoMsg(1, pkiIDinOrg2, channelA)})
+	gc.HandleMessage(&receivedMsg{PKIID: pkiIDInOrg1ButNotEligible, msg: createStateInfoMsg(1, pkiIDInOrg1ButNotEligible, channelA)})
+	gc.HandleMessage(&receivedMsg{PKIID: pkiIDinOrg3, msg: createStateInfoMsg(1, pkiIDinOrg3, channelA)})
 
 	assert.True(t, gc.EligibleForChannel(discovery.NetworkMember{PKIid: pkiIDInOrg1}))
 	assert.True(t, gc.EligibleForChannel(discovery.NetworkMember{PKIid: pkiIDinOrg2}))
 	assert.True(t, gc.EligibleForChannel(discovery.NetworkMember{PKIid: pkiIDInOrg1ButNotEligible}))
 	assert.False(t, gc.EligibleForChannel(discovery.NetworkMember{PKIid: pkiIDinOrg3}))
+
+	// Ensure peers from the channel are returned
+	assert.True(t, gc.PeerFilter(func(signature api.PeerSignature) bool {
+		return true
+	})(discovery.NetworkMember{PKIid: pkiIDInOrg1}))
+	assert.True(t, gc.PeerFilter(func(signature api.PeerSignature) bool {
+		return true
+	})(discovery.NetworkMember{PKIid: pkiIDinOrg2}))
+	// But not peers which aren't in the channel
+	assert.False(t, gc.PeerFilter(func(signature api.PeerSignature) bool {
+		return true
+	})(discovery.NetworkMember{PKIid: pkiIDinOrg3}))
+
+	// Ensure the given predicate is considered
+	assert.True(t, gc.PeerFilter(func(signature api.PeerSignature) bool {
+		return bytes.Equal(signature.PeerIdentity, []byte("pkiIDinOrg2"))
+	})(discovery.NetworkMember{PKIid: pkiIDinOrg2}))
+
+	assert.False(t, gc.PeerFilter(func(signature api.PeerSignature) bool {
+		return bytes.Equal(signature.PeerIdentity, []byte("pkiIDinOrg2"))
+	})(discovery.NetworkMember{PKIid: pkiIDInOrg1}))
 
 	// Remove org2 from the channel
 	gc.ConfigureChannel(&joinChanMsg{
@@ -1526,6 +1656,7 @@ func TestChannelGetPeers(t *testing.T) {
 	cs := &cryptoService{}
 	adapter := new(gossipAdapterMock)
 	adapter.On("Gossip", mock.Anything)
+	adapter.On("Forward", mock.Anything)
 	adapter.On("Send", mock.Anything, mock.Anything)
 	adapter.On("DeMultiplex", mock.Anything)
 	members := []discovery.NetworkMember{
@@ -1575,6 +1706,7 @@ func TestOnDemandGossip(t *testing.T) {
 	adapter.On("Gossip", mock.Anything).Run(func(mock.Arguments) {
 		gossipedEvents <- struct{}{}
 	})
+	adapter.On("Forward", mock.Anything)
 	gc := NewGossipChannel(pkiIDInOrg1, orgInChannelA, cs, channelA, adapter, api.JoinChannelMessage(&joinChanMsg{}))
 	defer gc.Stop()
 	select {
@@ -1598,6 +1730,7 @@ func TestOnDemandGossip(t *testing.T) {
 	adapter.On("Gossip", mock.Anything).Run(func(mock.Arguments) {
 		gossipedEvents <- struct{}{}
 	})
+	adapter.On("Forward", mock.Anything)
 	gc.(*gossipChannel).Adapter = adapter
 	select {
 	case <-gossipedEvents:
@@ -1625,6 +1758,7 @@ func TestChannelPullWithDigestsFilter(t *testing.T) {
 	adapter := new(gossipAdapterMock)
 	configureAdapter(adapter, discovery.NetworkMember{PKIid: pkiIDInOrg1})
 	adapter.On("Gossip", mock.Anything)
+	adapter.On("Forward", mock.Anything)
 	adapter.On("DeMultiplex", mock.Anything).Run(func(arg mock.Arguments) {
 		msg := arg.Get(0).(*proto.SignedGossipMessage)
 		if !msg.IsDataMsg() {
@@ -1719,6 +1853,9 @@ func createStateInfoMsg(ledgerHeight int, pkiID common.PKIidType, channel common
 				Timestamp:   &proto.PeerTime{IncNum: uint64(time.Now().UnixNano()), SeqNum: 1},
 				Metadata:    metaBytes,
 				PkiId:       []byte(pkiID),
+				Properties: &proto.Properties{
+					LedgerHeight: uint64(ledgerHeight),
+				},
 			},
 		},
 	}).NoopSign()

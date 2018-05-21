@@ -8,7 +8,6 @@ package gossip
 
 import (
 	"bytes"
-	"sync"
 
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/common"
@@ -22,7 +21,6 @@ import (
 
 // certStore supports pull dissemination of identity messages
 type certStore struct {
-	sync.RWMutex
 	selfIdentity api.PeerIdentityType
 	idMapper     identity.Mapper
 	pull         pull.Mediator
@@ -46,11 +44,11 @@ func newCertStore(puller pull.Mediator, idMapper identity.Mapper, selfIdentity a
 		certStore.logger.Panicf("Failed associating self PKIID to cert: %+v", errors.WithStack(err))
 	}
 
-	selfIdMsg, err := certStore.createIdentityMessage()
+	selfIDMsg, err := certStore.createIdentityMessage()
 	if err != nil {
 		certStore.logger.Panicf("Failed creating self identity message: %+v", errors.WithStack(err))
 	}
-	puller.Add(selfIdMsg)
+	puller.Add(selfIDMsg)
 	puller.RegisterMsgHook(pull.RequestMsgType, func(_ []string, msgs []*proto.SignedGossipMessage, _ proto.ReceivedMessage) {
 		for _, msg := range msgs {
 			pkiID := common.PKIidType(msg.GetPeerIdentity().PkiId)
@@ -133,14 +131,11 @@ func (cs *certStore) createIdentityMessage() (*proto.SignedGossipMessage, error)
 	return sMsg, errors.WithStack(err)
 }
 
-func (cs *certStore) listRevokedPeers(isSuspected api.PeerSuspector) []common.PKIidType {
-	revokedPeers := cs.idMapper.ListInvalidIdentities(isSuspected)
-	for _, pkiID := range revokedPeers {
-		cs.pull.Remove(string(pkiID))
-	}
-	return revokedPeers
+func (cs *certStore) suspectPeers(isSuspected api.PeerSuspector) {
+	cs.idMapper.SuspectPeers(isSuspected)
 }
 
 func (cs *certStore) stop() {
 	cs.pull.Stop()
+	cs.idMapper.Stop()
 }

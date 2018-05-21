@@ -13,11 +13,11 @@ The standard usage is expected to be:
 4. `configtxlator` used to compute config update representation of changes to the config
 5. SDK submits signs and submits config
 
-The `configtxlator` tool exposes a truly stateless REST API for interacting with configuration elements.  These REST components support converting the native configuration format to/from a human readable JSON representation, as well as computing computing configuration updates based on the difference between two configurations.
+The `configtxlator` tool exposes a truly stateless REST API for interacting with configuration elements.  These REST components support converting the native configuration format to/from a human readable JSON representation, as well as computing configuration updates based on the difference between two configurations.
 
 Because the `configtxlator` service deliberately does not contain any crypto material, or otherwise secret information, it does not include any authorization or access control.  The anticipated typical deployment would be to operate as a sandboxed container, locally with the application, so that there is a dedicated configtxlator process for each consumer of it.
 
-## Buliding and running the configtxlator
+## Building and running the configtxlator
 
 The `configtxlator` binary may be produced by executing `make configtxlator`.
 
@@ -37,7 +37,7 @@ For instance, to decode a configuration block saved as `configuration_block.pb`,
 curl -X POST --data-binary @configuration_block.pb http://127.0.0.1:7059/protolator/decode/common.Block
 ```
 
-To convert the human readable JSON version of the proto message, simply post the JSON version to `http://$SERVER:$PORT/protolator/encode/<message.Name` where `<message.Name>` is again the fully qualified proto name of the message.
+To convert the human readable JSON version of the proto message, simply post the JSON version to `http://$SERVER:$PORT/protolator/encode/<message.Name>` where `<message.Name>` is again the fully qualified proto name of the message.
 
 For instance, re-encode the block saved as `configuration_block.json`, run the command:
 
@@ -57,7 +57,7 @@ For example, given the original config as the file `original_config.pb` and the 
 curl -X POST -F channel=desiredchannel -F original=@original_config.pb -F updated=@updated_config.pb http://127.0.0.1:7059/configtxlator/compute/update-from-configs
 ```
 
-## Bootstraping example
+## Bootstrapping example
 
 First build and start the `configtxlator`.
 
@@ -81,7 +81,7 @@ CGO_CFLAGS=" " GOBIN=/home/yellickj/go/src/github.com/hyperledger/fabric/build/b
 Binary available as build/bin/configtxgen
 ```
 
-It is recommended to run the example by invoking the script `fabric/example/configtxupdate/bootstrap_batchsize/script.sh` as follows:
+It is recommended to run the example by invoking the script `fabric/examples/configtxupdate/bootstrap_batchsize/script.sh` as follows:
 
 ```
 INTERACTIVE=true ./script.sh
@@ -102,18 +102,18 @@ Decode the genesis block into a human editable form.
 ```
 curl -X POST --data-binary @genesis_block.pb http://127.0.0.1:7059/protolator/decode/common.Block > genesis_block.json
 ```
-Edit the `genesis_block.json` file in your favorite JSON editor, or manipulate it programatically, here, we use the JSON CLI tool `jq`.  For simplicity, we are editing the batch size for the channel, because it is a single numeric field, but any edits, including policy and MSP edits may be made here.
+Edit the `genesis_block.json` file in your favorite JSON editor, or manipulate it programmatically, here, we use the JSON CLI tool `jq`.  For simplicity, we are editing the batch size for the channel, because it is a single numeric field, but any edits, including policy and MSP edits may be made here.
 ```
 $ export MAXBATCHSIZEPATH=".data.data[0].payload.data.config.channel_group.groups.Orderer.values.BatchSize.value.max_message_count"
 # Display the old batch size
-$ jq "$MAXBATCHSIZEPATH" genesis_block.json 
+$ jq "$MAXBATCHSIZEPATH" genesis_block.json
 10
 
 # Set the new batch size
 $ jq "$MAXBATCHSIZEPATH = 20" genesis_block.json  > updated_genesis_block.json
 
 # Display the new batch size
-$ jq "$MAXBATCHSIZEPATH" updated_genesis_block.json 
+$ jq "$MAXBATCHSIZEPATH" updated_genesis_block.json
 20
 ```
 The genesis block is now ready to be re-encoded into the native proto form to be used for bootstrapping.
@@ -160,7 +160,7 @@ ORDERER_GENERAL_LOGLEVEL=debug orderer
 
 Reconfiguring a channel can be performed in a very similar way to modifying a genesis config.
 
-The recommended path to proceed with this example is to run the script located at `fabric/example/configtxupdate/reconfigure_batchsize/script.sh` by invoking
+The recommended path to proceed with this example is to run the script located at `fabric/examples/configtxupdate/reconfigure_batchsize/script.sh` by invoking
 
 ```
 INTERACTIVE=true ./script.sh
@@ -281,7 +281,7 @@ CGO_CFLAGS=" " GOBIN=/home/yellickj/go/src/github.com/hyperledger/fabric/build/b
 Binary available as build/bin/orderer
 ```
 
-Start the orderer using the `SampleDevModSolo` profile option.
+Start the orderer using the `SampleDevModeSolo` profile option.
 
 ```
 ORDERER_GENERAL_LOGLEVEL=debug ORDERER_GENERAL_GENESISPROFILE=SampleDevModeSolo orderer

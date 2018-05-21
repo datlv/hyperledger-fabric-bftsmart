@@ -1,17 +1,9 @@
+// +build go1.9
+
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package golang
@@ -22,6 +14,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -108,18 +101,15 @@ func TestValidateCDS(t *testing.T) {
 }
 
 func TestPlatform_GoPathNotSet(t *testing.T) {
-	p := &Platform{}
-	spec := &pb.ChaincodeSpec{
-		ChaincodeId: &pb.ChaincodeID{
-			Path: "/opt/gopath/src/github.com/hyperledger/fabric",
-		},
-	}
 	gopath := os.Getenv("GOPATH")
 	defer os.Setenv("GOPATH", gopath)
 	os.Setenv("GOPATH", "")
 
-	err := p.ValidateSpec(spec)
-	assert.Contains(t, err.Error(), "invalid GOPATH environment variable value")
+	// Go 1.9 sets GOPATH to $HOME/go if GOPATH is not set
+	defaultGopath := filepath.Join(os.Getenv("HOME"), "go")
+	currentGopath, err := getGopath()
+	assert.NoError(t, err, "Expected default GOPATH")
+	assert.Equal(t, defaultGopath, currentGopath)
 }
 
 func Test_findSource(t *testing.T) {
@@ -172,6 +162,41 @@ func Test_DeploymentPayload(t *testing.T) {
 
 			t.Logf("%s (%d)", header.Name, header.Size)
 		}
+	}
+}
+
+func Test_DeploymentPayloadWithStateDBArtifacts(t *testing.T) {
+	platform := &Platform{}
+	spec := &pb.ChaincodeSpec{
+		ChaincodeId: &pb.ChaincodeID{
+			Path: "github.com/hyperledger/fabric/examples/chaincode/go/marbles02",
+		},
+	}
+
+	payload, err := platform.GetDeploymentPayload(spec)
+	assert.NoError(t, err)
+
+	t.Logf("payload size: %d", len(payload))
+
+	is := bytes.NewReader(payload)
+	gr, err := gzip.NewReader(is)
+	if err == nil {
+		tr := tar.NewReader(gr)
+
+		var foundIndexArtifact bool
+		for {
+			header, err := tr.Next()
+			if err != nil {
+				// We only get here if there are no more entries to scan
+				break
+			}
+
+			t.Logf("%s (%d)", header.Name, header.Size)
+			if header.Name == "META-INF/statedb/couchdb/indexes/indexOwner.json" {
+				foundIndexArtifact = true
+			}
+		}
+		assert.Equal(t, true, foundIndexArtifact, "should have found statedb index artifact in marbles02 META-INF directory")
 	}
 }
 
@@ -233,6 +258,10 @@ func TestValidateSpec(t *testing.T) {
 }
 
 func TestGetDeploymentPayload(t *testing.T) {
+	emptyDir := fmt.Sprintf("pkg%d", os.Getpid())
+	os.Mkdir(emptyDir, os.ModePerm)
+	defer os.Remove(emptyDir)
+
 	platform := &Platform{}
 
 	var tests = []struct {
@@ -242,13 +271,30 @@ func TestGetDeploymentPayload(t *testing.T) {
 		{spec: &pb.ChaincodeSpec{ChaincodeId: &pb.ChaincodeID{Name: "Test Chaincode", Path: "github.com/hyperledger/fabric/examples/chaincode/go/map"}}, succ: true},
 		{spec: &pb.ChaincodeSpec{ChaincodeId: &pb.ChaincodeID{Name: "Test Chaincode", Path: "github.com/hyperledger/fabric/examples/bad/go/map"}}, succ: false},
 		{spec: &pb.ChaincodeSpec{ChaincodeId: &pb.ChaincodeID{Name: "Test Chaincode", Path: "github.com/hyperledger/fabric/test/chaincodes/BadImport"}}, succ: false},
+		{spec: &pb.ChaincodeSpec{ChaincodeId: &pb.ChaincodeID{Name: "Test Chaincode", Path: "github.com/hyperledger/fabric/test/chaincodes/BadMetadataInvalidIndex"}}, succ: false},
+		{spec: &pb.ChaincodeSpec{ChaincodeId: &pb.ChaincodeID{Name: "Test Chaincode", Path: "github.com/hyperledger/fabric/test/chaincodes/BadMetadataUnexpectedFolderContent"}}, succ: false},
+		{spec: &pb.ChaincodeSpec{ChaincodeId: &pb.ChaincodeID{Name: "Test Chaincode", Path: "github.com/hyperledger/fabric/test/chaincodes/BadMetadataIgnoreHiddenFile"}}, succ: true},
+		{spec: &pb.ChaincodeSpec{ChaincodeId: &pb.ChaincodeID{Name: "Test Chaincode", Path: "github.com/hyperledger/fabric/core/chaincode/platforms/golang/" + emptyDir}}, succ: false},
 	}
 
 	for _, tst := range tests {
 		_, err := platform.GetDeploymentPayload(tst.spec)
+		t.Log(err)
 		if err = testerr(err, tst.succ); err != nil {
 			t.Errorf("Error validating chaincode spec: %s, %s", tst.spec.ChaincodeId.Path, err)
 		}
+	}
+}
+
+//TestGetLDFlagsOpts tests handling of chaincode.golang.dynamicLink
+func TestGetLDFlagsOpts(t *testing.T) {
+	viper.Set("chaincode.golang.dynamicLink", true)
+	if getLDFlagsOpts() != dynamicLDFlagsOpts {
+		t.Error("Error handling chaincode.golang.dynamicLink configuration. ldflags should be for dynamic linkink")
+	}
+	viper.Set("chaincode.golang.dynamicLink", false)
+	if getLDFlagsOpts() != staticLDFlagsOpts {
+		t.Error("Error handling chaincode.golang.dynamicLink configuration. ldflags should be for static linkink")
 	}
 }
 

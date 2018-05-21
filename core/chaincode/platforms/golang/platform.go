@@ -22,6 +22,7 @@ import (
 	"compress/gzip"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -30,9 +31,12 @@ import (
 
 	"sort"
 
+	"github.com/hyperledger/fabric/common/metadata"
 	"github.com/hyperledger/fabric/core/chaincode/platforms/util"
+	ccmetadata "github.com/hyperledger/fabric/core/common/ccprovider/metadata"
 	cutil "github.com/hyperledger/fabric/core/container/util"
 	pb "github.com/hyperledger/fabric/protos/peer"
+	"github.com/spf13/viper"
 )
 
 // Platform for chaincodes written in Go
@@ -116,7 +120,7 @@ func (goPlatform *Platform) ValidateSpec(spec *pb.ChaincodeSpec) error {
 			return fmt.Errorf("error validating chaincode path: %s", err)
 		}
 		if !exists {
-			return fmt.Errorf("path to chaincode does not exist: %s", spec.ChaincodeId.Path)
+			return fmt.Errorf("path to chaincode does not exist: %s", pathToCheck)
 		}
 	}
 	return nil
@@ -290,10 +294,21 @@ func (goPlatform *Platform) GetDeploymentPayload(spec *pb.ChaincodeSpec) ([]byte
 		"github.com/hyperledger/fabric/protos/peer":         true,
 	}
 
+	// Golang "pseudo-packages" - packages which don't actually exist
+	var pseudo = map[string]bool{
+		"C": true,
+	}
+
 	imports = filter(imports, func(pkg string) bool {
 		// Drop if provided by CCENV
 		if _, ok := provided[pkg]; ok == true {
 			logger.Debugf("Discarding provided package %s", pkg)
+			return false
+		}
+
+		// Drop pseudo-packages
+		if _, ok := pseudo[pkg]; ok == true {
+			logger.Debugf("Discarding pseudo-package %s", pkg)
 			return false
 		}
 
@@ -413,6 +428,44 @@ func (goPlatform *Platform) GetDeploymentPayload(spec *pb.ChaincodeSpec) ([]byte
 	tw := tar.NewWriter(gw)
 
 	for _, file := range files {
+
+		// file.Path represents os localpath
+		// file.Name represents tar packagepath
+
+		// If the file is metadata rather than golang code, remove the leading go code path, for example:
+		// original file.Name:  src/github.com/hyperledger/fabric/examples/chaincode/go/marbles02/META-INF/statedb/couchdb/indexes/indexOwner.json
+		// updated file.Name:   META-INF/statedb/couchdb/indexes/indexOwner.json
+		if file.IsMetadata {
+
+			file.Name, err = filepath.Rel(filepath.Join("src", code.Pkg), file.Name)
+			if err != nil {
+				return nil, fmt.Errorf("This error was caused by bad packaging of the metadata.  The file [%s] is marked as MetaFile, however not located under META-INF   Error:[%s]", file.Name, err)
+			}
+
+			// Split the tar location (file.Name) into a tar package directory and filename
+			packageDir, filename := filepath.Split(file.Name)
+
+			// Hidden files are not supported as metadata, therefore ignore them.
+			// User often doesn't know that hidden files are there, and may not be able to delete them, therefore warn user rather than error out.
+			if strings.HasPrefix(filename, ".") {
+				logger.Warningf("Ignoring hidden file in metadata directory: %s", file.Name)
+				continue
+			}
+
+			fileBytes, err := ioutil.ReadFile(file.Path)
+			if err != nil {
+				return nil, err
+			}
+
+			// Validate metadata file for inclusion in tar
+			// Validation is based on the passed metadata directory, e.g. META-INF/statedb/couchdb/indexes
+			// Clean metadata directory to remove trailing slash
+			err = ccmetadata.ValidateMetadataFile(filename, fileBytes, filepath.Clean(packageDir))
+			if err != nil {
+				return nil, err
+			}
+		}
+
 		err = cutil.WriteFileToPackage(file.Path, file.Name, tw)
 		if err != nil {
 			return nil, fmt.Errorf("Error writing %s to tar: %s", file.Name, err)
@@ -437,6 +490,16 @@ func (goPlatform *Platform) GenerateDockerfile(cds *pb.ChaincodeDeploymentSpec) 
 	return dockerFileContents, nil
 }
 
+const staticLDFlagsOpts = "-ldflags \"-linkmode external -extldflags '-static'\""
+const dynamicLDFlagsOpts = ""
+
+func getLDFlagsOpts() string {
+	if viper.GetBool("chaincode.golang.dynamicLink") {
+		return dynamicLDFlagsOpts
+	}
+	return staticLDFlagsOpts
+}
+
 func (goPlatform *Platform) GenerateDockerBuild(cds *pb.ChaincodeDeploymentSpec, tw *tar.Writer) error {
 	spec := cds.ChaincodeSpec
 
@@ -445,12 +508,20 @@ func (goPlatform *Platform) GenerateDockerBuild(cds *pb.ChaincodeDeploymentSpec,
 		return fmt.Errorf("could not decode url: %s", err)
 	}
 
-	const ldflags = "-linkmode external -extldflags '-static'"
+	ldflagsOpt := getLDFlagsOpts()
+	logger.Infof("building chaincode with ldflagsOpt: '%s'", ldflagsOpt)
+
+	var gotags string
+	// check if experimental features are enabled
+	if metadata.Experimental == "true" {
+		gotags = " experimental"
+	}
+	logger.Infof("building chaincode with tags: %s", gotags)
 
 	codepackage := bytes.NewReader(cds.CodePackage)
 	binpackage := bytes.NewBuffer(nil)
 	err = util.DockerBuild(util.DockerBuildOptions{
-		Cmd:          fmt.Sprintf("GOPATH=/chaincode/input:$GOPATH go build -ldflags \"%s\" -o /chaincode/output/chaincode %s", ldflags, pkgname),
+		Cmd:          fmt.Sprintf("GOPATH=/chaincode/input:$GOPATH go build -tags \"%s\" %s -o /chaincode/output/chaincode %s", gotags, ldflagsOpt, pkgname),
 		InputStream:  codepackage,
 		OutputStream: binpackage,
 	})

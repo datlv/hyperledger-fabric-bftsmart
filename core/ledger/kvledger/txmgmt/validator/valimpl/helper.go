@@ -25,7 +25,7 @@ import (
 	"github.com/hyperledger/fabric/protos/utils"
 )
 
-// validateAndPreparePvtBatch pulls out the private write-set from transient store for the transactions that are marked as valid
+// validateAndPreparePvtBatch pulls out the private write-set for the transactions that are marked as valid
 // by the internal public data validator. Finally, it validates (if not already self-endorsed) the pvt rwset against the
 // corresponding hash present in the public rwset
 func validateAndPreparePvtBatch(block *valinternal.Block, pvtdata map[uint64]*ledger.TxPvtData) (*privacyenabledstate.PvtUpdateBatch, error) {
@@ -39,8 +39,7 @@ func validateAndPreparePvtBatch(block *valinternal.Block, pvtdata map[uint64]*le
 		}
 		txPvtdata := pvtdata[uint64(tx.IndexInBlock)]
 		if txPvtdata == nil {
-			return nil,
-				&validator.ErrMissingPvtdata{Msg: fmt.Sprintf("Pvt data missing for the transaction tx num [%d]", tx.IndexInBlock)}
+			continue
 		}
 		if requiresPvtdataValidation(txPvtdata) {
 			if err := validatePvtdata(tx, txPvtdata); err != nil {
@@ -78,7 +77,7 @@ func validatePvtdata(tx *valinternal.Transaction, pvtdata *ledger.TxPvtData) err
 			hashInPubdata := tx.RetrieveHash(nsPvtdata.Namespace, collPvtdata.CollectionName)
 			if !bytes.Equal(collPvtdataHash, hashInPubdata) {
 				return &validator.ErrPvtdataHashMissmatch{
-					Msg: fmt.Sprintf(`Hash of pvt data for collection [%s:%s] does not match with the corresponding hash in the public data. 
+					Msg: fmt.Sprintf(`Hash of pvt data for collection [%s:%s] does not match with the corresponding hash in the public data.
 					public hash = [%#v], pvt data hash = [%#v]`, nsPvtdata.Namespace, collPvtdata.CollectionName, hashInPubdata, collPvtdataHash),
 				}
 			}
@@ -89,7 +88,7 @@ func validatePvtdata(tx *valinternal.Transaction, pvtdata *ledger.TxPvtData) err
 
 // preprocessProtoBlock parses the proto instance of block into 'Block' structure.
 // The retuned 'Block' structure contains only transactions that are endorser transactions and are not alredy marked as invalid
-func preprocessProtoBlock(txmgr txmgr.TxMgr, block *common.Block) (*valinternal.Block, error) {
+func preprocessProtoBlock(txmgr txmgr.TxMgr, block *common.Block, doMVCCValidation bool) (*valinternal.Block, error) {
 	b := &valinternal.Block{Num: block.Header.Number}
 	// Committer validator has already set validation flags based on well formed tran checks
 	txsFilter := util.TxValidationFlags(block.Metadata.Metadata[common.BlockMetadataIndex_TRANSACTIONS_FILTER])
@@ -99,24 +98,27 @@ func preprocessProtoBlock(txmgr txmgr.TxMgr, block *common.Block) (*valinternal.
 		block.Metadata.Metadata[common.BlockMetadataIndex_TRANSACTIONS_FILTER] = txsFilter
 	}
 	for txIndex, envBytes := range block.Data.Data {
+		var env *common.Envelope
+		var chdr *common.ChannelHeader
+		var payload *common.Payload
+		var err error
+		if env, err = utils.GetEnvelopeFromBlock(envBytes); err == nil {
+			if payload, err = utils.GetPayload(env); err == nil {
+				chdr, err = utils.UnmarshalChannelHeader(payload.Header.ChannelHeader)
+			}
+		}
 		if txsFilter.IsInvalid(txIndex) {
-			// Skiping invalid transaction
-			logger.Warningf("Block [%d] Transaction index [%d] marked as invalid by committer. Reason code [%d]",
-				block.Header.Number, txIndex, txsFilter.Flag(txIndex))
+			// Skipping invalid transaction
+			logger.Warningf("Channel [%s]: Block [%d] Transaction index [%d] TxId [%s]"+
+				" marked as invalid by committer. Reason code [%s]",
+				chdr.GetChannelId(), block.Header.Number, txIndex, chdr.GetTxId(),
+				txsFilter.Flag(txIndex).String())
 			continue
 		}
-		env, err := utils.GetEnvelopeFromBlock(envBytes)
 		if err != nil {
 			return nil, err
 		}
-		payload, err := utils.GetPayload(env)
-		if err != nil {
-			return nil, err
-		}
-		chdr, err := utils.UnmarshalChannelHeader(payload.Header.ChannelHeader)
-		if err != nil {
-			return nil, err
-		}
+
 		var txRWSet *rwsetutil.TxRwSet
 		txType := common.HeaderType(chdr.Type)
 		logger.Debugf("txType=%s", txType)
@@ -133,7 +135,11 @@ func preprocessProtoBlock(txmgr txmgr.TxMgr, block *common.Block) (*valinternal.
 				continue
 			}
 		} else {
-			rwsetProto, err := processNonEndorserTx(env, chdr.TxId, txType, txmgr)
+			rwsetProto, err := processNonEndorserTx(env, chdr.TxId, txType, txmgr, !doMVCCValidation)
+			if _, ok := err.(*customtx.InvalidTxError); ok {
+				txsFilter.SetFlag(txIndex, peer.TxValidationCode_INVALID_OTHER_REASON)
+				continue
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -150,10 +156,10 @@ func preprocessProtoBlock(txmgr txmgr.TxMgr, block *common.Block) (*valinternal.
 	return b, nil
 }
 
-func processNonEndorserTx(txEnv *common.Envelope, txid string, txType common.HeaderType, txmgr txmgr.TxMgr) (*rwset.TxReadWriteSet, error) {
+func processNonEndorserTx(txEnv *common.Envelope, txid string, txType common.HeaderType, txmgr txmgr.TxMgr, synchingState bool) (*rwset.TxReadWriteSet, error) {
 	logger.Debugf("Performing custom processing for transaction [txid=%s], [txType=%s]", txid, txType)
 	processor := customtx.GetProcessor(txType)
-	logger.Debug("Processor for custom tx processing:%#v", processor)
+	logger.Debugf("Processor for custom tx processing:%#v", processor)
 	if processor == nil {
 		return nil, nil
 	}
@@ -161,11 +167,11 @@ func processNonEndorserTx(txEnv *common.Envelope, txid string, txType common.Hea
 	var err error
 	var sim ledger.TxSimulator
 	var simRes *ledger.TxSimulationResults
-
 	if sim, err = txmgr.NewTxSimulator(txid); err != nil {
 		return nil, err
 	}
-	if err = processor.GenerateSimulationResults(txEnv, sim); err != nil {
+	defer sim.Done()
+	if err = processor.GenerateSimulationResults(txEnv, sim, synchingState); err != nil {
 		return nil, err
 	}
 	if simRes, err = sim.GetTxSimulationResults(); err != nil {
