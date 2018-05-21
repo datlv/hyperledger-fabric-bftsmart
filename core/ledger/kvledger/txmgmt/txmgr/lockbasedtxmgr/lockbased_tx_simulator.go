@@ -36,14 +36,9 @@ type lockBasedTxSimulator struct {
 
 func newLockBasedTxSimulator(txmgr *LockBasedTxMgr, txid string) (*lockBasedTxSimulator, error) {
 	rwsetBuilder := rwsetutil.NewRWSetBuilder()
-	helper := &queryHelper{txmgr: txmgr, rwsetBuilder: rwsetBuilder}
+	helper := newQueryHelper(txmgr, rwsetBuilder)
 	logger.Debugf("constructing new tx simulator txid = [%s]", txid)
 	return &lockBasedTxSimulator{lockBasedQueryExecutor{helper, txid}, rwsetBuilder, false, false}, nil
-}
-
-// GetState implements method in interface `ledger.TxSimulator`
-func (s *lockBasedTxSimulator) GetState(ns string, key string) ([]byte, error) {
-	return s.helper.getState(ns, key)
 }
 
 // SetState implements method in interface `ledger.TxSimulator`
@@ -54,7 +49,7 @@ func (s *lockBasedTxSimulator) SetState(ns string, key string, value []byte) err
 	if err := s.checkBeforeWrite(); err != nil {
 		return err
 	}
-	if err := s.helper.txmgr.db.ValidateKey(key); err != nil {
+	if err := s.helper.txmgr.db.ValidateKeyValue(key, value); err != nil {
 		return err
 	}
 	s.rwsetBuilder.AddToWriteSet(ns, key, value)
@@ -76,19 +71,33 @@ func (s *lockBasedTxSimulator) SetStateMultipleKeys(namespace string, kvs map[st
 	return nil
 }
 
+// SetStateMetadata implements method in interface `ledger.TxSimulator`
+func (s *lockBasedTxSimulator) SetStateMetadata(namespace, key string, metadata map[string][]byte) error {
+	return errors.New("not implemented")
+}
+
+// DeleteStateMetadata implements method in interface `ledger.TxSimulator`
+func (s *lockBasedTxSimulator) DeleteStateMetadata(namespace, key string) error {
+	return errors.New("not implemented")
+}
+
 // SetPrivateData implements method in interface `ledger.TxSimulator`
 func (s *lockBasedTxSimulator) SetPrivateData(ns, coll, key string, value []byte) error {
+	if err := s.helper.validateCollName(ns, coll); err != nil {
+		return err
+	}
 	if err := s.helper.checkDone(); err != nil {
 		return err
 	}
 	if err := s.checkBeforeWrite(); err != nil {
 		return err
 	}
-	if err := s.helper.txmgr.db.ValidateKey(key); err != nil {
+	if err := s.helper.txmgr.db.ValidateKeyValue(key, value); err != nil {
 		return err
 	}
 	s.writePerformed = true
-	return s.rwsetBuilder.AddToPvtAndHashedWriteSet(ns, coll, key, value)
+	s.rwsetBuilder.AddToPvtAndHashedWriteSet(ns, coll, key, value)
+	return nil
 }
 
 // DeletePrivateData implements method in interface `ledger.TxSimulator`
@@ -114,6 +123,16 @@ func (s *lockBasedTxSimulator) GetPrivateDataRangeScanIterator(namespace, collec
 	return s.lockBasedQueryExecutor.GetPrivateDataRangeScanIterator(namespace, collection, startKey, endKey)
 }
 
+// SetPrivateDataMetadata implements method in interface `ledger.TxSimulator`
+func (s *lockBasedTxSimulator) SetPrivateDataMetadata(namespace, collection, key string, metadata map[string][]byte) error {
+	return errors.New("not implemented")
+}
+
+// DeletePrivateMetadata implements method in interface `ledger.TxSimulator`
+func (s *lockBasedTxSimulator) DeletePrivateDataMetadata(namespace, collection, key string) error {
+	return errors.New("not implemented")
+}
+
 // ExecuteQueryOnPrivateData implements method in interface `ledger.TxSimulator`
 func (s *lockBasedTxSimulator) ExecuteQueryOnPrivateData(namespace, collection, query string) (commonledger.ResultsIterator, error) {
 	if err := s.checkBeforePvtdataQueries(); err != nil {
@@ -125,7 +144,6 @@ func (s *lockBasedTxSimulator) ExecuteQueryOnPrivateData(namespace, collection, 
 // GetTxSimulationResults implements method in interface `ledger.TxSimulator`
 func (s *lockBasedTxSimulator) GetTxSimulationResults() (*ledger.TxSimulationResults, error) {
 	logger.Debugf("Simulation completed, getting simulation results")
-	s.Done()
 	if s.helper.err != nil {
 		return nil, s.helper.err
 	}

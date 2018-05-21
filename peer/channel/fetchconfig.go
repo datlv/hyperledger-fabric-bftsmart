@@ -45,20 +45,21 @@ func fetchCmd(cf *ChannelCmdFactory) *cobra.Command {
 }
 
 func fetch(cmd *cobra.Command, args []string, cf *ChannelCmdFactory) error {
+	if len(args) == 0 {
+		return fmt.Errorf("fetch target required, oldest, newest, config, or a number")
+	}
+	if len(args) > 2 {
+		return fmt.Errorf("trailing args detected")
+	}
+	// Parsing of the command line is done so silence cmd usage
+	cmd.SilenceUsage = true
+
 	var err error
 	if cf == nil {
 		cf, err = InitCmdFactory(EndorserNotRequired, OrdererRequired)
 		if err != nil {
 			return err
 		}
-	}
-
-	if len(args) == 0 {
-		return fmt.Errorf("fetch target required, oldest, newest, config, or a number")
-	}
-
-	if len(args) > 2 {
-		return fmt.Errorf("trailing args detected")
 	}
 
 	var block *cb.Block
@@ -69,18 +70,18 @@ func fetch(cmd *cobra.Command, args []string, cf *ChannelCmdFactory) error {
 	case "newest":
 		block, err = cf.DeliverClient.getNewestBlock()
 	case "config":
-		iBlock, err := cf.DeliverClient.getNewestBlock()
-		if err != nil {
-			return err
+		iBlock, err2 := cf.DeliverClient.getNewestBlock()
+		if err2 != nil {
+			return err2
 		}
-		lc, err := utils.GetLastConfigIndexFromBlock(iBlock)
-		if err != nil {
-			return err
+		lc, err2 := utils.GetLastConfigIndexFromBlock(iBlock)
+		if err2 != nil {
+			return err2
 		}
 		block, err = cf.DeliverClient.getSpecifiedBlock(lc)
 	default:
-		num, err := strconv.Atoi(args[0])
-		if err != nil {
+		num, err2 := strconv.Atoi(args[0])
+		if err2 != nil {
 			return fmt.Errorf("fetch target illegal: %s", args[0])
 		}
 		block, err = cf.DeliverClient.getSpecifiedBlock(uint64(num))

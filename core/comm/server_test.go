@@ -109,9 +109,6 @@ func (tss *testServiceServer) EmptyCall(context.Context, *testpb.Empty) (*testpb
 
 //invoke the EmptyCall RPC
 func invokeEmptyCall(address string, dialOptions []grpc.DialOption) (*testpb.Empty, error) {
-
-	//add DialOptions
-	dialOptions = append(dialOptions, grpc.WithBlock())
 	ctx := context.Background()
 	ctx, _ = context.WithTimeout(ctx, timeout)
 	//create GRPC client conn
@@ -194,6 +191,7 @@ func (org *testOrg) testServers(port int, clientRootCAs [][]byte) []testServer {
 		testServer := testServer{
 			fmt.Sprintf("localhost:%d", port+i),
 			comm.ServerConfig{
+				ConnectionTimeout: 250 * time.Millisecond,
 				SecOpts: &comm.SecureOptions{
 					UseTLS:            true,
 					Certificate:       serverCert.certPEM,
@@ -575,6 +573,7 @@ func TestNewSecureGRPCServer(t *testing.T) {
 	t.Parallel()
 	testAddress := "localhost:9055"
 	srv, err := comm.NewGRPCServer(testAddress, comm.ServerConfig{
+		ConnectionTimeout: 250 * time.Millisecond,
 		SecOpts: &comm.SecureOptions{
 			UseTLS:      true,
 			Certificate: []byte(selfSignedCertPEM),
@@ -633,18 +632,23 @@ func TestNewSecureGRPCServer(t *testing.T) {
 		t.Log("GRPC client successfully invoked the EmptyCall service: " + testAddress)
 	}
 
-	// ensure that TLS 1.2 in required / enforced
-	for _, tlsVersion := range []uint16{tls.VersionSSL30, tls.VersionTLS10, tls.VersionTLS11} {
-		_, err = invokeEmptyCall(testAddress,
-			[]grpc.DialOption{grpc.WithTransportCredentials(
-				credentials.NewTLS(&tls.Config{
-					RootCAs:    certPool,
-					MinVersion: tlsVersion,
-					MaxVersion: tlsVersion,
-				}))})
-		t.Logf("TLSVersion [%d] failed with [%s]", tlsVersion, err)
-		assert.Error(t, err, "Should not have been able to connect with TLS version < 1.2")
-		assert.Contains(t, err.Error(), "protocol version not supported")
+	tlsVersions := []string{"SSL30", "TLS10", "TLS11"}
+	for counter, tlsVersion := range []uint16{tls.VersionSSL30, tls.VersionTLS10, tls.VersionTLS11} {
+		tlsVersion := tlsVersion
+		t.Run(tlsVersions[counter], func(t *testing.T) {
+			t.Parallel()
+			_, err := invokeEmptyCall(testAddress,
+				[]grpc.DialOption{grpc.WithTransportCredentials(
+					credentials.NewTLS(&tls.Config{
+						RootCAs:    certPool,
+						MinVersion: tlsVersion,
+						MaxVersion: tlsVersion,
+					})),
+					grpc.WithBlock()})
+			t.Logf("TLSVersion [%d] failed with [%s]", tlsVersion, err)
+			assert.Error(t, err, "Should not have been able to connect with TLS version < 1.2")
+			assert.Contains(t, err.Error(), "context deadline exceeded")
+		})
 	}
 }
 
@@ -923,7 +927,11 @@ func runMutualAuth(t *testing.T, servers []testServer, trustedClients, unTrusted
 		//loop through all the untrusted clients
 		for k := 0; k < len(unTrustedClients); k++ {
 			//invoke the EmptyCall service
-			_, err = invokeEmptyCall(servers[i].address, []grpc.DialOption{grpc.WithTransportCredentials(credentials.NewTLS(unTrustedClients[k]))})
+			_, err = invokeEmptyCall(
+				servers[i].address,
+				[]grpc.DialOption{
+					grpc.WithTransportCredentials(
+						credentials.NewTLS(unTrustedClients[k]))})
 			//we expect failure from untrusted clients
 			if err != nil {
 				t.Logf("Untrusted client%d was correctly rejected by %s", k, servers[i].address)
@@ -1372,8 +1380,8 @@ func TestKeepaliveNoClientResponse(t *testing.T) {
 	t.Parallel()
 	// set up GRPCServer instance
 	kap := &comm.KeepaliveOptions{
-		ServerInterval: time.Duration(2) * time.Second,
-		ServerTimeout:  time.Duration(1) * time.Second,
+		ServerInterval: 2 * time.Second,
+		ServerTimeout:  1 * time.Second,
 	}
 	testAddress := "localhost:9400"
 	srv, err := comm.NewGRPCServer(testAddress, comm.ServerConfig{KaOpts: kap})
@@ -1403,8 +1411,8 @@ func TestKeepaliveClientResponse(t *testing.T) {
 	t.Parallel()
 	// set up GRPCServer instance
 	kap := &comm.KeepaliveOptions{
-		ServerInterval: time.Duration(2) * time.Second,
-		ServerTimeout:  time.Duration(1) * time.Second,
+		ServerInterval: 1 * time.Second,
+		ServerTimeout:  1 * time.Second,
 	}
 	testAddress := "localhost:9401"
 	srv, err := comm.NewGRPCServer(testAddress, comm.ServerConfig{KaOpts: kap})
@@ -1413,12 +1421,22 @@ func TestKeepaliveClientResponse(t *testing.T) {
 	defer srv.Stop()
 
 	// test that connection does not close with response to ping
-	clientTransport, err := transport.NewClientTransport(context.Background(),
-		transport.TargetInfo{Addr: testAddress}, transport.ConnectOptions{})
+	connectCtx, cancel := context.WithDeadline(
+		context.Background(),
+		time.Now().Add(1*time.Second))
+	clientTransport, err := transport.NewClientTransport(
+		connectCtx,
+		context.Background(),
+		transport.TargetInfo{Addr: testAddress},
+		transport.ConnectOptions{},
+		func() {})
+	if err != nil {
+		cancel()
+	}
 	assert.NoError(t, err, "Unexpected error creating client transport")
 	defer clientTransport.Close()
 	// sleep past keepalive timeout
-	time.Sleep(4 * time.Second)
+	time.Sleep(1500 * time.Millisecond)
 	// try to create a stream
 	_, err = clientTransport.NewStream(context.Background(), &transport.CallHdr{})
 	assert.NoError(t, err, "Unexpected error creating stream")
@@ -1462,14 +1480,15 @@ func TestUpdateTLSCert(t *testing.T) {
 		_, err = invokeEmptyCall("localhost:8333",
 			[]grpc.DialOption{grpc.WithTransportCredentials(
 				credentials.NewTLS(&tls.Config{
-					RootCAs: certPool}))})
+					RootCAs: certPool})),
+				grpc.WithBlock()})
 		return err
 	}
 
 	// bootstrap TLS certificate has a SAN of "notlocalhost" so it should fail
 	err = probeServer()
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "certificate is valid for notlocalhost.org1.example.com, notlocalhost, not localhost")
+	assert.Contains(t, err.Error(), "context deadline exceeded")
 
 	// new TLS certificate has a SAN of "localhost" so it should succeed
 	certPath := filepath.Join("testdata", "dynamic_cert_update", "localhost", "server.crt")
@@ -1488,7 +1507,7 @@ func TestUpdateTLSCert(t *testing.T) {
 	srv.SetServerCertificate(tlsCert)
 	err = probeServer()
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "certificate is valid for notlocalhost.org1.example.com, notlocalhost, not localhost")
+	assert.Contains(t, err.Error(), "context deadline exceeded")
 }
 
 func TestCipherSuites(t *testing.T) {

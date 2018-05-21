@@ -1,10 +1,10 @@
+#SPDX-License-Identifier: Apache-2.0
+
 # Local build binaries
 node-cli/node-cli
 *.pyc
-/build/*
 /bin
 docs/build/*
-gotools/build/*
 examples/e2e_cli/docker-compose-e2e.yamlt
 .idea
 *.iml
@@ -12,7 +12,7 @@ examples/e2e_cli/docker-compose-e2e.yamlt
 tags
 .tags
 .vagrant/
-/build
+/.build
 /release/darwin-amd64
 /release/linux-amd64
 /release/linux-s390x
@@ -24,18 +24,12 @@ tags
 .#*
 # Vim file artifacts
 .*.sw*
-# bddtest log files
-*.log
-# bddtest coverage files
-bddtests/coverage
-# bddtest Dockerfile
-bddtests/environments/kafka/Dockerfile
-bddtests/tmp
-bddtests/volumes
-*.cov
 # Makefile dummy artifacts
 .*-dummy
-# go-carpet output files
+# log files
+*.log
+# code coverage
+*.cov
 go-carpet-coverage*
 # Test result xml files
 report.xml
@@ -48,5 +42,7 @@ bin/
 examples/e2e_cli/channel-artifacts/*.tx
 examples/e2e_cli/channel-artifacts/*.block
 examples/e2e_cli/crypto-config/*
+# tox
+.tox/
 # vscode settings
 .vscode

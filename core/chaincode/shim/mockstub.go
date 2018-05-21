@@ -57,6 +57,11 @@ type MockStub struct {
 
 	// stores a channel ID of the proposal
 	ChannelID string
+
+	PvtState map[string]map[string][]byte
+
+	// channel to store ChaincodeEvents
+	ChaincodeEventsChannel chan *pb.ChaincodeEvent
 }
 
 func (stub *MockStub) GetTxID() string {
@@ -146,11 +151,25 @@ func (stub *MockStub) MockInvokeWithSignedProposal(uuid string, args [][]byte, s
 }
 
 func (stub *MockStub) GetPrivateData(collection string, key string) ([]byte, error) {
-	return nil, errors.New("Not Implemented")
+	m, in := stub.PvtState[collection]
+
+	if !in {
+		return nil, nil
+	}
+
+	return m[key], nil
 }
 
 func (stub *MockStub) PutPrivateData(collection string, key string, value []byte) error {
-	return errors.New("Not Implemented")
+	m, in := stub.PvtState[collection]
+	if !in {
+		stub.PvtState[collection] = make(map[string][]byte)
+		m, in = stub.PvtState[collection]
+	}
+
+	m[key] = value
+
+	return nil
 }
 
 func (stub *MockStub) DelPrivateData(collection string, key string) error {
@@ -346,8 +365,8 @@ func (stub *MockStub) GetTxTimestamp() (*timestamp.Timestamp, error) {
 	return stub.TxTimestamp, nil
 }
 
-// Not implemented
 func (stub *MockStub) SetEvent(name string, payload []byte) error {
+	stub.ChaincodeEventsChannel <- &pb.ChaincodeEvent{EventName: name, Payload: payload}
 	return nil
 }
 
@@ -358,8 +377,10 @@ func NewMockStub(name string, cc Chaincode) *MockStub {
 	s.Name = name
 	s.cc = cc
 	s.State = make(map[string][]byte)
+	s.PvtState = make(map[string]map[string][]byte)
 	s.Invokables = make(map[string]*MockStub)
 	s.Keys = list.New()
+	s.ChaincodeEventsChannel = make(chan *pb.ChaincodeEvent, 100) //define large capacity for non-blocking setEvent calls.
 
 	return s
 }

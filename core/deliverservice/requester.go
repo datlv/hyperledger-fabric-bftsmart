@@ -37,7 +37,7 @@ type blocksRequester struct {
 func (b *blocksRequester) RequestBlocks(ledgerInfoProvider blocksprovider.LedgerInfo) error {
 	height, err := ledgerInfoProvider.LedgerHeight()
 	if err != nil {
-		logger.Errorf("Can't get legder height for channel %s from committer [%s]", b.chainID, err)
+		logger.Errorf("Can't get ledger height for channel %s from committer [%s]", b.chainID, err)
 		return err
 	}
 
@@ -74,7 +74,7 @@ func (b *blocksRequester) seekOldest() error {
 	msgVersion := int32(0)
 	epoch := uint64(0)
 	tlsCertHash := b.getTLSCertHash()
-	env, err := utils.CreateSignedEnvelopeWithTLSBinding(common.HeaderType_CONFIG_UPDATE, b.chainID, localmsp.NewSigner(), seekInfo, msgVersion, epoch, tlsCertHash)
+	env, err := utils.CreateSignedEnvelopeWithTLSBinding(common.HeaderType_DELIVER_SEEK_INFO, b.chainID, localmsp.NewSigner(), seekInfo, msgVersion, epoch, tlsCertHash)
 	if err != nil {
 		return err
 	}
@@ -92,7 +92,7 @@ func (b *blocksRequester) seekLatestFromCommitter(height uint64) error {
 	msgVersion := int32(0)
 	epoch := uint64(0)
 	tlsCertHash := b.getTLSCertHash()
-	env, err := utils.CreateSignedEnvelopeWithTLSBinding(common.HeaderType_CONFIG_UPDATE, b.chainID, localmsp.NewSigner(), seekInfo, msgVersion, epoch, tlsCertHash)
+	env, err := utils.CreateSignedEnvelopeWithTLSBinding(common.HeaderType_DELIVER_SEEK_INFO, b.chainID, localmsp.NewSigner(), seekInfo, msgVersion, epoch, tlsCertHash)
 	if err != nil {
 		return err
 	}

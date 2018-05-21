@@ -71,11 +71,14 @@ type OrdererCapabilities struct {
 	// SupportedErr is returned by Supported()
 	SupportedErr error
 
-	// SetChannelModPolicyDuringCreateVal is returned by SetChannelModPolicyDuringCreate()
-	SetChannelModPolicyDuringCreateVal bool
+	// PredictableChannelTemplateVal is returned by PredictableChannelTemplate()
+	PredictableChannelTemplateVal bool
 
 	// ResubmissionVal is returned by Resubmission()
 	ResubmissionVal bool
+
+	// ExpirationVal is returned by ExpirationCheck()
+	ExpirationVal bool
 }
 
 // Supported returns SupportedErr
@@ -83,12 +86,18 @@ func (oc *OrdererCapabilities) Supported() error {
 	return oc.SupportedErr
 }
 
-// SetChannelModPolicyDuringCreate returns SetChannelModPolicyDuringCreateVal
-func (oc *OrdererCapabilities) SetChannelModPolicyDuringCreate() bool {
-	return oc.SetChannelModPolicyDuringCreateVal
+// PredictableChannelTemplate returns PredictableChannelTemplateVal
+func (oc *OrdererCapabilities) PredictableChannelTemplate() bool {
+	return oc.PredictableChannelTemplateVal
 }
 
 // Resubmission returns ResubmissionVal
 func (oc *OrdererCapabilities) Resubmission() bool {
 	return oc.ResubmissionVal
+}
+
+// ExpirationCheck specifies whether the orderer checks for identity expiration checks
+// when validating messages
+func (oc *OrdererCapabilities) ExpirationCheck() bool {
+	return oc.ExpirationVal
 }

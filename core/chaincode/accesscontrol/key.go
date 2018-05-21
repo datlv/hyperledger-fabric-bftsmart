@@ -12,6 +12,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
 	"math/big"
@@ -40,7 +41,7 @@ func newPrivKey() (*ecdsa.PrivateKey, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	privBytes, err := x509.MarshalECPrivateKey(privateKey)
+	privBytes, err := x509.MarshalPKCS8PrivateKey(privateKey)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -53,6 +54,7 @@ func newCertTemplate() (x509.Certificate, error) {
 		return x509.Certificate{}, err
 	}
 	return x509.Certificate{
+		Subject:      pkix.Name{SerialNumber: sn.String()},
 		NotBefore:    time.Now().Add(time.Hour * (-24)),
 		NotAfter:     time.Now().Add(time.Hour * 24),
 		KeyUsage:     x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,

@@ -7,6 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 package privdata
 
 import (
+	"strings"
+
 	"github.com/hyperledger/fabric/protos/common"
 )
 
@@ -47,6 +49,14 @@ type CollectionAccessPolicy interface {
 	MemberOrgs() []string
 }
 
+// CollectionPersistenceConfigs encapsulates configurations related to persistece of a collection
+type CollectionPersistenceConfigs interface {
+	// BlockToLive returns the number of blocks after which the collection data expires.
+	// For instance if the value is set to 10, a key last modified by block number 100
+	// will be purged at block number 111. A zero value is treated same as MaxUint64
+	BlockToLive() uint64
+}
+
 // Filter defines a rule that filters peers according to data signed by them.
 // The Identity in the SignedData is a SerializedIdentity of a peer.
 // The Data is a message the peer signed, and the Signature is the corresponding
@@ -69,15 +79,18 @@ type CollectionStore interface {
 	// GetCollectionAccessPolicy retrieves a collection's access policy
 	RetrieveCollectionAccessPolicy(common.CollectionCriteria) (CollectionAccessPolicy, error)
 
-	// RetrieveCollectionConfigPackage retrieves the configuration
-	// for the collection with the supplied criteria
+	// RetrieveCollectionConfigPackage retrieves the whole configuration package
+	// for the chaincode with the supplied criteria
 	RetrieveCollectionConfigPackage(common.CollectionCriteria) (*common.CollectionConfigPackage, error)
+
+	// RetrieveCollectionPersistenceConfigs retrieves the collection's persistence related configurations
+	RetrieveCollectionPersistenceConfigs(cc common.CollectionCriteria) (CollectionPersistenceConfigs, error)
 }
 
 const (
 	// Collecion-specific constants
 
-	// collectionSeparator is the separator used to build the KVS
+	// CollectionSeparator is the separator used to build the KVS
 	// key storing the collections of a chaincode; note that we are
 	// using as separator a character which is illegal for either the
 	// name or the version of a chaincode so there cannot be any
@@ -91,4 +104,9 @@ const (
 // BuildCollectionKVSKey returns the KVS key string for a chaincode, given its name and version
 func BuildCollectionKVSKey(ccname string) string {
 	return ccname + collectionSeparator + collectionSuffix
+}
+
+// IsCollectionConfigKey detects if a key is a collection key
+func IsCollectionConfigKey(key string) bool {
+	return strings.Contains(key, collectionSeparator)
 }

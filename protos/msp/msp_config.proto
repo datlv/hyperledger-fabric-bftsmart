@@ -116,6 +116,12 @@ message IdemixMSPConfig {
 
     // signer may contain crypto material to configure a default signer
     IdemixMSPSignerConfig signer = 3;
+
+    // RevocationPk is the public key used for revocation of credentials
+    bytes RevocationPk = 4;
+
+    // Epoch represents the current epoch (time interval) used for revocation
+    int64 Epoch = 5;
 }
 
 // IdemixMSPSIgnerConfig contains the crypto material to set up an idemix signing identity
@@ -131,6 +137,12 @@ message IdemixMSPSignerConfig {
 
     // is_admin defines whether the default signer is admin or not
     bool is_admin = 4;
+
+    // enrollment_id contains the enrollment id of this signer
+    string enrollment_id = 5;
+
+    // credential_revocation_information contains a serialized CredentialRevocationInformation
+    bytes credential_revocation_information = 6;
 }
 
 // SigningIdentityInfo represents the configuration information
@@ -193,6 +205,4 @@ message FabricNodeOUs {
     // OU Identifier of the peers
     FabricOUIdentifier peerOUIdentifier = 3;
 
-    // OU Identifier of the orderers
-    FabricOUIdentifier ordererOUIdentifier = 4;
 }

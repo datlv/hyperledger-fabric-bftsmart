@@ -22,15 +22,18 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric/common/ledger/testutil"
 	"github.com/hyperledger/fabric/core/ledger"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/bookkeeping"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/privacyenabledstate"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/txmgr"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/version"
+	"github.com/hyperledger/fabric/core/ledger/pvtdatapolicy"
 	"github.com/hyperledger/fabric/core/ledger/util"
 	"github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/ledger/rwset"
 )
 
 type testEnv interface {
-	init(t *testing.T, testLedgerID string)
+	init(t *testing.T, testLedgerID string, btlPolicy pvtdatapolicy.BTLPolicy)
 	getName() string
 	getTxMgr() txmgr.TxMgr
 	getVDB() privacyenabledstate.DB
@@ -49,6 +52,11 @@ var testEnvs = []testEnv{
 	&lockBasedEnv{name: couchDBtestEnvName, testDBEnv: &privacyenabledstate.CouchDBCommonStorageTestEnv{}},
 }
 
+var testEnvsMap = map[string]testEnv{
+	levelDBtestEnvName: testEnvs[0],
+	couchDBtestEnvName: testEnvs[1],
+}
+
 ///////////// LevelDB Environment //////////////
 
 type lockBasedEnv struct {
@@ -59,6 +67,8 @@ type lockBasedEnv struct {
 	testDBEnv privacyenabledstate.TestEnv
 	testDB    privacyenabledstate.DB
 
+	testBookkeepingEnv *bookkeeping.TestEnv
+
 	txmgr txmgr.TxMgr
 }
 
@@ -66,13 +76,15 @@ func (env *lockBasedEnv) getName() string {
 	return env.name
 }
 
-func (env *lockBasedEnv) init(t *testing.T, testLedgerID string) {
+func (env *lockBasedEnv) init(t *testing.T, testLedgerID string, btlPolicy pvtdatapolicy.BTLPolicy) {
 	var err error
 	env.t = t
 	env.testDBEnv.Init(t)
 	env.testDB = env.testDBEnv.GetDBHandle(testLedgerID)
 	testutil.AssertNoError(t, err, "")
-	env.txmgr = NewLockBasedTxMgr(env.testDB)
+	env.testBookkeepingEnv = bookkeeping.NewTestEnv(t)
+	env.txmgr, err = NewLockBasedTxMgr(testLedgerID, env.testDB, nil, btlPolicy, env.testBookkeepingEnv.TestProvider)
+	testutil.AssertNoError(t, err, "")
 }
 
 func (env *lockBasedEnv) getTxMgr() txmgr.TxMgr {
@@ -86,6 +98,7 @@ func (env *lockBasedEnv) getVDB() privacyenabledstate.DB {
 func (env *lockBasedEnv) cleanup() {
 	env.txmgr.Shutdown()
 	env.testDBEnv.Cleanup()
+	env.testBookkeepingEnv.Cleanup()
 }
 
 //////////// txMgrTestHelper /////////////
@@ -131,4 +144,30 @@ func (h *txMgrTestHelper) checkRWsetInvalid(txRWSet *rwset.TxReadWriteSet) {
 		}
 	}
 	testutil.AssertEquals(h.t, invalidTxNum, 1)
+}
+
+func populateCollConfigForTest(t *testing.T, txMgr *LockBasedTxMgr, nsColls []collConfigkey, ht *version.Height) {
+	m := map[string]*common.CollectionConfigPackage{}
+	for _, nsColl := range nsColls {
+		ns, coll := nsColl.ns, nsColl.coll
+		pkg, ok := m[ns]
+		if !ok {
+			pkg = &common.CollectionConfigPackage{}
+			m[ns] = pkg
+		}
+		sCollConfig := &common.CollectionConfig_StaticCollectionConfig{
+			StaticCollectionConfig: &common.StaticCollectionConfig{
+				Name: coll,
+			},
+		}
+		pkg.Config = append(pkg.Config, &common.CollectionConfig{Payload: sCollConfig})
+	}
+	updates := privacyenabledstate.NewUpdateBatch()
+
+	for ns, pkg := range m {
+		pkgBytes, err := proto.Marshal(pkg)
+		testutil.AssertNoError(t, err, "")
+		updates.PubUpdates.Put(lsccNamespace, constructCollectionConfigKey(ns), pkgBytes, ht)
+	}
+	txMgr.db.ApplyPrivacyAwareUpdates(updates, ht)
 }

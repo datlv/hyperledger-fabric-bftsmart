@@ -7,8 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 package idemix
 
 import (
-	"github.com/milagro-crypto/amcl/version3/go/amcl"
-	"github.com/milagro-crypto/amcl/version3/go/amcl/FP256BN"
+	"github.com/hyperledger/fabric-amcl/amcl"
+	"github.com/hyperledger/fabric-amcl/amcl/FP256BN"
 	"github.com/pkg/errors"
 )
 
@@ -79,11 +79,6 @@ func NewCredential(key *IssuerKey, m *CredRequest, attrs []*FP256BN.BIG, rng *am
 		BigToBytes(E),
 		BigToBytes(S),
 		CredAttrs}, nil
-}
-
-// Complete completes the credential by updating it with the randomness used to generate CredRequest
-func (cred *Credential) Complete(credS1 *FP256BN.BIG) {
-	cred.S = BigToBytes(Modadd(FP256BN.FromBytes(cred.S), credS1, GroupOrder))
 }
 
 // Ver cryptographically verifies the credential by verifying the signature

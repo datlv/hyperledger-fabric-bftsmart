@@ -14,9 +14,13 @@ func (ap *ApplicationProvider) HasCapability(capability string) bool {
 	// Add new capability names here
 	case ApplicationV1_1:
 		return true
+	case ApplicationV1_2:
+		return true
 	case ApplicationPvtDataExperimental:
 		return true
 	case ApplicationResourcesTreeExperimental:
+		return true
+	case ApplicationChaincodeLifecycleExperimental:
 		return true
 	default:
 		return false

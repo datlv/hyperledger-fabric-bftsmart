@@ -24,12 +24,11 @@ Prerequisites
 ~~~~~~~~~~~~~
 
 -  `Git client <https://git-scm.com/downloads>`__
--  `Go <https://golang.org/>`__ - 1.9 or later (for v1.0.X releases, use
-   Go 1.7.X)
+-  `Go <https://golang.org/dl/>`__ - version 1.10.x
 -  (macOS)
    `Xcode <https://itunes.apple.com/us/app/xcode/id497799835?mt=12>`__
    must be installed
--  `Docker <https://www.docker.com/products/overview>`__ - 17.06.2-ce or later
+-  `Docker <https://www.docker.com/get-docker>`__ - 17.06.2-ce or later
 -  `Docker Compose <https://docs.docker.com/compose/>`__ - 1.14.0 or later
 -  `Pip <https://pip.pypa.io/en/stable/installing/>`__
 -  (macOS) you may need to install gnutar, as macOS comes with bsdtar
@@ -56,15 +55,12 @@ Prerequisites
 -  Note: The BIOS Enabled Virtualization may be within the CPU or
    Security settings of the BIOS
 
-``pip`` and ``behave``
-~~~~~~~~~~~~~~~~~~~~~~
+``pip``
+~~~~~~
 
 ::
 
     pip install --upgrade pip
-
-    #PIP packages required for some behave tests
-    pip install -r devenv/bddtests-requirements.txt
 
 
 Steps
@@ -183,7 +179,7 @@ good, it's just cranking.
 
 **NOTE to Windows 10 Users:** There is a known problem with vagrant on
 Windows 10 (see
-`mitchellh/vagrant#6754 <https://github.com/mitchellh/vagrant/issues/6754>`__).
+`hashicorp/vagrant#6754 <https://github.com/hashicorp/vagrant/issues/6754>`__).
 If the ``vagrant up`` command fails it may be because you do not have
 the Microsoft Visual C++ Redistributable package installed. You can
 download the missing package at the following address:

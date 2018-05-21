@@ -68,8 +68,8 @@ func (vdb *versionedDB) Close() {
 	// do nothing because shared db is used
 }
 
-// ValidateKey implements method in VersionedDB interface
-func (vdb *versionedDB) ValidateKey(key string) error {
+// ValidateKeyValue implements method in VersionedDB interface
+func (vdb *versionedDB) ValidateKeyValue(key string, value []byte) error {
 	return nil
 }
 
@@ -89,7 +89,7 @@ func (vdb *versionedDB) GetState(namespace string, key string) (*statedb.Version
 	if dbVal == nil {
 		return nil, nil
 	}
-	val, ver := statedb.DecodeValue(dbVal)
+	val, ver := DecodeValue(dbVal)
 	return &statedb.VersionedValue{Value: val, Version: ver}, nil
 }
 
@@ -149,7 +149,7 @@ func (vdb *versionedDB) ApplyUpdates(batch *statedb.UpdateBatch, height *version
 			if vv.Value == nil {
 				dbBatch.Delete(compositeKey)
 			} else {
-				dbBatch.Put(compositeKey, statedb.EncodeValue(vv.Value, vv.Version))
+				dbBatch.Put(compositeKey, EncodeValue(vv.Value, vv.Version))
 			}
 		}
 	}
@@ -201,7 +201,7 @@ func (scanner *kvScanner) Next() (statedb.QueryResult, error) {
 	dbValCopy := make([]byte, len(dbVal))
 	copy(dbValCopy, dbVal)
 	_, key := splitCompositeKey(dbKey)
-	value, version := statedb.DecodeValue(dbValCopy)
+	value, version := DecodeValue(dbValCopy)
 	return &statedb.VersionedKV{
 		CompositeKey:   statedb.CompositeKey{Namespace: scanner.namespace, Key: key},
 		VersionedValue: statedb.VersionedValue{Value: value, Version: version}}, nil

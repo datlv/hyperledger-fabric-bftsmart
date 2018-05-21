@@ -53,6 +53,12 @@ func CreateBlockEvents(block *common.Block) (bevent *pb.Event, fbevent *pb.Event
 					return nil, nil, "", fmt.Errorf("could not extract payload from envelope: %s", err)
 				}
 
+				if payload.Header == nil {
+					logger.Debugf("transaction payload header is nil, %d, block num %d",
+						txIndex, block.Header.Number)
+					continue
+				}
+
 				chdr, err := utils.UnmarshalChannelHeader(payload.Header.ChannelHeader)
 				if err != nil {
 					return nil, nil, "", err
@@ -68,12 +74,16 @@ func CreateBlockEvents(block *common.Block) (bevent *pb.Event, fbevent *pb.Event
 						return nil, nil, "", fmt.Errorf("error unmarshalling transaction payload for block event: %s", err)
 					}
 
-					filteredTx := &pb.FilteredTransaction{Txid: chdr.TxId, TxValidationCode: txsFltr.Flag(txIndex)}
-					filteredActionArray := []*pb.FilteredAction{}
+					filteredTx := &pb.FilteredTransaction{Txid: chdr.TxId, TxValidationCode: txsFltr.Flag(txIndex), Type: headerType}
+					transactionActions := &pb.FilteredTransactionActions{}
 					for _, action := range tx.Actions {
 						chaincodeActionPayload, err := utils.GetChaincodeActionPayload(action.Payload)
 						if err != nil {
 							return nil, nil, "", fmt.Errorf("error unmarshalling transaction action payload for block event: %s", err)
+						}
+						if chaincodeActionPayload.Action == nil {
+							logger.Debugf("chaincode action, the payload action is nil, skipping")
+							continue
 						}
 						propRespPayload, err := utils.GetProposalResponsePayload(chaincodeActionPayload.Action.ProposalResponsePayload)
 						if err != nil {
@@ -90,14 +100,14 @@ func CreateBlockEvents(block *common.Block) (bevent *pb.Event, fbevent *pb.Event
 							return nil, nil, "", fmt.Errorf("error unmarshalling chaincode event for block event: %s", err)
 						}
 
-						filteredAction := &pb.FilteredAction{}
+						chaincodeAction := &pb.FilteredChaincodeAction{}
 						if ccEvent.GetChaincodeId() != "" {
 							filteredCcEvent := ccEvent
 							// nil out ccevent payload
 							filteredCcEvent.Payload = nil
-							filteredAction.CcEvent = filteredCcEvent
+							chaincodeAction.ChaincodeEvent = filteredCcEvent
 						}
-						filteredActionArray = append(filteredActionArray, filteredAction)
+						transactionActions.ChaincodeActions = append(transactionActions.ChaincodeActions, chaincodeAction)
 
 						// Drop read write set from transaction before sending block event
 						// Performance issue with chaincode deploy txs and causes nodejs grpc
@@ -114,7 +124,7 @@ func CreateBlockEvents(block *common.Block) (bevent *pb.Event, fbevent *pb.Event
 							return nil, nil, "", fmt.Errorf("error marshalling tx action payload for block event: %s", err)
 						}
 					}
-					filteredTx.FilteredAction = filteredActionArray
+					filteredTx.Data = &pb.FilteredTransaction_TransactionActions{TransactionActions: transactionActions}
 					filteredTxArray = append(filteredTxArray, filteredTx)
 
 					payload.Data, err = utils.GetBytesTransaction(tx)
@@ -136,8 +146,7 @@ func CreateBlockEvents(block *common.Block) (bevent *pb.Event, fbevent *pb.Event
 	}
 	filteredBlockForEvent.ChannelId = channelID
 	filteredBlockForEvent.Number = block.Header.Number
-	filteredBlockForEvent.Type = headerType
-	filteredBlockForEvent.FilteredTx = filteredTxArray
+	filteredBlockForEvent.FilteredTransactions = filteredTxArray
 
 	return CreateBlockEvent(blockForEvent), CreateFilteredBlockEvent(filteredBlockForEvent), channelID, nil
 }

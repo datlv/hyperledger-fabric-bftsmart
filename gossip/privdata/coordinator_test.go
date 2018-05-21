@@ -19,12 +19,15 @@ import (
 	util2 "github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/common/privdata"
 	"github.com/hyperledger/fabric/core/ledger"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/rwsetutil"
 	"github.com/hyperledger/fabric/core/transientstore"
 	"github.com/hyperledger/fabric/gossip/util"
 	"github.com/hyperledger/fabric/protos/common"
 	proto "github.com/hyperledger/fabric/protos/gossip"
 	"github.com/hyperledger/fabric/protos/ledger/rwset"
+	"github.com/hyperledger/fabric/protos/ledger/rwset/kvrwset"
 	"github.com/hyperledger/fabric/protos/msp"
+	transientstore2 "github.com/hyperledger/fabric/protos/transientstore"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -84,6 +87,20 @@ func (store *mockTransientStore) Persist(txid string, blockHeight uint64, res *r
 	return nil
 }
 
+func (store *mockTransientStore) PersistWithConfig(txid string, blockHeight uint64, privateSimulationResultsWithConfig *transientstore2.TxPvtReadWriteSetWithConfigInfo) error {
+	res := privateSimulationResultsWithConfig.PvtRwset
+	key := rwsTriplet{
+		namespace:  res.NsPvtRwset[0].Namespace,
+		collection: res.NsPvtRwset[0].CollectionPvtRwset[0].CollectionName,
+		rwset:      hex.EncodeToString(res.NsPvtRwset[0].CollectionPvtRwset[0].Rwset)}
+	if _, exists := store.persists[key]; !exists {
+		store.t.Fatal("Shouldn't have persisted", res)
+	}
+	delete(store.persists, key)
+	store.Called(txid, blockHeight, privateSimulationResultsWithConfig)
+	return nil
+}
+
 func (store *mockTransientStore) PurgeByHeight(maxBlockNumToRetain uint64) error {
 	return store.Called(maxBlockNumToRetain).Error(0)
 }
@@ -100,20 +117,35 @@ func (store *mockTransientStore) GetTxPvtRWSetByTxid(txid string, filter ledger.
 
 type mockRWSetScanner struct {
 	err     error
-	results []*transientstore.EndorserPvtSimulationResults
+	results []*transientstore.EndorserPvtSimulationResultsWithConfig
 }
 
 func (scanner *mockRWSetScanner) withRWSet(ns string, col string) *mockRWSetScanner {
-	scanner.results = append(scanner.results, &transientstore.EndorserPvtSimulationResults{
-		PvtSimulationResults: &rwset.TxPvtReadWriteSet{
-			DataModel: rwset.TxReadWriteSet_KV,
-			NsPvtRwset: []*rwset.NsPvtReadWriteSet{
-				{
-					Namespace: ns,
-					CollectionPvtRwset: []*rwset.CollectionPvtReadWriteSet{
+	scanner.results = append(scanner.results, &transientstore.EndorserPvtSimulationResultsWithConfig{
+		PvtSimulationResultsWithConfig: &transientstore2.TxPvtReadWriteSetWithConfigInfo{
+			PvtRwset: &rwset.TxPvtReadWriteSet{
+				DataModel: rwset.TxReadWriteSet_KV,
+				NsPvtRwset: []*rwset.NsPvtReadWriteSet{
+					{
+						Namespace: ns,
+						CollectionPvtRwset: []*rwset.CollectionPvtReadWriteSet{
+							{
+								CollectionName: col,
+								Rwset:          []byte("rws-pre-image"),
+							},
+						},
+					},
+				},
+			},
+			CollectionConfigs: map[string]*common.CollectionConfigPackage{
+				ns: {
+					Config: []*common.CollectionConfig{
 						{
-							CollectionName: col,
-							Rwset:          []byte("rws-pre-image"),
+							Payload: &common.CollectionConfig_StaticCollectionConfig{
+								StaticCollectionConfig: &common.StaticCollectionConfig{
+									Name: col,
+								},
+							},
 						},
 					},
 				},
@@ -124,10 +156,14 @@ func (scanner *mockRWSetScanner) withRWSet(ns string, col string) *mockRWSetScan
 }
 
 func (scanner *mockRWSetScanner) Next() (*transientstore.EndorserPvtSimulationResults, error) {
+	panic("should not be used")
+}
+
+func (scanner *mockRWSetScanner) NextWithConfig() (*transientstore.EndorserPvtSimulationResultsWithConfig, error) {
 	if scanner.err != nil {
 		return nil, scanner.err
 	}
-	var res *transientstore.EndorserPvtSimulationResults
+	var res *transientstore.EndorserPvtSimulationResultsWithConfig
 	if len(scanner.results) == 0 {
 		return nil, nil
 	}
@@ -140,6 +176,11 @@ func (*mockRWSetScanner) Close() {
 
 type committerMock struct {
 	mock.Mock
+}
+
+func (mock *committerMock) GetConfigHistoryRetriever() (ledger.ConfigHistoryRetriever, error) {
+	args := mock.Called()
+	return args.Get(0).(ledger.ConfigHistoryRetriever), args.Error(1)
 }
 
 func (mock *committerMock) GetPvtDataByNum(blockNum uint64, filter ledger.PvtNsCollFilter) ([]*ledger.TxPvtData, error) {
@@ -253,6 +294,7 @@ func (f *fetcherMock) On(methodName string, arguments ...interface{}) *fetchCall
 }
 
 func (f *fetcherMock) fetch(dig2src dig2sources) ([]*proto.PvtDataElement, error) {
+	fmt.Println("XXX: Expected endorsers", f.expectedEndorsers)
 	for _, endorsements := range dig2src {
 		for _, endorsement := range endorsements {
 			_, exists := f.expectedEndorsers[string(endorsement.Endorser)]
@@ -325,7 +367,23 @@ func (cs *collectionStore) RetrieveCollection(common.CollectionCriteria) (privda
 	panic("implement me")
 }
 
-func (cs *collectionStore) RetrieveCollectionConfigPackage(common.CollectionCriteria) (*common.CollectionConfigPackage, error) {
+func (cs *collectionStore) RetrieveCollectionConfigPackage(cc common.CollectionCriteria) (*common.CollectionConfigPackage, error) {
+	return &common.CollectionConfigPackage{
+		Config: []*common.CollectionConfig{
+			{
+				Payload: &common.CollectionConfig_StaticCollectionConfig{
+					StaticCollectionConfig: &common.StaticCollectionConfig{
+						Name:              cc.Collection,
+						MaximumPeerCount:  1,
+						RequiredPeerCount: 1,
+					},
+				},
+			},
+		},
+	}, nil
+}
+
+func (cs *collectionStore) RetrieveCollectionPersistenceConfigs(cc common.CollectionCriteria) (privdata.CollectionPersistenceConfigs, error) {
 	panic("implement me")
 }
 
@@ -748,7 +806,7 @@ func TestCoordinatorToFilterOutPvtRWSetsWithWrongHash(t *testing.T) {
 		channelID: "test",
 	}
 
-	block := bf.AddTxnWithEndorsement("tx1", "ns1", hash, "org1", "c1").create()
+	block := bf.AddTxnWithEndorsement("tx1", "ns1", hash, "org1", true, "c1").create()
 	store.On("GetTxPvtRWSetByTxid", "tx1", mock.Anything).Return((&mockRWSetScanner{}).withRWSet("ns1", "c1"), nil)
 
 	coordinator := NewCoordinator(Support{
@@ -837,8 +895,10 @@ func TestCoordinatorStoreBlock(t *testing.T) {
 	bf := &blockFactory{
 		channelID: "test",
 	}
-	block := bf.AddTxnWithEndorsement("tx1", "ns1", hash, "org1", "c1", "c2").AddTxnWithEndorsement("tx2", "ns2", hash, "org2", "c1").create()
+	block := bf.AddTxnWithEndorsement("tx1", "ns1", hash, "org1", true, "c1", "c2").
+		AddTxnWithEndorsement("tx2", "ns2", hash, "org2", true, "c1").create()
 
+	fmt.Println("Scenario I")
 	// Scenario I: Block we got has sufficient private data alongside it.
 	// If the coordinator tries fetching from the transientstore, or peers it would result in panic,
 	// because we didn't define yet the "On(...)" invocation of the transient store or other peers.
@@ -855,6 +915,7 @@ func TestCoordinatorStoreBlock(t *testing.T) {
 	assertCommitHappened()
 	assertPurged("tx1", "tx2")
 
+	fmt.Println("Scenario II")
 	// Scenario II: Block we got doesn't have sufficient private data alongside it,
 	// it is missing ns1: c2, but the data exists in the transient store
 	store.On("GetTxPvtRWSetByTxid", "tx1", mock.Anything).Return((&mockRWSetScanner{}).withRWSet("ns1", "c2"), nil)
@@ -871,6 +932,7 @@ func TestCoordinatorStoreBlock(t *testing.T) {
 		},
 	}, store.lastReqFilter)
 
+	fmt.Println("Scenario III")
 	// Scenario III: Block doesn't have sufficient private data alongside it,
 	// it is missing ns1: c2, and the data exists in the transient store,
 	// but it is also missing ns2: c1, and that data doesn't exist in the transient store - but in a peer.
@@ -913,6 +975,7 @@ func TestCoordinatorStoreBlock(t *testing.T) {
 	assert.NoError(t, err)
 	assertCommitHappened()
 
+	fmt.Println("Scenario IV")
 	// Scenario IV: Block came with more than sufficient private data alongside it, some of it is redundant.
 	pvtData = pdFactory.addRWSet().addNSRWSet("ns1", "c1", "c2", "c3").
 		addRWSet().addNSRWSet("ns2", "c1", "c3").addRWSet().addNSRWSet("ns1", "c4").create()
@@ -921,6 +984,7 @@ func TestCoordinatorStoreBlock(t *testing.T) {
 	assert.NoError(t, err)
 	assertCommitHappened()
 
+	fmt.Println("Scenario V")
 	// Scenario V: Block didn't get with any private data alongside it, and the transient store
 	// has some problem.
 	// In this case, we should try to fetch data from peers.
@@ -967,6 +1031,7 @@ func TestCoordinatorStoreBlock(t *testing.T) {
 	assert.NoError(t, err)
 	assertCommitHappened()
 
+	fmt.Println("Scenario VI")
 	// Scenario VI: Block contains 2 transactions, and the peer is eligible for only tx3-ns3-c3.
 	// Also, the blocks comes with a private data for tx3-ns3-c3 so that the peer won't have to fetch the
 	// private data from the transient store or peers, and in fact- if it attempts to fetch the data it's not eligible
@@ -1200,9 +1265,8 @@ func TestPurgeByHeight(t *testing.T) {
 func TestCoordinatorStorePvtData(t *testing.T) {
 	cs := createcollectionStore(common.SignedData{}).thatAcceptsAll()
 	committer := &committerMock{}
-	committer.On("LedgerHeight").Return(uint64(5), nil).Once()
 	store := &mockTransientStore{t: t}
-	store.On("Persist", mock.Anything, uint64(5), mock.Anything).
+	store.On("PersistWithConfig", mock.Anything, uint64(5), mock.Anything).
 		expectRWSet("ns1", "c1", []byte("rws-pre-image")).Return(nil)
 	fetcher := &fetcherMock{t: t}
 	coordinator := NewCoordinator(Support{
@@ -1214,12 +1278,77 @@ func TestCoordinatorStorePvtData(t *testing.T) {
 	}, common.SignedData{})
 	pvtData := (&pvtDataFactory{}).addRWSet().addNSRWSet("ns1", "c1").create()
 	// Green path: ledger height can be retrieved from ledger/committer
-	err := coordinator.StorePvtData("tx1", pvtData[0].WriteSet)
+	err := coordinator.StorePvtData("tx1", &transientstore2.TxPvtReadWriteSetWithConfigInfo{
+		PvtRwset:          pvtData[0].WriteSet,
+		CollectionConfigs: make(map[string]*common.CollectionConfigPackage),
+	}, uint64(5))
 	assert.NoError(t, err)
+}
 
-	// Bad path: ledger height cannot be retrieved from ledger/committer
-	committer.On("LedgerHeight").Return(uint64(0), errors.New("I/O error: file system full"))
-	err = coordinator.StorePvtData("tx1", pvtData[0].WriteSet)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "I/O error: file system full")
+func TestContainsWrites(t *testing.T) {
+	// Scenario I: Nil HashedRwSet in collection
+	col := &rwsetutil.CollHashedRwSet{
+		CollectionName: "col1",
+	}
+	assert.False(t, containsWrites("tx", "ns", col))
+
+	// Scenario II: No writes in collection
+	col.HashedRwSet = &kvrwset.HashedRWSet{}
+	assert.False(t, containsWrites("tx", "ns", col))
+
+	// Scenario III: Some writes in collection
+	col.HashedRwSet.HashedWrites = append(col.HashedRwSet.HashedWrites, &kvrwset.KVWriteHash{})
+	assert.True(t, containsWrites("tx", "ns", col))
+}
+
+func TestIgnoreReadOnlyColRWSets(t *testing.T) {
+	// Scenario: The transaction has some ColRWSets that have only reads and no writes,
+	// These should be ignored and not considered as missing private data that needs to be retrieved
+	// from the transient store or other peers.
+	// The gossip and transient store mocks in this test aren't initialized with
+	// actions, so if the coordinator attempts to fetch private data from the
+	// transient store or other peers, the test would fail.
+	// Also - we check that at commit time - the coordinator concluded that
+	// no missing private data was found.
+	peerSelfSignedData := common.SignedData{
+		Identity:  []byte{0, 1, 2},
+		Signature: []byte{3, 4, 5},
+		Data:      []byte{6, 7, 8},
+	}
+	cs := createcollectionStore(peerSelfSignedData).thatAcceptsAll()
+	var commitHappened bool
+	assertCommitHappened := func() {
+		assert.True(t, commitHappened)
+		commitHappened = false
+	}
+	committer := &committerMock{}
+	committer.On("CommitWithPvtData", mock.Anything).Run(func(args mock.Arguments) {
+		blockAndPrivateData := args.Get(0).(*ledger.BlockAndPvtData)
+		// Ensure there is no private data to commit
+		assert.Empty(t, blockAndPrivateData.BlockPvtData)
+		// Ensure there is no missing private data
+		assert.Empty(t, blockAndPrivateData.Missing)
+		commitHappened = true
+	}).Return(nil)
+	store := &mockTransientStore{t: t}
+
+	fetcher := &fetcherMock{t: t}
+	hash := util2.ComputeSHA256([]byte("rws-pre-image"))
+	bf := &blockFactory{
+		channelID: "test",
+	}
+	// The block contains a read only private data transaction
+	block := bf.AddReadOnlyTxn("tx1", "ns3", hash, "c3", "c2").create()
+	coordinator := NewCoordinator(Support{
+		CollectionStore: cs,
+		Committer:       committer,
+		Fetcher:         fetcher,
+		TransientStore:  store,
+		Validator:       &validatorMock{},
+	}, peerSelfSignedData)
+	// We pass a nil private data slice to indicate no pre-images though the block contains
+	// private data reads.
+	err := coordinator.StoreBlock(block, nil)
+	assert.NoError(t, err)
+	assertCommitHappened()
 }

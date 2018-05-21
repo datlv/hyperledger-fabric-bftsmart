@@ -6,14 +6,20 @@ SPDX-License-Identifier: Apache-2.0
 package lockbasedtxmgr
 
 import (
+	"bytes"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"testing"
+
+	"github.com/hyperledger/fabric/core/ledger/pvtdatapolicy"
+	btltestutil "github.com/hyperledger/fabric/core/ledger/pvtdatapolicy/testutil"
 
 	"os"
 
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/ledger/testutil"
+	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/privacyenabledstate"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/txmgr"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/version"
@@ -31,6 +37,8 @@ func TestMain(m *testing.M) {
 	flogging.SetModuleLevel("statebasedval", "debug")
 	flogging.SetModuleLevel("statecouchdb", "debug")
 	flogging.SetModuleLevel("valimpl", "debug")
+	flogging.SetModuleLevel("pvtstatepurgemgmt", "debug")
+
 	viper.Set("peer.fileSystemPath", "/tmp/fabric/ledgertests/kvledger/txmgmt/txmgr/lockbasedtxmgr")
 	os.Exit(m.Run())
 }
@@ -40,7 +48,7 @@ func TestTxSimulatorWithNoExistingData(t *testing.T) {
 	for _, testEnv := range testEnvs {
 		t.Logf("Running test for TestEnv = %s", testEnv.getName())
 		testLedgerID := "testtxsimulatorwithnoexistingdata"
-		testEnv.init(t, testLedgerID)
+		testEnv.init(t, testLedgerID, nil)
 		testTxSimulatorWithNoExistingData(t, testEnv)
 		testEnv.cleanup()
 	}
@@ -66,11 +74,81 @@ func testTxSimulatorWithNoExistingData(t *testing.T, env testEnv) {
 	assert.Nil(t, simulationResults.PvtSimulationResults)
 }
 
+func TestTxSimulatorGetResults(t *testing.T) {
+	testEnv := testEnvsMap[levelDBtestEnvName]
+	testEnv.init(t, "testLedger", nil)
+	defer testEnv.cleanup()
+	txMgr := testEnv.getTxMgr()
+	populateCollConfigForTest(t, txMgr.(*LockBasedTxMgr),
+		[]collConfigkey{
+			{"ns1", "coll1"},
+			{"ns1", "coll3"},
+			{"ns2", "coll2"},
+			{"ns3", "coll3"},
+		},
+		version.NewHeight(1, 1),
+	)
+
+	var err error
+
+	// Create a simulator and get/set keys in one namespace "ns1"
+	simulator, _ := testEnv.getTxMgr().NewTxSimulator("test_txid1")
+	simulator.GetState("ns1", "key1")
+	_, err = simulator.GetPrivateData("ns1", "coll1", "key1")
+	assert.NoError(t, err)
+	simulator.SetState("ns1", "key1", []byte("value1"))
+	// get simulation results and verify that this contains rwset only for one namespace
+	simulationResults1, err := simulator.GetTxSimulationResults()
+	assert.NoError(t, err)
+	assert.Equal(t, 2, len(simulationResults1.PubSimulationResults.NsRwset))
+	// clone freeze simulationResults1
+	buff1 := new(bytes.Buffer)
+	assert.NoError(t, gob.NewEncoder(buff1).Encode(simulationResults1))
+	frozenSimulationResults1 := &ledger.TxSimulationResults{}
+	assert.NoError(t, gob.NewDecoder(buff1).Decode(&frozenSimulationResults1))
+
+	// use the same simulator after obtaining the simulaiton results by get/set keys in one more namespace "ns2"
+	simulator.GetState("ns2", "key2")
+	simulator.GetPrivateData("ns2", "coll2", "key2")
+	simulator.SetState("ns2", "key2", []byte("value2"))
+	// get simulation results and verify that this contains rwset for both the namespaces "ns1" and "ns2"
+	simulationResults2, err := simulator.GetTxSimulationResults()
+	assert.Equal(t, 3, len(simulationResults2.PubSimulationResults.NsRwset))
+	// clone freeze simulationResults2
+	buff2 := new(bytes.Buffer)
+	assert.NoError(t, gob.NewEncoder(buff2).Encode(simulationResults2))
+	frozenSimulationResults2 := &ledger.TxSimulationResults{}
+	assert.NoError(t, gob.NewDecoder(buff2).Decode(&frozenSimulationResults2))
+
+	// use the same simulator further to operate on different keys in the namespcace "ns1"
+	simulator.GetState("ns1", "key3")
+	simulator.GetPrivateData("ns1", "coll3", "key3")
+	simulator.SetState("ns1", "key3", []byte("value3"))
+	// get simulation results and verify that this contains rwset for both the namespaces "ns1" and "ns2"
+	simulationResults3, err := simulator.GetTxSimulationResults()
+	assert.Equal(t, 3, len(simulationResults3.PubSimulationResults.NsRwset))
+
+	// Now, verify that the simulator operations did not have an effect on privously obtained results
+	assert.Equal(t, frozenSimulationResults1, simulationResults1)
+	assert.Equal(t, frozenSimulationResults2, simulationResults2)
+
+	// Call 'Done' and all the data get/set operations after calling 'Done' should fail.
+	simulator.Done()
+	_, err = simulator.GetState("ns3", "key3")
+	assert.Errorf(t, err, "An error is expected when using simulator to get/set data after calling `Done` function()")
+	err = simulator.SetState("ns3", "key3", []byte("value3"))
+	assert.Errorf(t, err, "An error is expected when using simulator to get/set data after calling `Done` function()")
+	_, err = simulator.GetPrivateData("ns3", "coll3", "key3")
+	assert.Errorf(t, err, "An error is expected when using simulator to get/set data after calling `Done` function()")
+	err = simulator.SetPrivateData("ns3", "coll3", "key3", []byte("value3"))
+	assert.Errorf(t, err, "An error is expected when using simulator to get/set data after calling `Done` function()")
+}
+
 func TestTxSimulatorWithExistingData(t *testing.T) {
 	for _, testEnv := range testEnvs {
 		t.Run(testEnv.getName(), func(t *testing.T) {
 			testLedgerID := "testtxsimulatorwithexistingdata"
-			testEnv.init(t, testLedgerID)
+			testEnv.init(t, testLedgerID, nil)
 			testTxSimulatorWithExistingData(t, testEnv)
 			testEnv.cleanup()
 		})
@@ -123,7 +201,7 @@ func TestTxValidation(t *testing.T) {
 	for _, testEnv := range testEnvs {
 		t.Logf("Running test for TestEnv = %s", testEnv.getName())
 		testLedgerID := "testtxvalidation"
-		testEnv.init(t, testLedgerID)
+		testEnv.init(t, testLedgerID, nil)
 		testTxValidation(t, testEnv)
 		testEnv.cleanup()
 	}
@@ -210,7 +288,7 @@ func TestTxPhantomValidation(t *testing.T) {
 	for _, testEnv := range testEnvs {
 		t.Logf("Running test for TestEnv = %s", testEnv.getName())
 		testLedgerID := "testtxphantomvalidation"
-		testEnv.init(t, testLedgerID)
+		testEnv.init(t, testLedgerID, nil)
 		testTxPhantomValidation(t, testEnv)
 		testEnv.cleanup()
 	}
@@ -281,27 +359,27 @@ func TestIterator(t *testing.T) {
 		t.Logf("Running test for TestEnv = %s", testEnv.getName())
 
 		testLedgerID := "testiterator.1"
-		testEnv.init(t, testLedgerID)
+		testEnv.init(t, testLedgerID, nil)
 		testIterator(t, testEnv, 10, 2, 7)
 		testEnv.cleanup()
 
 		testLedgerID = "testiterator.2"
-		testEnv.init(t, testLedgerID)
+		testEnv.init(t, testLedgerID, nil)
 		testIterator(t, testEnv, 10, 1, 11)
 		testEnv.cleanup()
 
 		testLedgerID = "testiterator.3"
-		testEnv.init(t, testLedgerID)
+		testEnv.init(t, testLedgerID, nil)
 		testIterator(t, testEnv, 10, 0, 0)
 		testEnv.cleanup()
 
 		testLedgerID = "testiterator.4"
-		testEnv.init(t, testLedgerID)
+		testEnv.init(t, testLedgerID, nil)
 		testIterator(t, testEnv, 10, 5, 0)
 		testEnv.cleanup()
 
 		testLedgerID = "testiterator.5"
-		testEnv.init(t, testLedgerID)
+		testEnv.init(t, testLedgerID, nil)
 		testIterator(t, testEnv, 10, 0, 5)
 		testEnv.cleanup()
 	}
@@ -369,7 +447,7 @@ func TestIteratorWithDeletes(t *testing.T) {
 	for _, testEnv := range testEnvs {
 		t.Logf("Running test for TestEnv = %s", testEnv.getName())
 		testLedgerID := "testiteratorwithdeletes"
-		testEnv.init(t, testLedgerID)
+		testEnv.init(t, testLedgerID, nil)
 		testIteratorWithDeletes(t, testEnv)
 		testEnv.cleanup()
 	}
@@ -411,7 +489,7 @@ func TestTxValidationWithItr(t *testing.T) {
 	for _, testEnv := range testEnvs {
 		t.Logf("Running test for TestEnv = %s", testEnv.getName())
 		testLedgerID := "testtxvalidationwithitr"
-		testEnv.init(t, testLedgerID)
+		testEnv.init(t, testLedgerID, nil)
 		testTxValidationWithItr(t, testEnv)
 		testEnv.cleanup()
 	}
@@ -476,7 +554,7 @@ func TestGetSetMultipeKeys(t *testing.T) {
 	for _, testEnv := range testEnvs {
 		t.Logf("Running test for TestEnv = %s", testEnv.getName())
 		testLedgerID := "testgetsetmultipekeys"
-		testEnv.init(t, testLedgerID)
+		testEnv.init(t, testLedgerID, nil)
 		testGetSetMultipeKeys(t, testEnv)
 		testEnv.cleanup()
 	}
@@ -539,7 +617,7 @@ func TestExecuteQuery(t *testing.T) {
 		if testEnv.getName() == couchDBtestEnvName {
 			t.Logf("Running test for TestEnv = %s", testEnv.getName())
 			testLedgerID := "testexecutequery"
-			testEnv.init(t, testLedgerID)
+			testEnv.init(t, testLedgerID, nil)
 			testExecuteQuery(t, testEnv)
 			testEnv.cleanup()
 		}
@@ -611,7 +689,7 @@ func TestValidateKey(t *testing.T) {
 	dummyValue := []byte("dummyValue")
 	for _, testEnv := range testEnvs {
 		testLedgerID := "test.validate.key"
-		testEnv.init(t, testLedgerID)
+		testEnv.init(t, testLedgerID, nil)
 		txSimulator, _ := testEnv.getTxMgr().NewTxSimulator("test_tx1")
 		err := txSimulator.SetState("ns1", nonUTF8Key, dummyValue)
 		if testEnv.getName() == levelDBtestEnvName {
@@ -628,9 +706,17 @@ func TestValidateKey(t *testing.T) {
 // is perfromed - queries on private data are supported in a read-only tran
 func TestTxSimulatorUnsupportedTx(t *testing.T) {
 	testEnv := testEnvs[0]
-	testEnv.init(t, "TestTxSimulatorUnsupportedTxQueries")
+	testEnv.init(t, "TestTxSimulatorUnsupportedTxQueries", nil)
 	defer testEnv.cleanup()
 	txMgr := testEnv.getTxMgr()
+	populateCollConfigForTest(t, txMgr.(*LockBasedTxMgr),
+		[]collConfigkey{
+			{"ns1", "coll1"},
+			{"ns1", "coll2"},
+			{"ns1", "coll3"},
+			{"ns1", "coll4"},
+		},
+		version.NewHeight(1, 1))
 
 	simulator, _ := txMgr.NewTxSimulator("txid1")
 	err := simulator.SetState("ns", "key", []byte("value"))
@@ -649,8 +735,19 @@ func TestTxSimulatorUnsupportedTx(t *testing.T) {
 
 func TestTxSimulatorMissingPvtdata(t *testing.T) {
 	testEnv := testEnvs[0]
-	testEnv.init(t, "TestTxSimulatorUnsupportedTxQueries")
+	testEnv.init(t, "TestTxSimulatorUnsupportedTxQueries", nil)
 	defer testEnv.cleanup()
+
+	txMgr := testEnv.getTxMgr()
+	populateCollConfigForTest(t, txMgr.(*LockBasedTxMgr),
+		[]collConfigkey{
+			{"ns1", "coll1"},
+			{"ns1", "coll2"},
+			{"ns1", "coll3"},
+			{"ns1", "coll4"},
+		},
+		version.NewHeight(1, 1),
+	)
 
 	db := testEnv.getVDB()
 	updateBatch := privacyenabledstate.NewUpdateBatch()
@@ -658,7 +755,6 @@ func TestTxSimulatorMissingPvtdata(t *testing.T) {
 	updateBatch.PvtUpdates.Put("ns1", "coll1", "key1", []byte("value1"), version.NewHeight(1, 1))
 	db.ApplyPrivacyAwareUpdates(updateBatch, version.NewHeight(1, 1))
 
-	txMgr := testEnv.getTxMgr()
 	simulator, _ := txMgr.NewTxSimulator("testTxid1")
 	val, _ := simulator.GetPrivateData("ns1", "coll1", "key1")
 	testutil.AssertEquals(t, val, []byte("value1"))
@@ -692,7 +788,7 @@ func TestTxSimulatorMissingPvtdata(t *testing.T) {
 func TestDeleteOnCursor(t *testing.T) {
 	cID := "cid"
 	env := testEnvs[0]
-	env.init(t, "TestDeleteOnCursor")
+	env.init(t, "TestDeleteOnCursor", nil)
 	defer env.cleanup()
 
 	txMgr := env.getTxMgr()
@@ -735,4 +831,69 @@ func TestDeleteOnCursor(t *testing.T) {
 	testutil.AssertEquals(t, key, "key_005")
 	itr3.Close()
 	s3.Done()
+}
+
+func TestTxSimulatorMissingPvtdataExpiry(t *testing.T) {
+	ledgerid := "TestTxSimulatorMissingPvtdataExpiry"
+	testEnv := testEnvs[0]
+	cs := btltestutil.NewMockCollectionStore()
+	cs.SetBTL("ns", "coll", 1)
+	testEnv.init(t, ledgerid, pvtdatapolicy.ConstructBTLPolicy(cs))
+	defer testEnv.cleanup()
+
+	txMgr := testEnv.getTxMgr()
+	populateCollConfigForTest(t, txMgr.(*LockBasedTxMgr), []collConfigkey{{"ns", "coll"}}, version.NewHeight(1, 1))
+
+	viper.Set(fmt.Sprintf("ledger.pvtdata.btlpolicy.%s.ns.coll", ledgerid), 1)
+	bg, _ := testutil.NewBlockGenerator(t, ledgerid, false)
+
+	blkAndPvtdata := prepareNextBlockForTest(t, txMgr, bg, "txid-1",
+		map[string]string{"pubkey1": "pub-value1"}, map[string]string{"pvtkey1": "pvt-value1"})
+	testutil.AssertNoError(t, txMgr.ValidateAndPrepare(blkAndPvtdata, true), "")
+	testutil.AssertNoError(t, txMgr.Commit(), "")
+
+	simulator, _ := txMgr.NewTxSimulator("tx-tmp")
+	pvtval, err := simulator.GetPrivateData("ns", "coll", "pvtkey1")
+	testutil.AssertNoError(t, err, "")
+	testutil.AssertEquals(t, pvtval, []byte("pvt-value1"))
+	simulator.Done()
+
+	blkAndPvtdata = prepareNextBlockForTest(t, txMgr, bg, "txid-2",
+		map[string]string{"pubkey1": "pub-value2"}, map[string]string{"pvtkey2": "pvt-value2"})
+	testutil.AssertNoError(t, txMgr.ValidateAndPrepare(blkAndPvtdata, true), "")
+	testutil.AssertNoError(t, txMgr.Commit(), "")
+
+	simulator, _ = txMgr.NewTxSimulator("tx-tmp")
+	pvtval, _ = simulator.GetPrivateData("ns", "coll", "pvtkey1")
+	testutil.AssertEquals(t, pvtval, []byte("pvt-value1"))
+	simulator.Done()
+
+	blkAndPvtdata = prepareNextBlockForTest(t, txMgr, bg, "txid-2",
+		map[string]string{"pubkey1": "pub-value3"}, map[string]string{"pvtkey3": "pvt-value3"})
+	testutil.AssertNoError(t, txMgr.ValidateAndPrepare(blkAndPvtdata, true), "")
+	testutil.AssertNoError(t, txMgr.Commit(), "")
+
+	simulator, _ = txMgr.NewTxSimulator("tx-tmp")
+	pvtval, _ = simulator.GetPrivateData("ns", "coll", "pvtkey1")
+	testutil.AssertNil(t, pvtval)
+	simulator.Done()
+}
+
+func prepareNextBlockForTest(t *testing.T, txMgr txmgr.TxMgr, bg *testutil.BlockGenerator,
+	txid string, pubKVs map[string]string, pvtKVs map[string]string) *ledger.BlockAndPvtData {
+	simulator, _ := txMgr.NewTxSimulator(txid)
+	//simulating transaction
+	for k, v := range pubKVs {
+		simulator.SetState("ns", k, []byte(v))
+	}
+	for k, v := range pvtKVs {
+		simulator.SetPrivateData("ns", "coll", k, []byte(v))
+	}
+	simulator.Done()
+	simRes, _ := simulator.GetTxSimulationResults()
+	pubSimBytes, _ := simRes.GetPubSimulationBytes()
+	block := bg.NextBlock([][]byte{pubSimBytes})
+	return &ledger.BlockAndPvtData{Block: block,
+		BlockPvtData: map[uint64]*ledger.TxPvtData{0: {SeqInBlock: 0, WriteSet: simRes.PvtSimulationResults}},
+	}
 }

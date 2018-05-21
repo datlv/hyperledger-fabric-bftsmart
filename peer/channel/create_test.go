@@ -29,6 +29,7 @@ import (
 	"testing"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/core/config/configtest"
 	"github.com/hyperledger/fabric/msp/mgmt/testtools"
 	"github.com/hyperledger/fabric/peer/common"
 	cb "github.com/hyperledger/fabric/protos/common"
@@ -52,7 +53,6 @@ func newOrderer(port int, t *testing.T) *timeoutOrderer {
 	if err != nil {
 		panic(err)
 	}
-	go srv.Serve(lsnr)
 	o := &timeoutOrderer{Server: srv,
 		Listener:         lsnr,
 		t:                t,
@@ -61,6 +61,7 @@ func newOrderer(port int, t *testing.T) *timeoutOrderer {
 		counter:          int(1),
 	}
 	orderer.RegisterAtomicBroadcastServer(srv, o)
+	go srv.Serve(lsnr)
 	return o
 }
 
@@ -148,6 +149,8 @@ func mockBroadcastClientFactory() (common.BroadcastClient, error) {
 
 func TestCreateChain(t *testing.T) {
 	InitMSP()
+	cleanup := configtest.SetDevFabricConfigPath(t)
+	defer cleanup()
 
 	mockchain := "mockchain"
 
@@ -175,10 +178,57 @@ func TestCreateChain(t *testing.T) {
 		t.Fail()
 		t.Errorf("expected create command to succeed")
 	}
+
+	filename := mockchain + ".block"
+	if _, err := os.Stat(filename); err != nil {
+		t.Fail()
+		t.Errorf("expected %s to exist", filename)
+	}
+}
+
+func TestCreateChainWithOutputBlock(t *testing.T) {
+	InitMSP()
+	cleanup := configtest.SetDevFabricConfigPath(t)
+	defer cleanup()
+
+	mockchain := "mockchain"
+
+	signer, err := common.GetDefaultSigner()
+	if err != nil {
+		t.Fatalf("Get default signer error: %v", err)
+	}
+
+	mockCF := &ChannelCmdFactory{
+		BroadcastFactory: mockBroadcastClientFactory,
+		Signer:           signer,
+		DeliverClient:    &mockDeliverClient{},
+	}
+
+	cmd := createCmd(mockCF)
+	AddFlags(cmd)
+
+	tempDir, err := ioutil.TempDir("", "create-output")
+	if err != nil {
+		t.Fatalf("failed to create temporary directory")
+	}
+	defer os.RemoveAll(tempDir)
+
+	outputBlockPath := filepath.Join(tempDir, "output.block")
+	args := []string{"-c", mockchain, "-o", "localhost:7050", "--outputBlock", outputBlockPath}
+	cmd.SetArgs(args)
+	defer func() { outputBlock = "" }()
+
+	err = cmd.Execute()
+	assert.NoError(t, err, "execute should succeed")
+
+	_, err = os.Stat(outputBlockPath)
+	assert.NoErrorf(t, err, "expected %s to exist", outputBlockPath)
 }
 
 func TestCreateChainWithDefaultAnchorPeers(t *testing.T) {
 	InitMSP()
+	cleanup := configtest.SetDevFabricConfigPath(t)
+	defer cleanup()
 
 	mockchain := "mockchain"
 
@@ -210,6 +260,8 @@ func TestCreateChainWithDefaultAnchorPeers(t *testing.T) {
 
 func TestCreateChainWithWaitSuccess(t *testing.T) {
 	InitMSP()
+	cleanup := configtest.SetDevFabricConfigPath(t)
+	defer cleanup()
 
 	mockchain := "mockchain"
 
@@ -241,6 +293,8 @@ func TestCreateChainWithWaitSuccess(t *testing.T) {
 
 func TestCreateChainWithTimeoutErr(t *testing.T) {
 	InitMSP()
+	cleanup := configtest.SetDevFabricConfigPath(t)
+	defer cleanup()
 
 	mockchain := "mockchain"
 
@@ -277,6 +331,8 @@ func TestCreateChainWithTimeoutErr(t *testing.T) {
 
 func TestCreateChainBCFail(t *testing.T) {
 	InitMSP()
+	cleanup := configtest.SetDevFabricConfigPath(t)
+	defer cleanup()
 
 	mockchain := "mockchain"
 
@@ -316,6 +372,8 @@ func TestCreateChainBCFail(t *testing.T) {
 
 func TestCreateChainDeliverFail(t *testing.T) {
 	InitMSP()
+	cleanup := configtest.SetDevFabricConfigPath(t)
+	defer cleanup()
 
 	mockchain := "mockchain"
 
@@ -381,9 +439,11 @@ func createTxFile(filename string, typ cb.HeaderType, channelID string) (*cb.Env
 
 func TestCreateChainFromTx(t *testing.T) {
 	InitMSP()
+	cleanup := configtest.SetDevFabricConfigPath(t)
+	defer cleanup()
 
 	mockchannel := "mockchannel"
-	dir, err := ioutil.TempDir("/tmp", "createtestfromtx-")
+	dir, err := ioutil.TempDir("", "createtestfromtx-")
 	if err != nil {
 		t.Fatalf("couldn't create temp dir")
 	}
@@ -439,10 +499,12 @@ func TestCreateChainFromTx(t *testing.T) {
 
 func TestCreateChainInvalidTx(t *testing.T) {
 	InitMSP()
+	cleanup := configtest.SetDevFabricConfigPath(t)
+	defer cleanup()
 
 	mockchannel := "mockchannel"
 
-	dir, err := ioutil.TempDir("/tmp", "createinvaltest-")
+	dir, err := ioutil.TempDir("", "createinvaltest-")
 	if err != nil {
 		t.Fatalf("couldn't create temp dir")
 	}
@@ -510,8 +572,11 @@ func TestCreateChainInvalidTx(t *testing.T) {
 
 func TestCreateChainNilCF(t *testing.T) {
 	InitMSP()
+	cleanup := configtest.SetDevFabricConfigPath(t)
+	defer cleanup()
+
 	mockchannel := "mockchannel"
-	dir, err := ioutil.TempDir("/tmp", "createinvaltest-")
+	dir, err := ioutil.TempDir("", "createinvaltest-")
 	assert.NoError(t, err, "Couldn't create temp dir")
 	defer os.RemoveAll(dir) // clean up
 

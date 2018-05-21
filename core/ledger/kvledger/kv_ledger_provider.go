@@ -11,9 +11,12 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/hyperledger/fabric/core/ledger/confighistory"
+
 	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric/common/ledger/util/leveldbhelper"
 	"github.com/hyperledger/fabric/core/ledger"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/bookkeeping"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/history/historydb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/history/historydb/historyleveldb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/privacyenabledstate"
@@ -42,6 +45,9 @@ type Provider struct {
 	ledgerStoreProvider *ledgerstorage.Provider
 	vdbProvider         privacyenabledstate.DBProvider
 	historydbProvider   historydb.HistoryDBProvider
+	configHistoryMgr    confighistory.Mgr
+	stateListeners      []ledger.StateListener
+	bookkeepingProvider bookkeeping.Provider
 }
 
 // NewProvider instantiates a new Provider.
@@ -62,13 +68,19 @@ func NewProvider() (ledger.PeerLedgerProvider, error) {
 	}
 
 	// Initialize the history database (index for history of values by key)
-	var historydbProvider historydb.HistoryDBProvider
-	historydbProvider = historyleveldb.NewHistoryDBProvider()
-
+	historydbProvider := historyleveldb.NewHistoryDBProvider()
+	bookkeepingProvider := bookkeeping.NewProvider()
+	// Initialize config history mgr
+	configHistoryMgr := confighistory.NewMgr()
 	logger.Info("ledger provider Initialized")
-	provider := &Provider{idStore, ledgerStoreProvider, vdbProvider, historydbProvider}
+	provider := &Provider{idStore, ledgerStoreProvider, vdbProvider, historydbProvider, configHistoryMgr, nil, bookkeepingProvider}
 	provider.recoverUnderConstructionLedger()
 	return provider, nil
+}
+
+// Initialize implements the corresponding method from interface ledger.PeerLedgerProvider
+func (provider *Provider) Initialize(stateListeners []ledger.StateListener) {
+	provider.stateListeners = stateListeners
 }
 
 // Create implements the corresponding method from interface ledger.PeerLedgerProvider
@@ -143,7 +155,7 @@ func (provider *Provider) openInternal(ledgerID string) (ledger.PeerLedger, erro
 
 	// Create a kvLedger for this chain/ledger, which encasulates the underlying data stores
 	// (id store, blockstore, state database, history database)
-	l, err := newKVLedger(ledgerID, blockStore, vDB, historyDB)
+	l, err := newKVLedger(ledgerID, blockStore, vDB, historyDB, provider.configHistoryMgr, provider.stateListeners, provider.bookkeepingProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -166,6 +178,8 @@ func (provider *Provider) Close() {
 	provider.ledgerStoreProvider.Close()
 	provider.vdbProvider.Close()
 	provider.historydbProvider.Close()
+	provider.bookkeepingProvider.Close()
+	provider.configHistoryMgr.Close()
 }
 
 // recoverUnderConstructionLedger checks whether the under construction flag is set - this would be the case
@@ -285,6 +299,7 @@ func (s *idStore) ledgerIDExists(ledgerID string) (bool, error) {
 func (s *idStore) getAllLedgerIds() ([]string, error) {
 	var ids []string
 	itr := s.db.GetIterator(nil, nil)
+	defer itr.Release()
 	itr.First()
 	for itr.Valid() {
 		if bytes.Equal(itr.Key(), underConstructionLedgerKey) {

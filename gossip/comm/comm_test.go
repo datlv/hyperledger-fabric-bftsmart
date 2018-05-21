@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/hyperledger/fabric/bccsp/factory"
-	"github.com/hyperledger/fabric/core/config"
+	"github.com/hyperledger/fabric/core/config/configtest"
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/identity"
@@ -54,6 +54,10 @@ var (
 )
 
 type naiveSecProvider struct {
+}
+
+func (*naiveSecProvider) OrgByPeerIdentity(api.PeerIdentityType) api.OrgIdentityType {
+	return nil
 }
 
 func (*naiveSecProvider) Expiration(peerIdentity api.PeerIdentityType) (time.Time, error) {
@@ -102,10 +106,10 @@ func (*naiveSecProvider) VerifyByChannel(_ common.ChainID, _ api.PeerIdentityTyp
 	return nil
 }
 
-func newCommInstance(port int, sec api.MessageCryptoService) (Comm, error) {
+func newCommInstance(port int, sec *naiveSecProvider) (Comm, error) {
 	endpoint := fmt.Sprintf("localhost:%d", port)
 	id := []byte(endpoint)
-	inst, err := NewCommInstanceWithServer(port, identity.NewIdentityMapper(sec, id, noopPurgeIdentity), id, nil)
+	inst, err := NewCommInstanceWithServer(port, identity.NewIdentityMapper(sec, id, noopPurgeIdentity, sec), id, nil)
 	return inst, err
 }
 
@@ -184,7 +188,7 @@ func handshaker(endpoint string, comm Comm, t *testing.T, connMutator msgMutator
 func TestViperConfig(t *testing.T) {
 	viper.SetConfigName("core")
 	viper.SetEnvPrefix("CORE")
-	config.AddDevConfigPath(nil)
+	configtest.AddDevConfigPath(nil)
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
 	err := viper.ReadInConfig()
@@ -222,7 +226,7 @@ func TestHandshake(t *testing.T) {
 	assert.NoError(t, err)
 	s := grpc.NewServer()
 	id := []byte("localhost:9611")
-	idMapper := identity.NewIdentityMapper(naiveSec, id, noopPurgeIdentity)
+	idMapper := identity.NewIdentityMapper(naiveSec, id, noopPurgeIdentity, naiveSec)
 	inst, err := NewCommInstance(s, nil, idMapper, api.PeerIdentityType("localhost:9611"), func() []grpc.DialOption {
 		return []grpc.DialOption{grpc.WithInsecure()}
 	})
@@ -354,14 +358,14 @@ func TestProdConstructor(t *testing.T) {
 	defer srv.Stop()
 	defer lsnr.Close()
 	id := []byte("localhost:20000")
-	comm1, _ := NewCommInstance(srv, certs, identity.NewIdentityMapper(naiveSec, id, noopPurgeIdentity), id, dialOpts)
+	comm1, _ := NewCommInstance(srv, certs, identity.NewIdentityMapper(naiveSec, id, noopPurgeIdentity, naiveSec), id, dialOpts)
 	go srv.Serve(lsnr)
 
 	srv, lsnr, dialOpts, certs = createGRPCLayer(30000)
 	defer srv.Stop()
 	defer lsnr.Close()
 	id = []byte("localhost:30000")
-	comm2, _ := NewCommInstance(srv, certs, identity.NewIdentityMapper(naiveSec, id, noopPurgeIdentity), id, dialOpts)
+	comm2, _ := NewCommInstance(srv, certs, identity.NewIdentityMapper(naiveSec, id, noopPurgeIdentity, naiveSec), id, dialOpts)
 	go srv.Serve(lsnr)
 	defer comm1.Stop()
 	defer comm2.Stop()

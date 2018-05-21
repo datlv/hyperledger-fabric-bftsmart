@@ -9,7 +9,7 @@
 set -e
 set -x
 
-DEVENV_REVISION=`(cd /hyperledger/devenv; git rev-parse --short HEAD)`
+DEVENV_REVISION=`(cd /hyperledger/fabric/devenv; git rev-parse --short HEAD)`
 
 # Install WARNING before we start provisioning so that it
 # will remain active.  We will remove the warning after
@@ -60,7 +60,7 @@ docker run --rm busybox echo All good
 # ----------------------------------------------------------------
 # Install Golang
 # ----------------------------------------------------------------
-GO_VER=1.9
+GO_VER=1.10
 GO_URL=https://storage.googleapis.com/golang/go${GO_VER}.linux-amd64.tar.gz
 
 # Set Go environment variables needed by other scripts
@@ -81,21 +81,16 @@ curl -sL $GO_URL | (cd $GOROOT && tar --strip-components 1 -xz)
 # ----------------------------------------------------------------
 # Install nvm and Node.js
 # ----------------------------------------------------------------
-runuser -l ubuntu -c '/hyperledger/devenv/install_nvm.sh'
-
-# ----------------------------------------------------------------
-# Install Behave
-# ----------------------------------------------------------------
-/hyperledger/scripts/install_behave.sh
+runuser -l ubuntu -c '/hyperledger/fabric/devenv/install_nvm.sh'
 
 # ----------------------------------------------------------------
 # Install Java
 # ----------------------------------------------------------------
 apt-get install -y openjdk-8-jdk maven
 
-wget https://services.gradle.org/distributions/gradle-2.12-bin.zip -P /tmp --quiet
-unzip -q /tmp/gradle-2.12-bin.zip -d /opt && rm /tmp/gradle-2.12-bin.zip
-ln -s /opt/gradle-2.12/bin/gradle /usr/bin
+wget https://services.gradle.org/distributions/gradle-4.4.1-bin.zip -P /tmp --quiet
+unzip -q /tmp/gradle-4.4.1-bin.zip -d /opt && rm /tmp/gradle-4.4.1-bin.zip
+ln -s /opt/gradle-4.4.1/bin/gradle /usr/bin
 
 # ----------------------------------------------------------------
 # Misc tasks
@@ -116,12 +111,13 @@ make clean gotools
 sudo chown -R ubuntu:ubuntu $GOPATH
 
 # Update limits.conf to increase nofiles for LevelDB and network connections
-sudo cp /hyperledger/devenv/limits.conf /etc/security/limits.conf
+sudo cp /hyperledger/fabric/devenv/limits.conf /etc/security/limits.conf
 
 # Configure vagrant specific environment
 cat <<EOF >/etc/profile.d/vagrant-devenv.sh
 # Expose the devenv/tools in the $PATH
-export PATH=\$PATH:/hyperledger/devenv/tools:/hyperledger/build/bin
+export PATH=\$PATH:/hyperledger/fabric/devenv/tools:/hyperledger/fabric/.build/bin
+export FABRIC_CFG_PATH=/hyperledger/fabric/sampleconfig/
 export VAGRANT=1
 export CGO_CFLAGS=" "
 EOF

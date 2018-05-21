@@ -41,8 +41,6 @@ type NodeOUs struct {
 	ClientOUIdentifier *OrganizationalUnitIdentifiersConfiguration `yaml:"ClientOUIdentifier,omitempty"`
 	// PeerOUIdentifier specifies how to recognize peers by OU
 	PeerOUIdentifier *OrganizationalUnitIdentifiersConfiguration `yaml:"PeerOUIdentifier,omitempty"`
-	// OrdererOUIdentifier specifies how to recognize orderers by OU
-	OrdererOUIdentifier *OrganizationalUnitIdentifiersConfiguration `yaml:"OrdererOUIdentifier,omitempty"`
 }
 
 // Configuration represents the accessory configuration an MSP can be equipped with.
@@ -90,15 +88,21 @@ func getPemMaterialFromDir(dir string) ([][]byte, error) {
 	content := make([][]byte, 0)
 	files, err := ioutil.ReadDir(dir)
 	if err != nil {
-		return nil, errors.Wrapf(err, "could not read directory %s", err)
+		return nil, errors.Wrapf(err, "could not read directory %s", dir)
 	}
 
 	for _, f := range files {
+		fullName := filepath.Join(dir, f.Name())
+
+		f, err := os.Stat(fullName)
+		if err != nil {
+			mspLogger.Warningf("Failed to stat %s: %s", fullName, err)
+			continue
+		}
 		if f.IsDir() {
 			continue
 		}
 
-		fullName := filepath.Join(dir, string(filepath.Separator), f.Name())
 		mspLogger.Debugf("Inspecting file %s", fullName)
 
 		item, err := readPemFile(fullName)
@@ -294,15 +298,11 @@ func getMspConfig(dir string, ID string, sigid *msp.SigningIdentityInfo) (*msp.M
 			if configuration.NodeOUs.PeerOUIdentifier == nil || len(configuration.NodeOUs.PeerOUIdentifier.OrganizationalUnitIdentifier) == 0 {
 				return nil, errors.New("Failed loading NodeOUs. PeerOU must be different from nil.")
 			}
-			if configuration.NodeOUs.OrdererOUIdentifier == nil || len(configuration.NodeOUs.OrdererOUIdentifier.OrganizationalUnitIdentifier) == 0 {
-				return nil, errors.New("Failed loading NodeOUs. OrdererOU must be different from nil.")
-			}
 
 			nodeOUs = &msp.FabricNodeOUs{
-				Enable:              configuration.NodeOUs.Enable,
-				ClientOUIdentifier:  &msp.FabricOUIdentifier{OrganizationalUnitIdentifier: configuration.NodeOUs.ClientOUIdentifier.OrganizationalUnitIdentifier},
-				PeerOUIdentifier:    &msp.FabricOUIdentifier{OrganizationalUnitIdentifier: configuration.NodeOUs.PeerOUIdentifier.OrganizationalUnitIdentifier},
-				OrdererOUIdentifier: &msp.FabricOUIdentifier{OrganizationalUnitIdentifier: configuration.NodeOUs.OrdererOUIdentifier.OrganizationalUnitIdentifier},
+				Enable:             configuration.NodeOUs.Enable,
+				ClientOUIdentifier: &msp.FabricOUIdentifier{OrganizationalUnitIdentifier: configuration.NodeOUs.ClientOUIdentifier.OrganizationalUnitIdentifier},
+				PeerOUIdentifier:   &msp.FabricOUIdentifier{OrganizationalUnitIdentifier: configuration.NodeOUs.PeerOUIdentifier.OrganizationalUnitIdentifier},
 			}
 
 			// Read certificates, if defined
@@ -323,15 +323,6 @@ func getMspConfig(dir string, ID string, sigid *msp.SigningIdentityInfo) (*msp.M
 				mspLogger.Debugf("Failed loading PeerOU certificate at [%s]: [%s]", f, err)
 			} else {
 				nodeOUs.PeerOUIdentifier.Certificate = raw
-			}
-
-			// OrdererOU
-			f = filepath.Join(dir, configuration.NodeOUs.OrdererOUIdentifier.Certificate)
-			raw, err = readFile(f)
-			if err != nil {
-				mspLogger.Debugf("Failed loading OrdererOU certificate at [%s]: [%s]", f, err)
-			} else {
-				nodeOUs.OrdererOUIdentifier.Certificate = raw
 			}
 		}
 	} else {
@@ -367,10 +358,11 @@ func getMspConfig(dir string, ID string, sigid *msp.SigningIdentityInfo) (*msp.M
 }
 
 const (
-	IdemixConfigDirMsp              = "msp"
-	IdemixConfigDirUser             = "user"
-	IdemixConfigFileIssuerPublicKey = "IssuerPublicKey"
-	IdemixConfigFileSigner          = "SignerConfig"
+	IdemixConfigDirMsp                  = "msp"
+	IdemixConfigDirUser                 = "user"
+	IdemixConfigFileIssuerPublicKey     = "IssuerPublicKey"
+	IdemixConfigFileRevocationPublicKey = "RevocationPublicKey"
+	IdemixConfigFileSigner              = "SignerConfig"
 )
 
 // GetIdemixMspConfig returns the configuration for the Idemix MSP
@@ -380,9 +372,15 @@ func GetIdemixMspConfig(dir string, ID string) (*msp.MSPConfig, error) {
 		return nil, errors.Wrapf(err, "failed to read issuer public key file")
 	}
 
+	revocationPkBytes, err := readFile(filepath.Join(dir, IdemixConfigDirMsp, IdemixConfigFileRevocationPublicKey))
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to read revocation public key file")
+	}
+
 	idemixConfig := &msp.IdemixMSPConfig{
-		Name: ID,
-		IPk:  ipkBytes,
+		Name:         ID,
+		IPk:          ipkBytes,
+		RevocationPk: revocationPkBytes,
 	}
 
 	signerBytes, err := readFile(filepath.Join(dir, IdemixConfigDirUser, IdemixConfigFileSigner))

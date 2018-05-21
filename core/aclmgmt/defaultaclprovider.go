@@ -11,7 +11,6 @@ import (
 
 	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/core/aclmgmt/resources"
-	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/peer"
 	"github.com/hyperledger/fabric/core/policy"
 	"github.com/hyperledger/fabric/msp/mgmt"
@@ -24,7 +23,8 @@ const (
 	CHANNELWRITERS = policies.ChannelApplicationWriters
 )
 
-//defaultACLProvider if RSCC not provided use the default pre 1.0 implementation
+//defaultACLProvider used if resource-based ACL Provider is not provided or
+//if it does not contain a policy for the named resource
 type defaultACLProvider struct {
 	policyChecker policy.PolicyChecker
 
@@ -54,47 +54,45 @@ func (d *defaultACLProvider) initialize() {
 
 	//-------------- LSCC --------------
 	//p resources (implemented by the chaincode currently)
-	d.pResourcePolicyMap[resources.LSCC_INSTALL] = ""
-	d.pResourcePolicyMap[resources.LSCC_GETCHAINCODES] = ""
-	d.pResourcePolicyMap[resources.LSCC_GETINSTALLEDCHAINCODES] = ""
+	d.pResourcePolicyMap[resources.Lscc_Install] = ""
+	d.pResourcePolicyMap[resources.Lscc_GetInstalledChaincodes] = ""
 
 	//c resources
-	d.cResourcePolicyMap[resources.LSCC_DEPLOY] = ""  //ACL check covered by PROPOSAL
-	d.cResourcePolicyMap[resources.LSCC_UPGRADE] = "" //ACL check covered by PROPOSAL
-	d.cResourcePolicyMap[resources.LSCC_GETCCINFO] = CHANNELREADERS
-	d.cResourcePolicyMap[resources.LSCC_GETDEPSPEC] = CHANNELREADERS
-	d.cResourcePolicyMap[resources.LSCC_GETCCDATA] = CHANNELREADERS
+	d.cResourcePolicyMap[resources.Lscc_Deploy] = ""  //ACL check covered by PROPOSAL
+	d.cResourcePolicyMap[resources.Lscc_Upgrade] = "" //ACL check covered by PROPOSAL
+	d.cResourcePolicyMap[resources.Lscc_ChaincodeExists] = CHANNELREADERS
+	d.cResourcePolicyMap[resources.Lscc_GetDeploymentSpec] = CHANNELREADERS
+	d.cResourcePolicyMap[resources.Lscc_GetChaincodeData] = CHANNELREADERS
+	d.cResourcePolicyMap[resources.Lscc_GetInstantiatedChaincodes] = CHANNELREADERS
 
 	//-------------- QSCC --------------
 	//p resources (none)
 
 	//c resources
-	d.cResourcePolicyMap[resources.QSCC_GetChainInfo] = CHANNELREADERS
-	d.cResourcePolicyMap[resources.QSCC_GetBlockByNumber] = CHANNELREADERS
-	d.cResourcePolicyMap[resources.QSCC_GetBlockByHash] = CHANNELREADERS
-	d.cResourcePolicyMap[resources.QSCC_GetTransactionByID] = CHANNELREADERS
-	d.cResourcePolicyMap[resources.QSCC_GetBlockByTxID] = CHANNELREADERS
+	d.cResourcePolicyMap[resources.Qscc_GetChainInfo] = CHANNELREADERS
+	d.cResourcePolicyMap[resources.Qscc_GetBlockByNumber] = CHANNELREADERS
+	d.cResourcePolicyMap[resources.Qscc_GetBlockByHash] = CHANNELREADERS
+	d.cResourcePolicyMap[resources.Qscc_GetTransactionByID] = CHANNELREADERS
+	d.cResourcePolicyMap[resources.Qscc_GetBlockByTxID] = CHANNELREADERS
 
 	//--------------- CSCC resources -----------
 	//p resources (implemented by the chaincode currently)
-	d.pResourcePolicyMap[resources.CSCC_JoinChain] = ""
-	d.pResourcePolicyMap[resources.CSCC_GetChannels] = ""
+	d.pResourcePolicyMap[resources.Cscc_JoinChain] = ""
+	d.pResourcePolicyMap[resources.Cscc_GetChannels] = ""
 
 	//c resources
-	d.cResourcePolicyMap[resources.CSCC_GetConfigBlock] = CHANNELREADERS
-	d.cResourcePolicyMap[resources.CSCC_GetConfigTree] = CHANNELREADERS
-	d.cResourcePolicyMap[resources.CSCC_SimulateConfigTreeUpdate] = CHANNELWRITERS
+	d.cResourcePolicyMap[resources.Cscc_GetConfigBlock] = CHANNELREADERS
+	d.cResourcePolicyMap[resources.Cscc_GetConfigTree] = CHANNELREADERS
+	d.cResourcePolicyMap[resources.Cscc_SimulateConfigTreeUpdate] = CHANNELWRITERS
 
 	//---------------- non-scc resources ------------
-	//Propose
-	d.cResourcePolicyMap[resources.PROPOSE] = CHANNELWRITERS
+	//Peer resources
+	d.cResourcePolicyMap[resources.Peer_Propose] = CHANNELWRITERS
+	d.cResourcePolicyMap[resources.Peer_ChaincodeToChaincode] = CHANNELWRITERS
 
-	//Chaincode-to-Chaincode
-	d.cResourcePolicyMap[resources.CC2CC] = CHANNELWRITERS
-
-	//Events (not used currently - for future)
-	d.cResourcePolicyMap[resources.BLOCKEVENT] = CHANNELREADERS
-	d.cResourcePolicyMap[resources.FILTEREDBLOCKEVENT] = CHANNELREADERS
+	//Event resources
+	d.cResourcePolicyMap[resources.Event_Block] = CHANNELREADERS
+	d.cResourcePolicyMap[resources.Event_FilteredBlock] = CHANNELREADERS
 }
 
 //this should cover an exhaustive list of everything called from the peer
@@ -129,10 +127,4 @@ func (d *defaultACLProvider) CheckACL(resName string, channelID string, idinfo i
 		aclLogger.Errorf("Unmapped id on checkACL %s", resName)
 		return fmt.Errorf("Unknown id on checkACL %s", resName)
 	}
-}
-
-//GenerateSimulationResults does nothing for default provider currently as it defaults to
-//1.0 behavior
-func (d *defaultACLProvider) GenerateSimulationResults(txEnvelop *common.Envelope, simulator ledger.TxSimulator, initializingLedger bool) error {
-	return nil
 }

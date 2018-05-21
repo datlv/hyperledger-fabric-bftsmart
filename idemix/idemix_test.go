@@ -10,11 +10,28 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/milagro-crypto/amcl/version3/go/amcl/FP256BN"
+	"github.com/hyperledger/fabric-amcl/amcl/FP256BN"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestIdemix(t *testing.T) {
+	// Test weak BB sigs:
+	// Test KeyGen
+	rng, err := GetRand()
+	assert.NoError(t, err)
+	wbbsk, wbbpk := WBBKeyGen(rng)
+
+	// Get random message
+	testmsg := RandModOrder(rng)
+
+	// Test Signing
+	wbbsig := WBBSign(wbbsk, testmsg)
+
+	// Test Verification
+	err = WBBVerify(wbbpk, wbbsig, testmsg)
+	assert.NoError(t, err)
+
+	// Test idemix functionality
 	AttributeNames := []string{"Attr1", "Attr2", "Attr3", "Attr4", "Attr5"}
 	attrs := make([]*FP256BN.BIG, len(AttributeNames))
 	for i := range AttributeNames {
@@ -22,7 +39,6 @@ func TestIdemix(t *testing.T) {
 	}
 
 	// Test issuer key generation
-	rng, err := GetRand()
 	if err != nil {
 		t.Fatalf("Error getting rng: \"%s\"", err)
 		return
@@ -64,14 +80,11 @@ func TestIdemix(t *testing.T) {
 
 	// Test issuance
 	sk := RandModOrder(rng)
-	randCred := RandModOrder(rng)
 	ni := RandModOrder(rng)
-	m := NewCredRequest(sk, randCred, ni, key.IPk, rng)
+	m := NewCredRequest(sk, ni, key.IPk, rng)
 
 	cred, err := NewCredential(key, m, attrs, rng)
 	assert.NoError(t, err, "Failed to issue a credential: \"%s\"", err)
-
-	cred.Complete(randCred)
 
 	assert.NoError(t, cred.Ver(sk, key.IPk), "credential should be valid")
 
@@ -95,30 +108,49 @@ func TestIdemix(t *testing.T) {
 	assert.Error(t, cred.Ver(sk, key.IPk), "credential with nil attribute should be invalid")
 	cred.Attrs = attrsBackup
 
+	// Generate a revocation key pair
+	revocationKey, err := GenerateLongTermRevocationKey()
+	assert.NoError(t, err)
+
+	// Create CRI that contains no revocation mechanism
+	epoch := 0
+	cri, err := CreateCRI(revocationKey, []*FP256BN.BIG{}, epoch, ALG_NO_REVOCATION, rng)
+	assert.NoError(t, err)
+	err = VerifyEpochPK(&revocationKey.PublicKey, cri.EpochPK, cri.EpochPKSig, int(cri.Epoch), RevocationAlgorithm(cri.RevocationAlg))
+	assert.NoError(t, err)
+
+	// make sure that epoch pk is not valid in future epoch
+	err = VerifyEpochPK(&revocationKey.PublicKey, cri.EpochPK, cri.EpochPKSig, int(cri.Epoch)+1, RevocationAlgorithm(cri.RevocationAlg))
+	assert.Error(t, err)
+
+	// Test bad input
+	_, err = CreateCRI(nil, []*FP256BN.BIG{}, epoch, ALG_NO_REVOCATION, rng)
+	assert.Error(t, err)
+	_, err = CreateCRI(revocationKey, []*FP256BN.BIG{}, epoch, ALG_NO_REVOCATION, nil)
+	assert.Error(t, err)
+
 	// Test signing no disclosure
 	Nym, RandNym := MakeNym(sk, key.IPk, rng)
 
 	disclosure := []byte{0, 0, 0, 0, 0}
 	msg := []byte{1, 2, 3, 4, 5}
-	sig, err := NewSignature(cred, sk, Nym, RandNym, key.IPk, disclosure, msg, rng)
+	rhindex := 4
+	sig, err := NewSignature(cred, sk, Nym, RandNym, key.IPk, disclosure, msg, rhindex, cri, rng)
 	assert.NoError(t, err)
 
-	err = sig.Ver(disclosure, key.IPk, msg, nil)
+	err = sig.Ver(disclosure, key.IPk, msg, nil, 0, &revocationKey.PublicKey, epoch)
 	if err != nil {
 		t.Fatalf("Signature should be valid but verification returned error: %s", err)
 		return
 	}
 
 	// Test signing selective disclosure
-	disclosure = []byte{0, 1, 1, 1, 1}
-	sig, err = NewSignature(cred, sk, Nym, RandNym, key.IPk, disclosure, msg, rng)
+	disclosure = []byte{0, 1, 1, 1, 0}
+	sig, err = NewSignature(cred, sk, Nym, RandNym, key.IPk, disclosure, msg, rhindex, cri, rng)
 	assert.NoError(t, err)
 
-	err = sig.Ver(disclosure, key.IPk, msg, attrs)
-	if err != nil {
-		t.Fatalf("Signature should be valid but verification returned error: %s", err)
-		return
-	}
+	err = sig.Ver(disclosure, key.IPk, msg, attrs, rhindex, &revocationKey.PublicKey, epoch)
+	assert.NoError(t, err)
 
 	// Test NymSignatures
 	nymsig, err := NewNymSignature(sk, Nym, RandNym, key.IPk, []byte("testing"), rng)

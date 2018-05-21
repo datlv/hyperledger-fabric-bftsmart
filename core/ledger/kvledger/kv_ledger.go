@@ -11,10 +11,15 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/hyperledger/fabric/core/ledger/pvtdatapolicy"
+
 	"github.com/hyperledger/fabric/common/flogging"
 	commonledger "github.com/hyperledger/fabric/common/ledger"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/ledger"
+	"github.com/hyperledger/fabric/core/ledger/cceventmgmt"
+	"github.com/hyperledger/fabric/core/ledger/confighistory"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/bookkeeping"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/history/historydb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/privacyenabledstate"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/txmgr"
@@ -30,32 +35,60 @@ var logger = flogging.MustGetLogger("kvledger")
 // KVLedger provides an implementation of `ledger.PeerLedger`.
 // This implementation provides a key-value based data model
 type kvLedger struct {
-	ledgerID        string
-	blockStore      *ledgerstorage.Store
-	txtmgmt         txmgr.TxMgr
-	historyDB       historydb.HistoryDB
-	blockAPIsRWLock *sync.RWMutex
+	ledgerID               string
+	blockStore             *ledgerstorage.Store
+	txtmgmt                txmgr.TxMgr
+	historyDB              historydb.HistoryDB
+	configHistoryRetriever ledger.ConfigHistoryRetriever
+	blockAPIsRWLock        *sync.RWMutex
 }
 
 // NewKVLedger constructs new `KVLedger`
-func newKVLedger(ledgerID string, blockStore *ledgerstorage.Store,
-	versionedDB privacyenabledstate.DB, historyDB historydb.HistoryDB) (*kvLedger, error) {
+func newKVLedger(
+	ledgerID string,
+	blockStore *ledgerstorage.Store,
+	versionedDB privacyenabledstate.DB,
+	historyDB historydb.HistoryDB,
+	configHistoryMgr confighistory.Mgr,
+	stateListeners []ledger.StateListener,
+	bookkeeperProvider bookkeeping.Provider) (*kvLedger, error) {
 
 	logger.Debugf("Creating KVLedger ledgerID=%s: ", ledgerID)
-
-	//Initialize transaction manager using state database
-	var txmgmt txmgr.TxMgr
-	txmgmt = lockbasedtxmgr.NewLockBasedTxMgr(versionedDB)
-
+	stateListeners = append(stateListeners, configHistoryMgr)
 	// Create a kvLedger for this chain/ledger, which encasulates the underlying
 	// id store, blockstore, txmgr (state database), history database
-	l := &kvLedger{ledgerID, blockStore, txmgmt, historyDB, &sync.RWMutex{}}
+	l := &kvLedger{ledgerID: ledgerID, blockStore: blockStore, historyDB: historyDB, blockAPIsRWLock: &sync.RWMutex{}}
 
+	// TODO Move the function `GetChaincodeEventListener` to ledger interface and
+	// this functionality of regiserting for events to ledgermgmt package so that this
+	// is reused across other future ledger implementations
+	ccEventListener := versionedDB.GetChaincodeEventListener()
+	logger.Debugf("Register state db for chaincode lifecycle events: %t", ccEventListener != nil)
+	if ccEventListener != nil {
+		cceventmgmt.GetMgr().Register(ledgerID, ccEventListener)
+	}
+	btlPolicy := pvtdatapolicy.NewBTLPolicy(l)
+	if err := l.initTxMgr(versionedDB, stateListeners, btlPolicy, bookkeeperProvider); err != nil {
+		return nil, err
+	}
+	l.initBlockStore(btlPolicy)
 	//Recover both state DB and history DB if they are out of sync with block storage
 	if err := l.recoverDBs(); err != nil {
 		panic(fmt.Errorf(`Error during state DB recovery:%s`, err))
 	}
+	l.configHistoryRetriever = configHistoryMgr.GetRetriever(ledgerID, l)
 	return l, nil
+}
+
+func (l *kvLedger) initTxMgr(versionedDB privacyenabledstate.DB, stateListeners []ledger.StateListener,
+	btlPolicy pvtdatapolicy.BTLPolicy, bookkeeperProvider bookkeeping.Provider) error {
+	var err error
+	l.txtmgmt, err = lockbasedtxmgr.NewLockBasedTxMgr(l.ledgerID, versionedDB, stateListeners, btlPolicy, bookkeeperProvider)
+	return err
+}
+
+func (l *kvLedger) initBlockStore(btlPolicy pvtdatapolicy.BTLPolicy) {
+	l.blockStore.Init(btlPolicy)
 }
 
 //Recover the state database and history database (if exist)
@@ -278,6 +311,10 @@ func (l *kvLedger) PurgePrivateData(maxBlockNumToRetain uint64) error {
 // PrivateDataMinBlockNum returns the lowest retained endorsement block height
 func (l *kvLedger) PrivateDataMinBlockNum() (uint64, error) {
 	return 0, fmt.Errorf("not yet implemented")
+}
+
+func (l *kvLedger) GetConfigHistoryRetriever() (ledger.ConfigHistoryRetriever, error) {
+	return l.configHistoryRetriever, nil
 }
 
 // Close closes `KVLedger`

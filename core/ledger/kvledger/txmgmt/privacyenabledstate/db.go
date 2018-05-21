@@ -7,6 +7,9 @@ SPDX-License-Identifier: Apache-2.0
 package privacyenabledstate
 
 import (
+	"fmt"
+
+	"github.com/hyperledger/fabric/core/ledger/cceventmgmt"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/version"
 )
@@ -26,6 +29,7 @@ type DB interface {
 	LoadCommittedVersionsOfPubAndHashedKeys(pubKeys []*statedb.CompositeKey, hashedKeys []*HashedCompositeKey) error
 	GetCachedKeyHashVersion(namespace, collection string, keyHash []byte) (*version.Height, bool)
 	ClearCachedVersions()
+	GetChaincodeEventListener() cceventmgmt.ChaincodeLifecycleEventListener
 	GetPrivateData(namespace, collection, key string) (*statedb.VersionedValue, error)
 	GetValueHash(namespace, collection string, keyHash []byte) (*statedb.VersionedValue, error)
 	GetKeyHashVersion(namespace, collection string, keyHash []byte) (*version.Height, error)
@@ -33,6 +37,13 @@ type DB interface {
 	GetPrivateDataRangeScanIterator(namespace, collection, startKey, endKey string) (statedb.ResultsIterator, error)
 	ExecuteQueryOnPrivateData(namespace, collection, query string) (statedb.ResultsIterator, error)
 	ApplyPrivacyAwareUpdates(updates *UpdateBatch, height *version.Height) error
+}
+
+// PvtdataCompositeKey encloses Namespace, CollectionName and Key components
+type PvtdataCompositeKey struct {
+	Namespace      string
+	CollectionName string
+	Key            string
 }
 
 // HashedCompositeKey encloses Namespace, CollectionName and KeyHash components
@@ -147,4 +158,35 @@ func (h HashedUpdateBatch) Put(ns, coll string, key []byte, value []byte, versio
 // Delete overrides the function in UpdateMap for allowing the key to be a []byte instead of a string
 func (h HashedUpdateBatch) Delete(ns, coll string, key []byte, version *version.Height) {
 	h.UpdateMap.Delete(ns, coll, string(key), version)
+}
+
+// ToCompositeKeyMap rearranges the update batch data in the form of a single map
+func (h HashedUpdateBatch) ToCompositeKeyMap() map[HashedCompositeKey]*statedb.VersionedValue {
+	m := make(map[HashedCompositeKey]*statedb.VersionedValue)
+	for ns, nsBatch := range h.UpdateMap {
+		for _, coll := range nsBatch.GetCollectionNames() {
+			for key, vv := range nsBatch.GetUpdates(coll) {
+				m[HashedCompositeKey{ns, coll, key}] = vv
+			}
+		}
+	}
+	return m
+}
+
+// ToCompositeKeyMap rearranges the update batch data in the form of a single map
+func (p PvtUpdateBatch) ToCompositeKeyMap() map[PvtdataCompositeKey]*statedb.VersionedValue {
+	m := make(map[PvtdataCompositeKey]*statedb.VersionedValue)
+	for ns, nsBatch := range p.UpdateMap {
+		for _, coll := range nsBatch.GetCollectionNames() {
+			for key, vv := range nsBatch.GetUpdates(coll) {
+				m[PvtdataCompositeKey{ns, coll, key}] = vv
+			}
+		}
+	}
+	return m
+}
+
+// String returns a print friendly form of HashedCompositeKey
+func (hck *HashedCompositeKey) String() string {
+	return fmt.Sprintf("ns=%s, collection=%s, keyHash=%x", hck.Namespace, hck.CollectionName, hck.KeyHash)
 }

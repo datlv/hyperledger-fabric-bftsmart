@@ -47,14 +47,20 @@ func (cp *OrdererProvider) HasCapability(capability string) bool {
 	}
 }
 
-// SetChannelModPolicyDuringCreate specifies whether the v1.0 undesirable behavior of setting the /Channel
-// group's mod_policy to "" should be fixed or not.
-func (cp *OrdererProvider) SetChannelModPolicyDuringCreate() bool {
+// PredictableChannelTemplate specifies whether the v1.0 undesirable behavior of setting the /Channel
+// group's mod_policy to "" and copying versions from the channel config should be fixed or not.
+func (cp *OrdererProvider) PredictableChannelTemplate() bool {
 	return cp.v11BugFixes
 }
 
 // Resubmission specifies whether the v1.0 non-deterministic commitment of tx should be fixed by re-submitting
 // the re-validated tx.
 func (cp *OrdererProvider) Resubmission() bool {
+	return cp.v11BugFixes
+}
+
+// ExpirationCheck specifies whether the orderer checks for identity expiration checks
+// when validating messages
+func (cp *OrdererProvider) ExpirationCheck() bool {
 	return cp.v11BugFixes
 }

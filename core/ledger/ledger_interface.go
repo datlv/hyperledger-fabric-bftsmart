@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package ledger
@@ -26,6 +16,7 @@ import (
 
 // PeerLedgerProvider provides handle to ledger instances
 type PeerLedgerProvider interface {
+	Initialize(statelisteners []StateListener)
 	// Create creates a new ledger with the given genesis block.
 	// This function guarantees that the creation of ledger and committing the genesis block would an atomic action
 	// The chain id retrieved from the genesis block is treated as a ledger id
@@ -82,6 +73,8 @@ type PeerLedger interface {
 	PrivateDataMinBlockNum() (uint64, error)
 	//Prune prunes the blocks/transactions that satisfy the given policy
 	Prune(policy commonledger.PrunePolicy) error
+	// GetConfigHistoryRetriever returns the ConfigHistoryRetriever
+	GetConfigHistoryRetriever() (ConfigHistoryRetriever, error)
 }
 
 // ValidatedLedger represents the 'final ledger' after filtering out invalid transactions from PeerLedger.
@@ -98,6 +91,8 @@ type ValidatedLedger interface {
 type QueryExecutor interface {
 	// GetState gets the value for given namespace and key. For a chaincode, the namespace corresponds to the chaincodeId
 	GetState(namespace string, key string) ([]byte, error)
+	// GetStateMetadata returns the metadata for given namespace and key
+	GetStateMetadata(namespace, key string) (map[string][]byte, error)
 	// GetStateMultipleKeys gets the values for multiple keys in a single call
 	GetStateMultipleKeys(namespace string, keys []string) ([][]byte, error)
 	// GetStateRangeScanIterator returns an iterator that contains all the key-values between given key ranges.
@@ -113,6 +108,8 @@ type QueryExecutor interface {
 	ExecuteQuery(namespace, query string) (commonledger.ResultsIterator, error)
 	// GetPrivateData gets the value of a private data item identified by a tuple <namespace, collection, key>
 	GetPrivateData(namespace, collection, key string) ([]byte, error)
+	// GetPrivateDataMetadata gets the metadata of a private data item identified by a tuple <namespace, collection, key>
+	GetPrivateDataMetadata(namespace, collection, key string) (map[string][]byte, error)
 	// GetPrivateDataMultipleKeys gets the values for the multiple private data items in a single call
 	GetPrivateDataMultipleKeys(namespace, collection string, keys []string) ([][]byte, error)
 	// GetPrivateDataRangeScanIterator returns an iterator that contains all the key-values between given key ranges.
@@ -147,6 +144,10 @@ type TxSimulator interface {
 	DeleteState(namespace string, key string) error
 	// SetMultipleKeys sets the values for multiple keys in a single call
 	SetStateMultipleKeys(namespace string, kvs map[string][]byte) error
+	// SetStateMetadata sets the metadata associated with an existing key-tuple <namespace, key>
+	SetStateMetadata(namespace, key string, metadata map[string][]byte) error
+	// DeleteStateMetadata deletes the metadata (if any) associated with an existing key-tuple <namespace, key>
+	DeleteStateMetadata(namespace, key string) error
 	// ExecuteUpdate for supporting rich data model (see comments on QueryExecutor above)
 	ExecuteUpdate(query string) error
 	// SetPrivateData sets the given value to a key in the private data state represented by the tuple <namespace, collection, key>
@@ -155,6 +156,10 @@ type TxSimulator interface {
 	SetPrivateDataMultipleKeys(namespace, collection string, kvs map[string][]byte) error
 	// DeletePrivateData deletes the given tuple <namespace, collection, key> from private data
 	DeletePrivateData(namespace, collection, key string) error
+	// SetPrivateDataMetadata sets the metadata associated with an existing key-tuple <namespace, collection, key>
+	SetPrivateDataMetadata(namespace, collection, key string, metadata map[string][]byte) error
+	// DeletePrivateDataMetadata deletes the metadata associated with an existing key-tuple <namespace, collection, key>
+	DeletePrivateDataMetadata(namespace, collection, key string) error
 	// GetTxSimulationResults encapsulates the results of the transaction simulation.
 	// This should contain enough detail for
 	// - The update in the state that would be caused if the transaction is to be committed
@@ -264,4 +269,50 @@ func (txSim *TxSimulationResults) GetPvtSimulationBytes() ([]byte, error) {
 // ContainsPvtWrites returns true if the simulation results include the private writes
 func (txSim *TxSimulationResults) ContainsPvtWrites() bool {
 	return txSim.PvtSimulationResults != nil
+}
+
+//go:generate counterfeiter -o mock/state_listener.go -fake-name StateListener . StateListener
+
+// StateListener allows a custom code for performing additional stuff upon state change
+// for a perticular namespace against which the listener is registered.
+// This helps to perform custom tasks other than the state updates.
+// A ledger implemetation is expected to invoke Function `HandleStateUpdates` once per block and
+// the `stateUpdates` parameter passed to the function captures the state changes caused by the block
+// for the namespace. The actual data type of stateUpdates depends on the data model enabled.
+// For instance, for KV data model, the actual type would be proto message
+// `github.com/hyperledger/fabric/protos/ledger/rwset/kvrwset.KVWrite`
+// Function `HandleStateUpdates` is expected to be invoked before block is committed and if this
+// function returns an error, the ledger implementation is expected to halt block commit operation
+// and result in a panic
+type StateListener interface {
+	InterestedInNamespaces() []string
+	HandleStateUpdates(ledgerID string, stateUpdates StateUpdates, committingBlockNum uint64) error
+	StateCommitDone(channelID string)
+}
+
+// StateUpdates is the generic type to represent the state updates
+type StateUpdates map[string]interface{}
+
+// ConfigHistoryRetriever allow retrieving history of collection configs
+type ConfigHistoryRetriever interface {
+	CollectionConfigAt(blockNum uint64, chaincodeName string) (*CollectionConfigInfo, error)
+	MostRecentCollectionConfigBelow(blockNum uint64, chaincodeName string) (*CollectionConfigInfo, error)
+}
+
+// CollectionConfigInfo encapsulates a collection config for a chaincode and its committing block number
+type CollectionConfigInfo struct {
+	CollectionConfig   *common.CollectionConfigPackage
+	CommittingBlockNum uint64
+}
+
+// ErrCollectionConfigNotYetAvailable is an error which is returned from the function
+// ConfigHistoryRetriever.CollectionConfigAt() if the latest block number committed
+// is lower than the block number specified in the request.
+type ErrCollectionConfigNotYetAvailable struct {
+	MaxBlockNumCommitted uint64
+	Msg                  string
+}
+
+func (e *ErrCollectionConfigNotYetAvailable) Error() string {
+	return e.Msg
 }

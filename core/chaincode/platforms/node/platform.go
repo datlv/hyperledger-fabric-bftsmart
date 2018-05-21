@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric/core/chaincode/platforms/ccmetadata"
 	"github.com/hyperledger/fabric/core/chaincode/platforms/util"
 	cutil "github.com/hyperledger/fabric/core/container/util"
 	pb "github.com/hyperledger/fabric/protos/peer"
@@ -143,7 +144,8 @@ func (nodePlatform *Platform) GetDeploymentPayload(spec *pb.ChaincodeSpec) ([]by
 		return nil, errors.New("ChaincodeSpec's path cannot be empty")
 	}
 
-	if strings.LastIndex(folder, "/") == len(folder)-1 {
+	// trim trailing slash if it exists
+	if folder[len(folder)-1] == '/' {
 		folder = folder[:len(folder)-1]
 	}
 
@@ -192,4 +194,9 @@ func (nodePlatform *Platform) GenerateDockerBuild(cds *pb.ChaincodeDeploymentSpe
 	}
 
 	return cutil.WriteBytesToPackage("binpackage.tar", binpackage.Bytes(), tw)
+}
+
+//GetMetadataProvider fetches metadata provider given deployment spec
+func (nodePlatform *Platform) GetMetadataProvider(cds *pb.ChaincodeDeploymentSpec) ccmetadata.MetadataProvider {
+	return &ccmetadata.TargzMetadataProvider{cds}
 }
