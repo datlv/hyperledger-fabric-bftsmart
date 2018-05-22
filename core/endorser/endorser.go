@@ -83,6 +83,9 @@ type Support interface {
 
 	// EndorseWithPlugin endorses the response with a plugin
 	EndorseWithPlugin(ctx Context) (*pb.ProposalResponse, error)
+
+	// GetLedgerHeight returns ledger height for given channelID
+	GetLedgerHeight(channelID string) (uint64, error)
 }
 
 // Endorser provides the Endorser service ProcessProposal
@@ -285,6 +288,15 @@ func (e *Endorser) SimulateProposal(ctx context.Context, chainID string, txid st
 			if err != nil {
 				return nil, nil, nil, nil, errors.WithMessage(err, "failed to obtain collections config")
 			}
+			endorsedAt, err := e.s.GetLedgerHeight(chainID)
+			if err != nil {
+				return nil, nil, nil, nil, errors.WithMessage(err, fmt.Sprint("failed to obtain ledger height for channel", chainID))
+			}
+			// Add ledger height at which transaction was endorsed,
+			// `endorsedAt` is obtained from the block storage and at times this could be 'endorsement Height + 1'.
+			// However, since we use this height only to select the configuration, this works for now.
+			// Ideally, ledger should add support in the simulator as a first class function `GetHeight()`.
+			pvtDataWithConfig.EndorsedAt = endorsedAt
 			if err := e.distributePrivateData(chainID, txid, pvtDataWithConfig, simResult.SimulationBlkHt); err != nil {
 				return nil, nil, nil, nil, err
 			}
@@ -382,19 +394,12 @@ func (e *Endorser) preProcess(signedProp *pb.SignedProposal) (*validateResult, e
 	}
 
 	chainID := chdr.ChannelId
-
-	// Check for uniqueness of prop.TxID with ledger
-	// Notice that ValidateProposalMessage has already verified
-	// that TxID is computed properly
 	txid := chdr.TxId
-	if txid == "" {
-		err = errors.New("invalid txID. It must be different from the empty string")
-		vr.resp = &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}
-		return vr, err
-	}
 	endorserLogger.Debugf("[%s][%s] processing txid: %s", chainID, shorttxid(txid), txid)
+
 	if chainID != "" {
-		// here we handle uniqueness check and ACLs for proposals targeting a chain
+		// Here we handle uniqueness check and ACLs for proposals targeting a chain
+		// Notice that ValidateProposalMessage has already verified that TxID is computed properly
 		if _, err = e.s.GetTransactionByID(chainID, txid); err == nil {
 			err = errors.Errorf("duplicate transaction found [%s]. Creator [%x]", txid, shdr.Creator)
 			vr.resp = &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}
