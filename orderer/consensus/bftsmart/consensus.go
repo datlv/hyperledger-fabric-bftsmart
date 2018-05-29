@@ -41,7 +41,6 @@ var recvport uint = 0
 var sendProxy net.Conn
 var sendPool []net.Conn
 var mutex []*sync.Mutex
-var batchTimeout time.Duration
 
 type consenter struct {
 	createSystemChannel bool
@@ -124,29 +123,6 @@ func (ch *chain) Start() {
 
 		logger.Info("Created connection pool to java component")
 
-		batchTimeout = ch.support.SharedConfig().BatchTimeout()
-
-		//Sending batch configuration
-		_, err = sendUint32(ch.support.SharedConfig().BatchSize().PreferredMaxBytes, sendProxy)
-
-		if err != nil {
-			logger.Info("Error while sending PreferredMaxBytes:", err)
-			return
-		}
-
-		_, err = sendUint32(ch.support.SharedConfig().BatchSize().MaxMessageCount, sendProxy)
-
-		if err != nil {
-			logger.Info("Error while sending MaxMessageCount:", err)
-			return
-		}
-		_, err = sendUint64(uint64(time.Duration.Nanoseconds(batchTimeout)), sendProxy)
-
-		if err != nil {
-			logger.Info("Error while sending BatchTimeout:", err)
-			return
-		}
-
 	}
 
 	addr := fmt.Sprintf("localhost:%d", recvport)
@@ -159,17 +135,16 @@ func (ch *chain) Start() {
 
 	ch.recvProxy = conn
 
-	_, err = sendString(ch.support.ChainID(), sendProxy)
-
-	if err != nil {
-		logger.Info("Error while sending chain ID:", err)
-		return
-	}
+	id := ch.support.ChainID()
 
 	lastBlock := ch.support.GetLastBlock()
 	header := lastBlock.Header
 
-	_, err = sendHeaderToBFTProxy(header)
+	preferredMaxBytes := ch.support.SharedConfig().BatchSize().PreferredMaxBytes
+	maxMessageCount := ch.support.SharedConfig().BatchSize().MaxMessageCount
+	timeout := ch.support.SharedConfig().BatchTimeout()
+
+	_, err = createChannelOnBFTProxy(id, header, preferredMaxBytes, maxMessageCount, timeout)
 
 	if err != nil {
 		logger.Info("Error while sending chain ID:", err)
@@ -294,20 +269,60 @@ func sendEnvToBFTProxy(isConfig bool, chainID string, env *cb.Envelope, index ui
 	return status, err
 }
 
-func sendHeaderToBFTProxy(header *cb.BlockHeader) (int, error) {
+func createChannelOnBFTProxy(id string, header *cb.BlockHeader, preferredMaxBytes uint32, maxMessageCount uint32, batchTimeout time.Duration) (int, error) {
+
+	//Sending channel ID
+	status, err := sendString(id, sendProxy)
+
+	if err != nil {
+		logger.Info("Error while sending chain ID:", err)
+		return status, err
+	}
+
+	//Sending genesis block header
 	bytes, err := utils.Marshal(header)
 
 	if err != nil {
 		return -1, err
 	}
 
-	status, err := sendLength(len(bytes), sendProxy)
+	status, err = sendLength(len(bytes), sendProxy)
 
 	if err != nil {
+		logger.Info("Error while sending Header:", err)
 		return status, err
 	}
 
-	return sendProxy.Write(bytes)
+	status, err = sendProxy.Write(bytes)
+
+	if err != nil {
+		logger.Info("Error while sending Header:", err)
+		return status, err
+	}
+
+	//Sending batch configuration
+	status, err = sendUint32(preferredMaxBytes, sendProxy)
+
+	if err != nil {
+		logger.Info("Error while sending PreferredMaxBytes:", err)
+		return status, err
+	}
+
+	status, err = sendUint32(maxMessageCount, sendProxy)
+
+	if err != nil {
+		logger.Info("Error while sending MaxMessageCount:", err)
+		return status, err
+	}
+
+	status, err = sendUint64(uint64(time.Duration.Nanoseconds(batchTimeout)), sendProxy)
+
+	if err != nil {
+		logger.Info("Error while sending BatchTimeout:", err)
+		return status, err
+	}
+
+	return status, err
 }
 
 func (ch *chain) recvLength() (int64, error) {
@@ -405,7 +420,7 @@ func (ch *chain) Configure(config *cb.Envelope, configSeq uint64) error {
 	seq := ch.support.Sequence()
 	msg := config
 	if configSeq < seq {
-		//configMsg, _, err := ch.support.ProcessConfigUpdateMsg(impetus)
+
 		configMsg, _, err := ch.support.ProcessConfigMsg(config)
 		if err != nil {
 			logger.Warningf("Discarding bad config message: %s", err)
