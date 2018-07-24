@@ -28,7 +28,9 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"os"
 
+	"github.com/golang/protobuf/proto"
 	localconfig "github.com/hyperledger/fabric/orderer/common/localconfig"
 	"github.com/hyperledger/fabric/orderer/consensus"
 	"github.com/hyperledger/fabric/protos/utils"
@@ -38,6 +40,7 @@ var logger = logging.MustGetLogger("orderer/bftsmart")
 var poolsize uint = 0
 var poolindex uint = 0
 var recvport uint = 0
+var unixsocket string
 var sendProxy net.Conn
 var sendPool []net.Conn
 var mutex []*sync.Mutex
@@ -61,6 +64,7 @@ func New(config localconfig.BFTsmart) consensus.Consenter {
 
 	poolsize = config.ConnectionPoolSize
 	recvport = config.RecvPort
+	unixsocket = fmt.Sprintf("%s%s%d%s", os.TempDir(), "/hlf-pool-", recvport, ".sock")
 	return &consenter{
 		createSystemChannel: true,
 	}
@@ -93,7 +97,7 @@ func (ch *chain) Start() {
 
 	if ch.isSystemChannel {
 
-		conn, err := net.Dial("unix", "/tmp/hlf-pool.sock")
+		conn, err := net.Dial("unix", unixsocket)
 
 		if err != nil {
 			panic(fmt.Sprintf("Could not start connection pool to java component: %s", err))
@@ -108,7 +112,7 @@ func (ch *chain) Start() {
 		//create connection pool
 		for i := uint(0); i < poolsize; i++ {
 
-			conn, err := net.Dial("unix", "/tmp/hlf-pool.sock")
+			conn, err := net.Dial("unix", unixsocket)
 
 			if err != nil {
 				panic(fmt.Sprintf("Could not create all connection pool to java component: %s", err))
@@ -137,14 +141,9 @@ func (ch *chain) Start() {
 
 	id := ch.support.ChainID()
 
-	lastBlock := ch.support.GetLastBlock()
-	header := lastBlock.Header
-
-	preferredMaxBytes := ch.support.SharedConfig().BatchSize().PreferredMaxBytes
-	maxMessageCount := ch.support.SharedConfig().BatchSize().MaxMessageCount
 	timeout := ch.support.SharedConfig().BatchTimeout()
 
-	_, err = createChannelOnBFTProxy(id, header, preferredMaxBytes, maxMessageCount, timeout)
+	_, err = createChannelOnBFTProxy(id, timeout)
 
 	if err != nil {
 		logger.Info("Error while sending chain ID:", err)
@@ -249,6 +248,12 @@ func sendBytes(bytes []byte, conn net.Conn) (int, error) {
 
 func sendEnvToBFTProxy(isConfig bool, chainID string, env *cb.Envelope, index uint) (int, error) {
 
+	//serialize envelope
+	bytes, err := utils.Marshal(env)
+	if err != nil {
+		return -1, err
+	}
+
 	mutex[index].Lock()
 
 	//send channel id
@@ -258,10 +263,6 @@ func sendEnvToBFTProxy(isConfig bool, chainID string, env *cb.Envelope, index ui
 	status, err = sendBoolean(isConfig, sendPool[index])
 
 	//send envelope
-	bytes, err := utils.Marshal(env)
-	if err != nil {
-		return -1, err
-	}
 	status, err = sendBytes(bytes, sendPool[index])
 
 	mutex[index].Unlock()
@@ -269,7 +270,7 @@ func sendEnvToBFTProxy(isConfig bool, chainID string, env *cb.Envelope, index ui
 	return status, err
 }
 
-func createChannelOnBFTProxy(id string, header *cb.BlockHeader, preferredMaxBytes uint32, maxMessageCount uint32, batchTimeout time.Duration) (int, error) {
+func createChannelOnBFTProxy(id string, batchTimeout time.Duration) (int, error) {
 
 	//Sending channel ID
 	status, err := sendString(id, sendProxy)
@@ -279,42 +280,7 @@ func createChannelOnBFTProxy(id string, header *cb.BlockHeader, preferredMaxByte
 		return status, err
 	}
 
-	//Sending genesis block header
-	bytes, err := utils.Marshal(header)
-
-	if err != nil {
-		return -1, err
-	}
-
-	status, err = sendLength(len(bytes), sendProxy)
-
-	if err != nil {
-		logger.Info("Error while sending Header:", err)
-		return status, err
-	}
-
-	status, err = sendProxy.Write(bytes)
-
-	if err != nil {
-		logger.Info("Error while sending Header:", err)
-		return status, err
-	}
-
-	//Sending batch configuration
-	status, err = sendUint32(preferredMaxBytes, sendProxy)
-
-	if err != nil {
-		logger.Info("Error while sending PreferredMaxBytes:", err)
-		return status, err
-	}
-
-	status, err = sendUint32(maxMessageCount, sendProxy)
-
-	if err != nil {
-		logger.Info("Error while sending MaxMessageCount:", err)
-		return status, err
-	}
-
+	//Sending batch timeout for channel
 	status, err = sendUint64(uint64(time.Duration.Nanoseconds(batchTimeout)), sendProxy)
 
 	if err != nil {
@@ -379,18 +345,6 @@ func (ch *chain) recvEnvFromBFTProxy() (*cb.Envelope, error) {
 // Order accepts a message and returns true on acceptance, or false on shutdown
 func (ch *chain) Order(env *cb.Envelope, configSeq uint64) error {
 
-	//perform usual msg processing
-	seq := ch.support.Sequence()
-
-	if configSeq < seq {
-		_, err := ch.support.ProcessNormalMsg(env)
-		if err != nil {
-			logger.Warningf("Discarding bad normal message: %s", err)
-			return nil
-		}
-	}
-
-	//if everything ok, proceed
 	poolindex = (poolindex + 1) % poolsize
 
 	_, err := sendEnvToBFTProxy(false, ch.support.ChainID(), env, poolindex)
@@ -409,30 +363,23 @@ func (ch *chain) Order(env *cb.Envelope, configSeq uint64) error {
 		return nil
 	}
 
-	//return true
 }
 
 // Configure accepts configuration update messages for ordering
 //func (ch *chain) Configure(impetus *cb.Envelope, config *cb.Envelope, configSeq uint64) error {
 func (ch *chain) Configure(config *cb.Envelope, configSeq uint64) error {
 
-	//perform usual config processing
-	seq := ch.support.Sequence()
-	msg := config
-	if configSeq < seq {
+	msg, err := RetrieveLastUpdate(config)
 
-		configMsg, _, err := ch.support.ProcessConfigMsg(config)
-		if err != nil {
-			logger.Warningf("Discarding bad config message: %s", err)
-			return nil
-		}
-		msg = configMsg
+	if err != nil {
+
+		return err
 	}
 
 	//if everything ok, proceed
 	poolindex = (poolindex + 1) % poolsize
 
-	_, err := sendEnvToBFTProxy(true, ch.support.ChainID(), msg, poolindex)
+	_, err = sendEnvToBFTProxy(true, ch.support.ChainID(), msg, poolindex)
 
 	if err != nil {
 
@@ -447,6 +394,53 @@ func (ch *chain) Configure(config *cb.Envelope, configSeq uint64) error {
 		return nil
 	}
 
+}
+
+func RetrieveLastUpdate(env *cb.Envelope) (*cb.Envelope, error) {
+	payload, err := utils.UnmarshalPayload(env.Payload)
+	if err != nil {
+		return nil, err
+	}
+
+	if payload.Header == nil {
+		return nil, fmt.Errorf("Abort processing config msg because no head was set")
+	}
+
+	if payload.Header.ChannelHeader == nil {
+		return nil, fmt.Errorf("Abort processing config msg because no channel header was set")
+	}
+
+	chdr, err := utils.UnmarshalChannelHeader(payload.Header.ChannelHeader)
+	if err != nil {
+		return nil, fmt.Errorf("Abort processing config msg because channel header unmarshalling error: %s", err)
+	}
+
+	switch chdr.Type {
+	case int32(cb.HeaderType_CONFIG):
+		configEnvelope := &cb.ConfigEnvelope{}
+		if err = proto.Unmarshal(payload.Data, configEnvelope); err != nil {
+			return nil, err
+		}
+
+		return configEnvelope.LastUpdate, nil
+
+	case int32(cb.HeaderType_ORDERER_TRANSACTION):
+		env, err := utils.UnmarshalEnvelope(payload.Data)
+		if err != nil {
+			return nil, fmt.Errorf("Abort processing config msg because payload data unmarshalling error: %s", err)
+		}
+
+		configEnvelope := &cb.ConfigEnvelope{}
+		_, err = utils.UnmarshalEnvelopeOfType(env, cb.HeaderType_CONFIG, configEnvelope)
+		if err != nil {
+			return nil, fmt.Errorf("Abort processing config msg because payload data unmarshalling error: %s", err)
+		}
+
+		return configEnvelope.LastUpdate, nil
+
+	default:
+		return nil, fmt.Errorf("Panic processing config msg due to unexpected envelope type %s", cb.HeaderType_name[chdr.Type])
+	}
 }
 
 func (ch *chain) connLoop() {
@@ -485,7 +479,6 @@ func (ch *chain) connLoop() {
 }
 
 func (ch *chain) appendToChain() {
-	//var timer <-chan time.Time //original timer to flush the blockcutter
 
 	for {
 
@@ -500,6 +493,8 @@ func (ch *chain) appendToChain() {
 			}
 
 		case block := <-ch.sendChanConfig:
+
+			logger.Debugf("[channel: %s] Received successfully ordered message of type config")
 
 			ch.support.ProcessConfigBlock(block)
 			err := ch.support.AppendBlock(block)
