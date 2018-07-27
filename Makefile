@@ -41,8 +41,8 @@
 #     use in the local machine.
 #   - docker-thirdparty - pulls thirdparty images (kafka,zookeeper,couchdb)
 
-BASE_VERSION = 1.1.1
-PREV_VERSION = 1.1.0
+BASE_VERSION = 1.1.2
+PREV_VERSION = 1.1.1
 CHAINTOOL_RELEASE=1.1.1
 BASEIMAGE_RELEASE=0.4.6
 
@@ -54,6 +54,7 @@ PROJECT_NAME = $(PROJECT_NAME)/fabric
 else
 PROJECT_NAME = hyperledger/fabric
 endif
+
 IS_RELEASE = true
 EXPERIMENTAL ?= true
 
@@ -102,7 +103,7 @@ PROJECT_FILES = $(shell git ls-files  | grep -v ^test | grep -v ^unit-test | \
 	grep -v ^.git | grep -v ^examples | grep -v ^devenv | grep -v .png$ | \
 	grep -v ^LICENSE )
 RELEASE_TEMPLATES = $(shell git ls-files | grep "release/templates")
-IMAGES = peer orderer ccenv javaenv buildenv testenv tools
+IMAGES = peer orderer ccenv tools
 RELEASE_PLATFORMS = windows-amd64 darwin-amd64 linux-amd64 linux-ppc64le linux-s390x
 RELEASE_PKGS = configtxgen cryptogen configtxlator peer orderer
 
